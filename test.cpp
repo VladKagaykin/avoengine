@@ -140,7 +140,7 @@ glLoadIdentity();
 
 void setup_display(int* argc, char** argv, float r, float g, float b, float a) {
     glutInit(argc, argv);
-    glutInitDisplayMode(GLUT_SINGLE | GLUT_RGBA);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
     glutInitWindowPosition(100,100);
     glutInitWindowSize(500,500);
 

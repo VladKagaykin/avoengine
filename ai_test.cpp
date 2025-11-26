@@ -1,4 +1,4 @@
-#include <GL/glut.h>
+#include <GL/freeglut.h>
 #include <iostream>
 #include <map>
 #include <cmath>
@@ -139,12 +139,15 @@ glLoadIdentity();
 }
 
 void setup_display(int* argc, char** argv, float r, float g, float b, float a) {
-    glutInit(argc, argv);
+    //glutInit(argc, argv);
+    glutInit(&argc, argv);
+    glutSetOption(GLUT_WINDOW_ICON_TITLE, (int)"avoengine");
     glutInitDisplayMode(GLUT_SINGLE | GLUT_RGBA);
     glutInitWindowPosition(100,100);
     glutInitWindowSize(500,500);
 
     glutCreateWindow("avoengine");
+    glutSetIconTitle("img/penza.png");
     glutDisplayFunc(renderScene);
     glutReshapeFunc(changeSize);
     glClearColor(r,g,b,a);
