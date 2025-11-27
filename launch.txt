@@ -1,0 +1,9 @@
+sudo apt install build-essential cmake
+
+sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev
+
+cd /your/path
+
+g++ programm_name.cpp -o output_name -lglut -lGLU -lGL
+
+./output_name
