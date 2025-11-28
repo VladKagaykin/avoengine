@@ -108,8 +108,8 @@ void displayWrapper() {
     glClear(GL_COLOR_BUFFER_BIT);
     square(figure_size, center_x, center_y, 1.0f, 0.0f, 0.0f, global_angle, (float[]){-0.5f, -0.5f,
                                                                                        0.5f, -0.5f, 
-                                                                                      -1.5f, 1.5f, 
-                                                                                       1.5f, 1.5f});
+                                                                                      -0.5f, 0.5f, 
+                                                                                       0.5f, 0.5f});
     circle(figure_size, center_x, center_y, 0.0f, 1.0f, 0.0f, 1.0f, 0.2f, global_angle, 15, 1);
     triangle(figure_size, center_x, center_y, 0.0f, 0.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f});
     
