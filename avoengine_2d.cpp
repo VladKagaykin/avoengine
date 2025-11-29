@@ -3,10 +3,13 @@
 #include <map>
 #include <cmath>
 #include <GL/glu.h>
+#include <vector>
+#include <SOIL/SOIL.h>
 
 using namespace std;
 
 bool isFullscreen = 0;
+
 int global_width = 500;
 int global_height = 500;
 float figure_size = 1.0f;
@@ -14,54 +17,130 @@ float center_x = 0.0f;
 float center_y = 0.0f;
 float global_angle = 0.0f;
 
+map<string, GLuint> textureCache;
+
 map<unsigned char, bool> keyStates;
 
+GLuint loadTextureFromFile(const char* filename) {
+    // Проверяем, есть ли текстура в кэше
+    if (textureCache.find(filename) != textureCache.end()) {
+        return textureCache[filename];
+    }
+    
+    GLuint textureID;
+    
+    // Загружаем изображение с помощью SOIL
+    int width, height;
+    unsigned char* image = SOIL_load_image(filename, &width, &height, 0, SOIL_LOAD_RGB);
+    
+    if (!image) {
+        cout << "Ошибка загрузки текстуры: " << filename << endl;
+        cout << "SOIL error: " << SOIL_last_result() << endl;
+        textureCache[filename] = 0; // Помечаем как неудачную загрузку
+        return 0;
+    }
+    
+    cout << "Текстура загружена: " << filename << " (" << width << "x" << height << ")" << endl;
+    
+    // Генерируем текстуру OpenGL
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_2D, textureID);
+    
+    // Устанавливаем параметры текстуры
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    
+    // Загружаем данные изображения в текстуру
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
+    
+    // Освобождаем память изображения
+    SOIL_free_image_data(image);
+    
+    // Сохраняем в кэш
+    textureCache[filename] = textureID;
+    
+    return textureID;
+}
+
 void limiter() {
-    if (figure_size < 0.0f) figure_size = 0.0f;
+    //if (figure_size < 0.0f) figure_size = 0.0f;
     if (global_angle < 0.0f) global_angle += 360.0f;
     if (global_angle >= 360.0f) global_angle -= 360.0f;
 }
 
-// Функция для поворота точки вокруг центра
 void rotatePoint(float& x, float& y, float center_x, float center_y, float angle_rad) {
-    // Сначала перемещаем точку относительно центра
     float translated_x = x - center_x;
     float translated_y = y - center_y;
     
-    // Затем поворачиваем
     float rotated_x = translated_x * cos(angle_rad) - translated_y * sin(angle_rad);
     float rotated_y = translated_x * sin(angle_rad) + translated_y * cos(angle_rad);
     
-    // Возвращаем обратно
     x = rotated_x + center_x;
     y = rotated_y + center_y;
 }
 
-void triangle(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices) {
+void triangle(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, const char* texture_file = nullptr) {
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
 
+    // Если указан файл текстуры - используем его
+    if (texture_file != nullptr) {
+        GLuint textureID = loadTextureFromFile(texture_file);
+        if (textureID != 0) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, textureID);
+        }
+    } else {
+        glDisable(GL_TEXTURE_2D);
+    }
+    
     glBegin(GL_TRIANGLES);
+    
+    // Координаты текстуры для треугольника
+    float texCoords[6] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f};
 
     for (int i = 0; i < 3; i++) {
-        float point_x = vertices[i*2];     // x координата
-        float point_y = vertices[i*2 + 1]; // y координата
+        float point_x = vertices[i*2];
+        float point_y = vertices[i*2 + 1];
         
         rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
         
-        glVertex2f((center_x + point_x) * local_size,
-                   (center_y + point_y) * local_size);
+        if (texture_file != nullptr) {
+            glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
+        }
+        glVertex2f((x + point_x) * local_size,
+                   (y + point_y) * local_size);
     }
 
     glEnd();
+    
+    if (texture_file != nullptr) {
+        glDisable(GL_TEXTURE_2D);
+    }
 }
 
-void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices) {
+void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, const char* texture_file = nullptr) {
     glColor3f(r, g, b);
 
     // Преобразуем угол в радианы
     float angle_rad = rotate * M_PI / -180.0f;
-    glBegin(GL_TRIANGLE_STRIP);
+
+    if (texture_file != nullptr) {
+        GLuint textureID = loadTextureFromFile(texture_file);
+        if (textureID != 0) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, textureID);
+        }
+    } else {
+        glDisable(GL_TEXTURE_2D);
+    }
+
+    glBegin(GL_QUADS);
+
+    // Координаты текстуры для квадрата
+    float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
 
     // Применяем поворот к каждой вершине относительно центра
     for (int i = 0; i < 4; i++) {
@@ -71,44 +150,80 @@ void square(float local_size, float x, float y, double r, double g, double b, fl
         // Поворачиваем точку вокруг центра (0,0)
         rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
         
-        // Масштабируем, перемещаем и применяем общий центр
-        glVertex2f((center_x + point_x) * local_size,
-                   (center_y + point_y) * local_size);
+        if (texture_file != nullptr) {
+            glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
+        }
+        glVertex2f((x + point_x) * local_size,
+                   (y + point_y) * local_size);
     }
 
     glEnd();
+    if (texture_file != nullptr) {
+        glDisable(GL_TEXTURE_2D);
+    }
 }
 
-void circle(float local_size, float x, float y, double r, double g, double b, float radius,float in_radius, float rotate, int slices, int loops) {
+void circle(float local_size, float x, float y, double r, double g, double b, float radius,float in_radius, float rotate, int slices, int loops, const char* texture_file = nullptr) {
     glColor3f(r, g, b);
+    
+    if (texture_file != nullptr) {
+        GLuint textureID = loadTextureFromFile(texture_file);
+        if (textureID != 0) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, textureID);
+        }
+    } else {
+        glDisable(GL_TEXTURE_2D);
+    }
     
     // Сохраняем текущую матрицу
     glPushMatrix();
     
     // Применяем преобразования относительно общего центра
-    glTranslatef(center_x * local_size, center_y * local_size, 0.0f);
+    glTranslatef(x * local_size, y * local_size, 0.0f);
     glRotatef(rotate*-1, 0.0f, 0.0f, 1.0f);
     glScalef(local_size/2, local_size/2, 1.0f);
     
     // Создаем объект квадрики
     GLUquadric* quadric = gluNewQuadric();
+    gluQuadricTexture(quadric, GL_TRUE);
     gluQuadricDrawStyle(quadric, GLU_FILL);
+    
+    // Исправление ориентации текстуры для круга
+    glMatrixMode(GL_TEXTURE);
+    glPushMatrix();
+    glScalef(1.0f, -1.0f, 1.0f); // Отражение по Y
     
     // Рисуем диск (центр теперь в точке (0,0) после трансформаций)
     gluDisk(quadric, in_radius, radius, slices, loops);
+    
+    // Восстанавливаем матрицу текстуры
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
     
     // Удаляем объект квадрики
     gluDeleteQuadric(quadric);
     
     // Восстанавливаем матрицу
     glPopMatrix();
+    
+    if (texture_file != nullptr) {
+        glDisable(GL_TEXTURE_2D);
+    }
 }
 
 void displayWrapper() {
     glClear(GL_COLOR_BUFFER_BIT);
-    square(figure_size, center_x, center_y, 1.0f, 0.0f, 0.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f});
-    circle(figure_size, center_x, center_y, 0.0f, 1.0f, 0.0f, 1.0f, 0.2f, global_angle, 15, 1);
-    triangle(figure_size, center_x, center_y, 0.0f, 0.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f});
+    
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    square(figure_size, center_x, center_y, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f,
+                                                                                       0.5f, -0.5f, 
+                                                                                       0.5f, 0.5f, 
+                                                                                       -0.5f, 0.5f}, "src/god_png.png");
+    circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 115, 1, "src/diskriminant.png");
+    triangle(figure_size, center_x*2, center_y*2, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},"src/penza.png");
     
     glutSwapBuffers();
 }
@@ -122,32 +237,30 @@ glRectf(-25.0f,25.0f,25.0f,-25.0f);
 glFlush();
 }
 
-void changeSize(int w, int h)
-{
-if (h == 0)
-    h=1;
-glViewport(0,0,w,h);
-glMatrixMode(GL_PROJECTION);
-glLoadIdentity();
-float ratio = w/(float)h;
-if (w<=h)
-    glOrtho (-1,1,-1/ratio, 1/ratio, 1,-1);
-else
-    glOrtho (-1*ratio,1*ratio, -1,1,1,-1);
-glMatrixMode(GL_MODELVIEW);
-glLoadIdentity();
+void changeSize(int w, int h) {
+    if (h == 0) h = 1;
+    glViewport(0, 0, w, h);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    float ratio = w / (float)h;
+    if (w <= h)
+        glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
+    else
+        glOrtho(-1*ratio, 1*ratio, -1, 1, 1, -1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
 }
 
 void setup_display(int* argc, char** argv, float r, float g, float b, float a) {
     glutInit(argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
-    glutInitWindowPosition(100,100);
-    glutInitWindowSize(500,500);
+    glutInitWindowPosition(100, 100);
+    glutInitWindowSize(500, 500);
 
     glutCreateWindow("avoengine");
     glutDisplayFunc(renderScene);
     glutReshapeFunc(changeSize);
-    glClearColor(r,g,b,a);
+    glClearColor(r, g, b, a);
 }
 
 void processMovement() {
@@ -202,6 +315,13 @@ void keyboardDown(unsigned char key, int, int) {
             isFullscreen = !isFullscreen;
             isFullscreen ? glutFullScreen() : glutReshapeWindow(500, 500);
             break;
+        case 'r': case 'R': // Перезагрузка текстур
+            for (auto& texture : textureCache) {
+                glDeleteTextures(1, &texture.second);
+            }
+            textureCache.clear();
+            glutPostRedisplay();
+            break;
     }
     processMovement();
 }
@@ -213,15 +333,23 @@ void keyboardUp(unsigned char key, int, int) {
 
 void timer(int value) {
     processMovement();
-    glutTimerFunc(16, timer, 0); // ~60 FPS
+    glutTimerFunc(16, timer, 0);
 }
 
 int main(int argc, char** argv) {
-    setup_display(&argc, argv, 1.0f, 1.0f, 1.0f, 1.0f);
+    setup_display(&argc, argv, 0.2f, 0.2f, 0.2f, 1.0f);
+    
+    glEnable(GL_TEXTURE_2D);
+    
     glutDisplayFunc(displayWrapper);
     glutKeyboardFunc(keyboardDown);
     glutKeyboardUpFunc(keyboardUp);
     glutTimerFunc(0, timer, 0);
     glutMainLoop();
+    
+    for (auto& texture : textureCache) {
+        glDeleteTextures(1, &texture.second);
+    }
+    
     return 0;
 }
