@@ -20,28 +20,57 @@ float global_angle = 0.0f;
 map<string, GLuint> textureCache;
 map<unsigned char, bool> keyStates;
 
+// Константы физики
+const float GRAVITY = -2.0000f;
+const float FRICTION = 0.99f;
+const float BOUNCE_FACTOR = 0.3f;
+
+// Типы объектов
+enum ObjectType { SQUARE_OBJ, CIRCLE_OBJ, TRIANGLE_OBJ };
+
 // Структура для физического объекта
 struct PhysicsObject {
-    float x, y;
-    float velocity_x, velocity_y;
-    float size;
-    float angle;
-    bool has_gravity;
-    bool has_collision;
-    bool is_static;
-    float radius; // Для круговых коллизий
+    ObjectType type;
+    float x, y;               // Позиция
+    float velocity_x, velocity_y; // Скорость
+    float size;               // Размер
+    float angle;              // Угол поворота
+    bool has_gravity;         // Подчиняется гравитации
+    bool has_collision;       // Имеет коллизии
+    bool is_static;           // Статичный объект
+    float radius;             // Радиус для коллизий
     
-    PhysicsObject() : x(0), y(0), velocity_x(0), velocity_y(0), 
-                     size(1), angle(0), has_gravity(false), 
-                     has_collision(false), is_static(false), radius(0.5f) {}
+    // Параметры для рисования
+    float color[3];           // Цвет
+    const char* texture_file; // Текстура
+    
+    // Параметры формы
+    union {
+        struct {
+            float vertices[8];
+        } square;
+        struct {
+            float outer_radius, inner_radius;
+            int slices, loops;
+        } circle;
+        struct {
+            float vertices[6];
+        } triangle;
+    } params;
+    
+    // Конструктор
+    PhysicsObject() : type(SQUARE_OBJ), x(0), y(0), velocity_x(0), velocity_y(0), 
+                     size(1), angle(0), has_gravity(false), has_collision(false),
+                     is_static(false), radius(0.5f), texture_file(nullptr) {
+        color[0] = color[1] = color[2] = 1.0f;
+    }
 };
 
+// Глобальный вектор объектов
 vector<PhysicsObject> physicsObjects;
 
-// Глобальные физические параметры
-const float GRAVITY = -0.001f;
-const float FRICTION = 0.98f;
-const float BOUNCE_FACTOR = 0.7f;
+// ID управляемого объекта
+int controlled_object_id = -1;
 
 GLuint loadTextureFromFile(const char* filename) {
     if (textureCache.find(filename) != textureCache.end()) {
@@ -84,45 +113,116 @@ void rotatePoint(float& x, float& y, float center_x, float center_y, float angle
     y = rotated_y + center_y;
 }
 
-// Функции для создания объектов с физикой
-int createSquareObject(float x, float y, float size, float angle, 
-                       bool gravity, bool collision, bool is_static = false) {
+// Функции для создания объектов (возвращают ID объекта)
+int createSquare(float x, float y, float size, float angle, 
+                float r, float g, float b,
+                float* vertices, bool gravity, bool collision, 
+                bool is_static = false, const char* texture_file = nullptr) {
+    
     PhysicsObject obj;
+    obj.type = SQUARE_OBJ;
     obj.x = x;
     obj.y = y;
     obj.size = size;
     obj.angle = angle;
+    obj.color[0] = r;
+    obj.color[1] = g;
+    obj.color[2] = b;
     obj.has_gravity = gravity;
     obj.has_collision = collision;
     obj.is_static = is_static;
-    obj.radius = size * 0.707f; // Диагональ квадрата / 2
+    obj.texture_file = texture_file;
+    
+    // Копируем вершины
+    for(int i = 0; i < 8; i++) {
+        obj.params.square.vertices[i] = vertices[i];
+    }
+    
+    // Рассчитываем радиус для коллизий
+    float half_width = fabs(vertices[0]) * size;
+    float half_height = fabs(vertices[1]) * size;
+    obj.radius = sqrt(half_width*half_width + half_height*half_height) * 0.5f;
     
     physicsObjects.push_back(obj);
     return physicsObjects.size() - 1;
 }
 
-int createCircleObject(float x, float y, float radius, bool gravity, bool collision) {
+int createCircle(float x, float y, float size, float angle,
+                float r, float g, float b,
+                float outer_radius, float inner_radius, 
+                int slices, int loops, bool gravity, bool collision,
+                const char* texture_file = nullptr) {
+    
     PhysicsObject obj;
+    obj.type = CIRCLE_OBJ;
     obj.x = x;
     obj.y = y;
-    obj.size = radius/2;
-    obj.radius = radius;
+    obj.size = size;
+    obj.angle = angle;
+    obj.color[0] = r;
+    obj.color[1] = g;
+    obj.color[2] = b;
     obj.has_gravity = gravity;
     obj.has_collision = collision;
+    obj.is_static = false;
+    obj.texture_file = texture_file;
+    
+    obj.params.circle.outer_radius = outer_radius;
+    obj.params.circle.inner_radius = inner_radius;
+    obj.params.circle.slices = slices;
+    obj.params.circle.loops = loops;
+    
+    // Радиус для коллизий
+    obj.radius = outer_radius * size;
     
     physicsObjects.push_back(obj);
     return physicsObjects.size() - 1;
 }
 
-// Функции отрисовки с использованием объектов
-void drawSquare(int objIndex, double r, double g, double b, float* vertices, const char* texture_file = nullptr) {
-    PhysicsObject& obj = physicsObjects[objIndex];
+int createTriangle(float x, float y, float size, float angle,
+                  float r, float g, float b,
+                  float* vertices, bool gravity, bool collision,
+                  const char* texture_file = nullptr) {
     
-    glColor3f(r, g, b);
+    PhysicsObject obj;
+    obj.type = TRIANGLE_OBJ;
+    obj.x = x;
+    obj.y = y;
+    obj.size = size;
+    obj.angle = angle;
+    obj.color[0] = r;
+    obj.color[1] = g;
+    obj.color[2] = b;
+    obj.has_gravity = gravity;
+    obj.has_collision = collision;
+    obj.is_static = false;
+    obj.texture_file = texture_file;
+    
+    for(int i = 0; i < 6; i++) {
+        obj.params.triangle.vertices[i] = vertices[i];
+    }
+    
+    // Рассчитываем радиус для коллизий
+    float max_dist = 0;
+    for(int i = 0; i < 3; i++) {
+        float dx = vertices[i*2];
+        float dy = vertices[i*2+1];
+        float dist = sqrt(dx*dx + dy*dy) * size;
+        if(dist > max_dist) max_dist = dist;
+    }
+    obj.radius = max_dist * 0.5f;
+    
+    physicsObjects.push_back(obj);
+    return physicsObjects.size() - 1;
+}
+
+// Функции отрисовки объектов
+void drawSquare(PhysicsObject& obj) {
+    glColor3f(obj.color[0], obj.color[1], obj.color[2]);
     float angle_rad = obj.angle * M_PI / -180.0f;
     
-    if (texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(texture_file);
+    if (obj.texture_file != nullptr) {
+        GLuint textureID = loadTextureFromFile(obj.texture_file);
         if (textureID != 0) {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, textureID);
@@ -135,30 +235,27 @@ void drawSquare(int objIndex, double r, double g, double b, float* vertices, con
     float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
     
     for (int i = 0; i < 4; i++) {
-        float point_x = vertices[i*2] * obj.size;
-        float point_y = vertices[i*2+1] * obj.size;
+        float point_x = obj.params.square.vertices[i*2] * obj.size;
+        float point_y = obj.params.square.vertices[i*2+1] * obj.size;
         rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
         
-        if (texture_file != nullptr) {
+        if (obj.texture_file != nullptr) {
             glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
         }
         glVertex2f(obj.x + point_x, obj.y + point_y);
     }
     glEnd();
     
-    if (texture_file != nullptr) {
+    if (obj.texture_file != nullptr) {
         glDisable(GL_TEXTURE_2D);
     }
 }
 
-void drawCircle(int objIndex, double r, double g, double b, float outer_radius, 
-                float inner_radius, int slices, int loops, const char* texture_file = nullptr) {
-    PhysicsObject& obj = physicsObjects[objIndex];
+void drawCircle(PhysicsObject& obj) {
+    glColor3f(obj.color[0], obj.color[1], obj.color[2]);
     
-    glColor3f(r, g, b);
-    
-    if (texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(texture_file);
+    if (obj.texture_file != nullptr) {
+        GLuint textureID = loadTextureFromFile(obj.texture_file);
         if (textureID != 0) {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, textureID);
@@ -175,31 +272,32 @@ void drawCircle(int objIndex, double r, double g, double b, float outer_radius,
     gluQuadricTexture(quadric, GL_TRUE);
     gluQuadricDrawStyle(quadric, GLU_FILL);
     
-    // Исправление ориентации текстуры
     glMatrixMode(GL_TEXTURE);
     glPushMatrix();
     glScalef(1.0f, -1.0f, 1.0f);
     
-    gluDisk(quadric, inner_radius * obj.size, outer_radius * obj.size, slices, loops);
+    gluDisk(quadric, 
+            obj.params.circle.inner_radius * obj.size,
+            obj.params.circle.outer_radius * obj.size,
+            obj.params.circle.slices,
+            obj.params.circle.loops);
     
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
     gluDeleteQuadric(quadric);
     glPopMatrix();
     
-    if (texture_file != nullptr) {
+    if (obj.texture_file != nullptr) {
         glDisable(GL_TEXTURE_2D);
     }
 }
 
-void drawTriangle(int objIndex, double r, double g, double b, float* vertices, const char* texture_file = nullptr) {
-    PhysicsObject& obj = physicsObjects[objIndex];
-    
-    glColor3f(r, g, b);
+void drawTriangle(PhysicsObject& obj) {
+    glColor3f(obj.color[0], obj.color[1], obj.color[2]);
     float angle_rad = obj.angle * M_PI / -180.0f;
     
-    if (texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(texture_file);
+    if (obj.texture_file != nullptr) {
+        GLuint textureID = loadTextureFromFile(obj.texture_file);
         if (textureID != 0) {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, textureID);
@@ -212,29 +310,31 @@ void drawTriangle(int objIndex, double r, double g, double b, float* vertices, c
     float texCoords[6] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f};
     
     for (int i = 0; i < 3; i++) {
-        float point_x = vertices[i*2] * obj.size;
-        float point_y = vertices[i*2+1] * obj.size;
+        float point_x = obj.params.triangle.vertices[i*2] * obj.size;
+        float point_y = obj.params.triangle.vertices[i*2+1] * obj.size;
         rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
         
-        if (texture_file != nullptr) {
+        if (obj.texture_file != nullptr) {
             glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
         }
         glVertex2f(obj.x + point_x, obj.y + point_y);
     }
     glEnd();
     
-    if (texture_file != nullptr) {
+    if (obj.texture_file != nullptr) {
         glDisable(GL_TEXTURE_2D);
     }
 }
 
-// Функции для старого стиля вызова (как было изначально)
+// Функции для создания объектов с физикой (старый стиль)
 void square(float local_size, float x, float y, double r, double g, double b, 
             float rotate, float* vertices, bool gravity, bool collision, 
             bool is_static = false, const char* texture_file = nullptr) {
     
-    int objIndex = createSquareObject(x, y, local_size, rotate, gravity, collision, is_static);
-    drawSquare(objIndex, r, g, b, vertices, texture_file);
+    createSquare(x, y, local_size, rotate, 
+                r, g, b,
+                vertices, gravity, collision, 
+                is_static, texture_file);
 }
 
 void circle(float local_size, float x, float y, double r, double g, double b, 
@@ -242,109 +342,128 @@ void circle(float local_size, float x, float y, double r, double g, double b,
             int slices, int loops, bool gravity, bool collision, 
             const char* texture_file = nullptr) {
     
-    int objIndex = createCircleObject(x, y, outer_radius * local_size, gravity, collision);
-    physicsObjects[objIndex].angle = rotate;
-    drawCircle(objIndex, r, g, b, outer_radius, inner_radius, slices, loops, texture_file);
+    createCircle(x, y, local_size, rotate,
+                r, g, b,
+                outer_radius, inner_radius, 
+                slices, loops, gravity, collision,
+                texture_file);
 }
 
 void triangle(float local_size, float x, float y, double r, double g, double b, 
               float rotate, float* vertices, bool gravity, bool collision, 
               const char* texture_file = nullptr) {
     
-    int objIndex = createSquareObject(x, y, local_size, rotate, gravity, collision);
-    drawTriangle(objIndex, r, g, b, vertices, texture_file);
+    createTriangle(x, y, local_size, rotate,
+                  r, g, b,
+                  vertices, gravity, collision,
+                  texture_file);
 }
 
-// Проверка коллизий
-void checkCollisions() {
+// Обновление физики
+void updatePhysics(float dt) {
+    // Обновляем все объекты
+    for (auto& obj : physicsObjects) {
+        if (obj.is_static) continue;
+        
+        // Гравитация
+        if (obj.has_gravity) {
+            obj.velocity_y += GRAVITY * dt;
+        }
+        
+        // Трение
+        obj.velocity_x *= FRICTION;
+        obj.velocity_y *= FRICTION;
+        
+        // Обновляем позицию
+        obj.x += obj.velocity_x * dt;
+        obj.y += obj.velocity_y * dt;
+        
+        // Проверка границ экрана
+        const float boundary = 4.0f;
+        if (obj.has_collision) {
+            if (obj.x - obj.radius < -boundary) {
+                obj.x = -boundary + obj.radius;
+                obj.velocity_x = -obj.velocity_x * BOUNCE_FACTOR;
+            }
+            if (obj.x + obj.radius > boundary) {
+                obj.x = boundary - obj.radius;
+                obj.velocity_x = -obj.velocity_x * BOUNCE_FACTOR;
+            }
+            if (obj.y - obj.radius < -boundary) {
+                obj.y = -boundary + obj.radius;
+                obj.velocity_y = -obj.velocity_y * BOUNCE_FACTOR;
+            }
+            if (obj.y + obj.radius > boundary) {
+                obj.y = boundary - obj.radius;
+                obj.velocity_y = -obj.velocity_y * BOUNCE_FACTOR;
+            }
+        }
+    }
+    
+    // Проверка коллизий между объектами
     for (size_t i = 0; i < physicsObjects.size(); i++) {
-        if (!physicsObjects[i].has_collision || physicsObjects[i].is_static) continue;
+        PhysicsObject& obj1 = physicsObjects[i];
+        if (!obj1.has_collision || obj1.is_static) continue;
         
         for (size_t j = i + 1; j < physicsObjects.size(); j++) {
-            if (!physicsObjects[j].has_collision) continue;
+            PhysicsObject& obj2 = physicsObjects[j];
+            if (!obj2.has_collision) continue;
             
-            float dx = physicsObjects[i].x - physicsObjects[j].x;
-            float dy = physicsObjects[i].y - physicsObjects[j].y;
+            float dx = obj1.x - obj2.x;
+            float dy = obj1.y - obj2.y;
             float distance = sqrt(dx*dx + dy*dy);
-            float minDistance = physicsObjects[i].radius + physicsObjects[j].radius;
+            float minDistance = obj1.radius + obj2.radius;
             
-            if (distance < minDistance && distance > 0) {
+            if (distance < minDistance && distance > 0.001f) {
                 // Коллизия обнаружена
                 float overlap = minDistance - distance;
                 float nx = dx / distance;
                 float ny = dy / distance;
                 
                 // Разделяем объекты
-                if (!physicsObjects[i].is_static) {
-                    physicsObjects[i].x += nx * overlap * 0.5f;
-                    physicsObjects[i].y += ny * overlap * 0.5f;
+                if (!obj1.is_static) {
+                    obj1.x += nx * overlap * 0.5f;
+                    obj1.y += ny * overlap * 0.5f;
                 }
-                if (!physicsObjects[j].is_static) {
-                    physicsObjects[j].x -= nx * overlap * 0.5f;
-                    physicsObjects[j].y -= ny * overlap * 0.5f;
+                if (!obj2.is_static) {
+                    obj2.x -= nx * overlap * 0.5f;
+                    obj2.y -= ny * overlap * 0.5f;
                 }
                 
-                // Отскок
-                if (!physicsObjects[i].is_static && !physicsObjects[j].is_static) {
-                    float relativeVelocityX = physicsObjects[i].velocity_x - physicsObjects[j].velocity_x;
-                    float relativeVelocityY = physicsObjects[i].velocity_y - physicsObjects[j].velocity_y;
+                // Отскок (только если оба не статичны)
+                if (!obj1.is_static && !obj2.is_static) {
+                    float relativeVelocityX = obj1.velocity_x - obj2.velocity_x;
+                    float relativeVelocityY = obj1.velocity_y - obj2.velocity_y;
                     float velocityAlongNormal = relativeVelocityX * nx + relativeVelocityY * ny;
                     
                     if (velocityAlongNormal < 0) {
-                        float bounce = BOUNCE_FACTOR;
-                        float impulse = -(1 + bounce) * velocityAlongNormal;
-                        impulse /= 2;
+                        float impulse = -(1 + BOUNCE_FACTOR) * velocityAlongNormal;
+                        impulse /= 2.0f;
                         
-                        physicsObjects[i].velocity_x += impulse * nx;
-                        physicsObjects[i].velocity_y += impulse * ny;
-                        physicsObjects[j].velocity_x -= impulse * nx;
-                        physicsObjects[j].velocity_y -= impulse * ny;
+                        obj1.velocity_x += impulse * nx;
+                        obj1.velocity_y += impulse * ny;
+                        obj2.velocity_x -= impulse * nx;
+                        obj2.velocity_y -= impulse * ny;
                     }
+                } else if (!obj1.is_static && obj2.is_static) {
+                    // Объект сталкивается со статичным объектом
+                    obj1.velocity_x = -obj1.velocity_x * BOUNCE_FACTOR;
+                    obj1.velocity_y = -obj1.velocity_y * BOUNCE_FACTOR;
                 }
             }
         }
     }
 }
 
-// Обновление физики
-void updatePhysics() {
-    for (auto& obj : physicsObjects) {
-        if (obj.is_static) continue;
-        
-        // Применяем гравитацию
-        if (obj.has_gravity) {
-            obj.velocity_y += GRAVITY;
-        }
-        
-        // Применяем трение
-        obj.velocity_x *= FRICTION;
-        obj.velocity_y *= FRICTION;
-        
-        // Обновляем позицию
-        obj.x += obj.velocity_x;
-        obj.y += obj.velocity_y;
-        
-        // Проверка границ экрана
-        const float boundary = 4.0f;
-        if (obj.x - obj.radius < -boundary) {
-            obj.x = -boundary + obj.radius;
-            obj.velocity_x = -obj.velocity_x * BOUNCE_FACTOR;
-        }
-        if (obj.x + obj.radius > boundary) {
-            obj.x = boundary - obj.radius;
-            obj.velocity_x = -obj.velocity_x * BOUNCE_FACTOR;
-        }
-        if (obj.y - obj.radius < -boundary) {
-            obj.y = -boundary + obj.radius;
-            obj.velocity_y = -obj.velocity_y * BOUNCE_FACTOR;
-        }
-        if (obj.y + obj.radius > boundary) {
-            obj.y = boundary - obj.radius;
-            obj.velocity_y = -obj.velocity_y * BOUNCE_FACTOR;
-        }
+// Обновление управляемого объекта
+void updateControlledObject() {
+    if (controlled_object_id >= 0 && controlled_object_id < physicsObjects.size()) {
+        PhysicsObject& obj = physicsObjects[controlled_object_id];
+        obj.x = center_x;
+        obj.y = center_y;
+        obj.size = figure_size;
+        obj.angle = global_angle;
     }
-    
-    checkCollisions();
 }
 
 void displayWrapper() {
@@ -353,24 +472,23 @@ void displayWrapper() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     
-    // Очищаем объекты для нового кадра
-    physicsObjects.clear();
+    // Обновляем управляемый объект
+    updateControlledObject();
     
-    // Рисуем объекты с физикой (старый стиль вызова)
-    square(figure_size, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, global_angle, 
-           (float[]){-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f}, 
-           true, true, false, "src/god_png.png");
-    
-    circle(figure_size, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 
-           1.0f, 0.2f, global_angle, 7, 1, true, 0, "src/diskriminant.png");
-    
-    triangle(figure_size, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, global_angle, 
-             (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f}, true, 0, "src/penza.png");
-    
-    // Статичная платформа
-    square(3.0f, 0.0f, -2.0f, 0.5f, 0.5f, 0.5f, 0.0f, 
-           (float[]){-0.5f, -0.1f, 0.5f, -0.1f, 0.5f, 0.1f, -0.5f, 0.1f}, 
-           false, true, true, "src/prime.png");
+    // Рисуем все объекты
+    for (auto& obj : physicsObjects) {
+        switch (obj.type) {
+            case SQUARE_OBJ:
+                drawSquare(obj);
+                break;
+            case CIRCLE_OBJ:
+                drawCircle(obj);
+                break;
+            case TRIANGLE_OBJ:
+                drawTriangle(obj);
+                break;
+        }
+    }
     
     glutSwapBuffers();
 }
@@ -460,8 +578,18 @@ void keyboardDown(unsigned char key, int, int) {
             glutPostRedisplay();
             break;
         case ' ': // Пробел - прыжок
-            if (!physicsObjects.empty()) {
-                physicsObjects[0].velocity_y = 0.1f;
+            if (controlled_object_id >= 0 && controlled_object_id < physicsObjects.size()) {
+                physicsObjects[controlled_object_id].velocity_y = 0.1f;
+            }
+            break;
+        case '1': // Телепортация управляемого объекта
+            if (controlled_object_id >= 0 && controlled_object_id < physicsObjects.size()) {
+                physicsObjects[controlled_object_id].x = 0;
+                physicsObjects[controlled_object_id].y = 3;
+                center_x = 0;
+                center_y = 3;
+                physicsObjects[controlled_object_id].velocity_x = 0;
+                physicsObjects[controlled_object_id].velocity_y = 0;
             }
             break;
     }
@@ -473,10 +601,44 @@ void keyboardUp(unsigned char key, int, int) {
 }
 
 void timer(int value) {
+    static int last_time = glutGet(GLUT_ELAPSED_TIME);
+    int current_time = glutGet(GLUT_ELAPSED_TIME);
+    float dt = (current_time - last_time) / 1000.0f; // В секундах
+    last_time = current_time;
+    
     processMovement();
-    updatePhysics();
+    updatePhysics(dt);
     glutPostRedisplay();
     glutTimerFunc(16, timer, 0);
+}
+
+// Инициализация объектов (вызывается один раз)
+void initObjects() {
+    physicsObjects.clear();
+    
+    // Управляемый квадрат (первый объект)
+    controlled_object_id = createSquare(center_x, center_y, figure_size, global_angle,
+                1.0f, 1.0f, 1.0f,
+                (float[]){-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f},
+                false, true, false, "src/god_png.png");
+    
+    // Круг с гравитацией и коллизией
+    createCircle(1.5f, 2.0f, 1.0f, 0.0f,
+                1.0f, 1.0f, 1.0f,
+                1.0f, 0.2f, 7, 1,
+                true, true, "src/diskriminant.png");
+    
+    // Треугольник с гравитацией и коллизией
+    createTriangle(-1.5f, 2.0f, 1.0f, 0.0f,
+                  1.0f, 1.0f, 1.0f,
+                  (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},
+                  true, true, "src/penza.png");
+    
+    // Статичная платформа
+    createSquare(0.0f, -2.0f, 3.0f, 0.0f,
+                0.5f, 0.5f, 0.5f,
+                (float[]){-0.5f, -0.1f, 0.5f, -0.1f, 0.5f, 0.1f, -0.5f, 0.1f},
+                false, true, true, "src/prime.png");
 }
 
 int main(int argc, char** argv) {
@@ -484,12 +646,16 @@ int main(int argc, char** argv) {
     
     glEnable(GL_TEXTURE_2D);
     
+    // Инициализация объектов один раз
+    initObjects();
+    
     glutDisplayFunc(displayWrapper);
     glutKeyboardFunc(keyboardDown);
     glutKeyboardUpFunc(keyboardUp);
     glutTimerFunc(0, timer, 0);
     glutMainLoop();
     
+    // Очистка
     for (auto& texture : textureCache) {
         glDeleteTextures(1, &texture.second);
     }
