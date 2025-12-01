@@ -222,7 +222,7 @@ void displayWrapper() {
                                                                                        0.5f, -0.5f, 
                                                                                        0.5f, 0.5f, 
                                                                                        -0.5f, 0.5f}, "src/god_png.png");
-    circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 115, 1, "src/diskriminant.png");
+    circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 7, 1, "src/diskriminant.png");
     triangle(figure_size, center_x*2, center_y*2, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},"src/penza.png");
     
     glutSwapBuffers();

@@ -5,6 +5,7 @@
 #include <GL/glu.h>
 #include <vector>
 #include <SOIL/SOIL.h>
+#include <ctime>
 
 using namespace std;
 
@@ -12,7 +13,7 @@ bool isFullscreen = 0;
 
 int global_width = 500;
 int global_height = 500;
-float figure_size = 1.0f;
+float figure_size = 0.1f;
 float center_x = 0.0f;
 float center_y = 0.0f;
 float global_angle = 0.0f;
@@ -20,6 +21,18 @@ float global_angle = 0.0f;
 map<string, GLuint> textureCache;
 
 map<unsigned char, bool> keyStates;
+
+clock_t start = clock();
+
+int inner_timer(){
+    while(true){
+        clock_t end = clock();
+        double elapsed_time = static_cast<double>(end - start) / CLOCKS_PER_SEC;
+        //std::cout <<int(elapsed_time)<< std::endl;
+        return int(elapsed_time);
+    }
+    return 0;
+}
 
 GLuint loadTextureFromFile(const char* filename) {
     // Проверяем, есть ли текстура в кэше
@@ -121,9 +134,12 @@ void triangle(float local_size, float x, float y, double r, double g, double b, 
     }
 }
 
-void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, const char* texture_file = nullptr) {
+void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, bool gravity, bool colision, const char* texture_file = nullptr) {
     glColor3f(r, g, b);
-
+    if(gravity==1){
+        int t = inner_timer();
+        y -= float(t)/10;
+    }
     // Преобразуем угол в радианы
     float angle_rad = rotate * M_PI / -180.0f;
 
@@ -218,10 +234,14 @@ void displayWrapper() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    square(figure_size, center_x, center_y, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f}, "src/god_png.png");
-    circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 115, 1, "src/diskriminant.png");
+    clock_t start = clock();
+
+    square(figure_size, center_x, center_y, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f},1,1, "src/god_png.png");
+    circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 7, 1, "src/diskriminant.png");
     triangle(figure_size, center_x*2, center_y*2, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},"src/penza.png");
     
+    square(figure_size, 0, -5, 1.0f, 1.0f, 1.0f, 0, (float[]){-250.5f, -5.5f, 250.5f, -5.5f, 250.5f, 0.5f, -250.5f, 0.5f},0,1, "src/prime.png");
+
     glutSwapBuffers();
 }
 
@@ -263,14 +283,14 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a) {
 void processMovement() {
     bool moved = false;
 
-    if (keyStates['w'] || keyStates['W']) {
-        figure_size += 0.01f;
-        moved = true;
-    }
-    if (keyStates['s'] || keyStates['S']) {
-        figure_size -= 0.01f;
-        moved = true;
-    }
+    // if (keyStates['w'] || keyStates['W']) {
+    //     figure_size += 0.01f;
+    //     moved = true;
+    // }
+    // if (keyStates['s'] || keyStates['S']) {
+    //     figure_size -= 0.01f;
+    //     moved = true;
+    // }
     if (keyStates['y'] || keyStates['Y']) {
         center_y += 0.01f;
         moved = true;
@@ -287,14 +307,14 @@ void processMovement() {
         center_x += 0.01f;
         moved = true;
     }
-    if (keyStates['a'] || keyStates['A']) {
-        global_angle -= 1.0f;
-        moved = true;
-    }
-    if (keyStates['d'] || keyStates['D']) {
-        global_angle += 1.0f;
-        moved = true;
-    }
+    // if (keyStates['a'] || keyStates['A']) {
+    //     global_angle -= 1.0f;
+    //     moved = true;
+    // }
+    // if (keyStates['d'] || keyStates['D']) {
+    //     global_angle += 1.0f;
+    //     moved = true;
+    // }
 
     if (moved) {
         limiter();
