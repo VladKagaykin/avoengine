@@ -44,7 +44,7 @@ square(figure_size, center_x, center_y, 1.0f, 1.0f, 1.0f, global_angle, (float[]
 
 ### circle()
 ```
-circle(float local_size, float x, float y, double r, double g, double b, float radius,float in_radius, float rotate, int slices, int loops, const char* texture_file = nullptr)
+circle(float local_size, float x, float y, double r, double g, double b, float radius, float in_radius, float rotate, int slices, int loops, const char* texture_file = nullptr)
 ```
 
 `local_size` - size
@@ -61,7 +61,7 @@ circle(float local_size, float x, float y, double r, double g, double b, float r
 
 `slices` - slices
 
-`loops` - loops(idk whts ts)
+`loops` - loops (number of concentric rings)
 
 `texture_file` - texture, also may not be specified
 
@@ -93,16 +93,20 @@ void displayWrapper() {
 
 ### setup_display()
 ```
-setup_display(int* argc, char** argv, float r, float g, float b, float a)
+setup_display(int* argc, char** argv, float r, float g, float b, float a, const char* name, int w, int h)
 ```
 
-`argc, argv` - dont touch, dont touch
+`argc, argv` - command line arguments (pass &argc, argv)
 
-`r, g, b, a` - color(r,g,b,alpha channel)
+`r, g, b, a` - background color (r,g,b,alpha)
+
+`name` - window title
+
+`w, h` - window width and height
 
 **Example:**
 ```c
-setup_display(&argc, argv, 1.0f, 1.0f, 1.0f, 1.0f);
+setup_display(&argc, argv, 0.2f, 0.2f, 0.2f, 1.0f, "My Game", 800, 600);
 ```
 
 ## Main Function
@@ -110,7 +114,7 @@ setup_display(&argc, argv, 1.0f, 1.0f, 1.0f, 1.0f);
 **Example:**
 ```c
 int main(int argc, char** argv) {
-    setup_display(&argc, argv, 0.2f, 0.2f, 0.2f, 1.0f);
+    setup_display(&argc, argv, 0.2f, 0.2f, 0.2f, 1.0f, "My Game", 800, 600);
     
     glEnable(GL_TEXTURE_2D);
     
