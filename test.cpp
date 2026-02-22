@@ -165,35 +165,25 @@ void triangle(float scale, float center_x, float center_y, double r, double g, d
 }
 
 void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, const char* texture_file, vector<const char*> textures, bool condition) {
-    
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
-
     if (texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(texture_file);
         glEnable(GL_TEXTURE_2D);
+        const char* texture_to_load = texture_file;
+        if (!textures.empty() && condition) {
+            int count_textures = textures.size();
+            int frame_tick = max_tick / count_textures;
+            int frame_index = std::min(tick / frame_tick, count_textures - 1);
+            texture_to_load = textures[frame_index];
+        }
+        GLuint textureID = loadTextureFromFile(texture_to_load);
         if (textureID != 0) {
-            if(textures.size() != 0){
-                if(condition){
-                    int count_textures = textures.size();
-                    int frame_tick = max_tick / count_textures;
-                    int frame_index = tick / frame_tick;
-                    if (frame_index >= count_textures) frame_index = count_textures - 1;
-                    textureID = loadTextureFromFile(textures[frame_index]);
-                    glBindTexture(GL_TEXTURE_2D, textureID);
-                }else{
-                    textureID = loadTextureFromFile(texture_file);
-                    glBindTexture(GL_TEXTURE_2D, textureID);
-                }
-            }else{
-                glBindTexture(GL_TEXTURE_2D, textureID);
-            }
+            glBindTexture(GL_TEXTURE_2D, textureID);
         }
     } else {
         glDisable(GL_TEXTURE_2D);
     }
 
-    glutPostRedisplay();
     glBegin(GL_QUADS);
     
     float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
@@ -273,7 +263,7 @@ void displayWrapper() {
                                                                                        -0.5f, 0.5f}, "src/god_png.png",anim_textures,is_moving);
     // circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 7, 1, "src/diskriminant.png");
     // triangle(figure_size, center_x*2, center_y*2, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},"src/penza.png");
-    
+    glutPostRedisplay();
     glutSwapBuffers();
 }
 
