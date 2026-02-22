@@ -1,664 +1,627 @@
-#include <GL/glut.h>
+#include <vulkan/vulkan.h>
+#include <GLFW/glfw3.h>
 #include <iostream>
-#include <map>
-#include <cmath>
-#include <GL/glu.h>
 #include <vector>
-#include <SOIL/SOIL.h>
+#include <cstring>
+#include <stdexcept>
+#include <array>
+#include <algorithm>
+#include <fstream>
 
-using namespace std;
+const uint32_t WIDTH = 800;
+const uint32_t HEIGHT = 600;
 
-bool isFullscreen = false;
+// Вершины квадрата: позиция (x,y,z) и цвет (r,g,b)
+const std::vector<float> vertices = {
+    // треугольник 1
+    -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f,
+     0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 0.0f,
+    -0.5f,  0.5f, 0.0f, 0.0f, 0.0f, 1.0f,
+    // треугольник 2
+     0.5f, -0.5f, 0.0f, 0.0f, 1.0f, 0.0f,
+     0.5f,  0.5f, 0.0f, 1.0f, 1.0f, 0.0f,
+    -0.5f,  0.5f, 0.0f, 0.0f, 0.0f, 1.0f
+};
 
-int global_width = 500;
-int global_height = 500;
-float figure_size = 1.0f;
-float center_x = 0.0f;
-float center_y = 0.0f;
-float global_angle = 0.0f;
+class HelloTriangleApp {
+public:
+    void run() {
+        initWindow();
+        initVulkan();
+        mainLoop();
+        cleanup();
+    }
 
-map<string, GLuint> textureCache;
-map<unsigned char, bool> keyStates;
+private:
+    GLFWwindow* window;
+    VkInstance instance;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice device;
+    VkQueue graphicsQueue;
+    VkSurfaceKHR surface;
+    VkSwapchainKHR swapChain;
+    std::vector<VkImage> swapChainImages;
+    VkFormat swapChainImageFormat;
+    VkExtent2D swapChainExtent;
+    std::vector<VkImageView> swapChainImageViews;
+    VkRenderPass renderPass;
+    VkPipelineLayout pipelineLayout;
+    VkPipeline graphicsPipeline;
+    std::vector<VkFramebuffer> swapChainFramebuffers;
+    VkCommandPool commandPool;
+    VkCommandBuffer commandBuffer;
+    VkSemaphore imageAvailableSemaphore;
+    VkSemaphore renderFinishedSemaphore;
+    VkFence inFlightFence;
+    VkBuffer vertexBuffer;
+    VkDeviceMemory vertexBufferMemory;
 
-// Константы физики
-const float GRAVITY = -2.0000f;
-const float FRICTION = 0.99f;
-const float BOUNCE_FACTOR = 0.3f;
+    uint32_t graphicsQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 
-// Типы объектов
-enum ObjectType { SQUARE_OBJ, CIRCLE_OBJ, TRIANGLE_OBJ };
+    void initWindow() {
+        glfwInit();
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Square", nullptr, nullptr);
+    }
 
-// Структура для физического объекта
-struct PhysicsObject {
-    ObjectType type;
-    float x, y;               // Позиция
-    float velocity_x, velocity_y; // Скорость
-    float size;               // Размер
-    float angle;              // Угол поворота
-    bool has_gravity;         // Подчиняется гравитации
-    bool has_collision;       // Имеет коллизии
-    bool is_static;           // Статичный объект
-    float radius;             // Радиус для коллизий
-    
-    // Параметры для рисования
-    float color[3];           // Цвет
-    const char* texture_file; // Текстура
-    
-    // Параметры формы
-    union {
-        struct {
-            float vertices[8];
-        } square;
-        struct {
-            float outer_radius, inner_radius;
-            int slices, loops;
-        } circle;
-        struct {
-            float vertices[6];
-        } triangle;
-    } params;
-    
-    // Конструктор
-    PhysicsObject() : type(SQUARE_OBJ), x(0), y(0), velocity_x(0), velocity_y(0), 
-                     size(1), angle(0), has_gravity(false), has_collision(false),
-                     is_static(false), radius(0.5f), texture_file(nullptr) {
-        color[0] = color[1] = color[2] = 1.0f;
+    // --- Вспомогательная функция для чтения файла ---
+    static std::vector<char> readFile(const std::string& filename) {
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+        if (!file.is_open()) {
+            throw std::runtime_error("failed to open file: " + filename);
+        }
+        size_t fileSize = (size_t)file.tellg();
+        std::vector<char> buffer(fileSize);
+        file.seekg(0);
+        file.read(buffer.data(), fileSize);
+        file.close();
+        return buffer;
+    }
+
+    void initVulkan() {
+        createInstance();
+        createSurface();
+        pickPhysicalDevice();
+        createLogicalDevice();
+        createSwapChain();
+        createImageViews();
+        createRenderPass();
+        createGraphicsPipeline();  // теперь читает vert.spv и frag.spv
+        createFramebuffers();
+        createVertexBuffer();
+        createCommandPool();
+        createCommandBuffer();
+        createSyncObjects();
+    }
+
+    void createInstance() {
+        VkApplicationInfo appInfo{};
+        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+        appInfo.pApplicationName = "Hello Square";
+        appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+        appInfo.pEngineName = "No Engine";
+        appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+        appInfo.apiVersion = VK_API_VERSION_1_0;
+
+        uint32_t glfwExtensionCount = 0;
+        const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+        VkInstanceCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        createInfo.pApplicationInfo = &appInfo;
+        createInfo.enabledExtensionCount = glfwExtensionCount;
+        createInfo.ppEnabledExtensionNames = glfwExtensions;
+
+        if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS)
+            throw std::runtime_error("failed to create instance!");
+    }
+
+    void createSurface() {
+        if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS)
+            throw std::runtime_error("failed to create window surface!");
+    }
+
+    void pickPhysicalDevice() {
+        uint32_t deviceCount = 0;
+        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+        if (deviceCount == 0)
+            throw std::runtime_error("no Vulkan GPU!");
+
+        std::vector<VkPhysicalDevice> devices(deviceCount);
+        vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+        for (const auto& device : devices) {
+            uint32_t queueFamilyCount = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+            std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+            vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+            for (uint32_t i = 0; i < queueFamilies.size(); i++) {
+                VkBool32 presentSupport = false;
+                vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+                if (queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && presentSupport) {
+                    physicalDevice = device;
+                    graphicsQueueFamilyIndex = i;
+                    return;
+                }
+            }
+        }
+        throw std::runtime_error("failed to find suitable GPU!");
+    }
+
+    void createLogicalDevice() {
+        float queuePriority = 1.0f;
+        VkDeviceQueueCreateInfo queueCreateInfo{};
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo.queueFamilyIndex = graphicsQueueFamilyIndex;
+        queueCreateInfo.queueCount = 1;
+        queueCreateInfo.pQueuePriorities = &queuePriority;
+
+        const std::vector<const char*> deviceExtensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+
+        VkDeviceCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        createInfo.queueCreateInfoCount = 1;
+        createInfo.pQueueCreateInfos = &queueCreateInfo;
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+        createInfo.ppEnabledExtensionNames = deviceExtensions.data();
+
+        if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS)
+            throw std::runtime_error("failed to create logical device!");
+
+        vkGetDeviceQueue(device, graphicsQueueFamilyIndex, 0, &graphicsQueue);
+    }
+
+    void createSwapChain() {
+        VkSurfaceCapabilitiesKHR capabilities;
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &capabilities);
+
+        uint32_t formatCount;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
+        std::vector<VkSurfaceFormatKHR> formats(formatCount);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data());
+
+        VkSurfaceFormatKHR surfaceFormat = formats[0];
+        for (const auto& f : formats) {
+            if (f.format == VK_FORMAT_B8G8R8A8_SRGB && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                surfaceFormat = f;
+                break;
+            }
+        }
+        swapChainImageFormat = surfaceFormat.format;
+
+        VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+
+        if (capabilities.currentExtent.width != UINT32_MAX) {
+            swapChainExtent = capabilities.currentExtent;
+        } else {
+            swapChainExtent.width = std::clamp(WIDTH, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+            swapChainExtent.height = std::clamp(HEIGHT, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+        }
+
+        uint32_t imageCount = capabilities.minImageCount + 1;
+        if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount)
+            imageCount = capabilities.maxImageCount;
+
+        VkSwapchainCreateInfoKHR createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        createInfo.surface = surface;
+        createInfo.minImageCount = imageCount;
+        createInfo.imageFormat = swapChainImageFormat;
+        createInfo.imageColorSpace = surfaceFormat.colorSpace;
+        createInfo.imageExtent = swapChainExtent;
+        createInfo.imageArrayLayers = 1;
+        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        createInfo.preTransform = capabilities.currentTransform;
+        createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        createInfo.presentMode = presentMode;
+        createInfo.clipped = VK_TRUE;
+
+        if (vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain) != VK_SUCCESS)
+            throw std::runtime_error("failed to create swap chain!");
+
+        vkGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr);
+        swapChainImages.resize(imageCount);
+        vkGetSwapchainImagesKHR(device, swapChain, &imageCount, swapChainImages.data());
+    }
+
+    void createImageViews() {
+        swapChainImageViews.resize(swapChainImages.size());
+        for (size_t i = 0; i < swapChainImages.size(); i++) {
+            VkImageViewCreateInfo createInfo{};
+            createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            createInfo.image = swapChainImages[i];
+            createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            createInfo.format = swapChainImageFormat;
+            createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            createInfo.subresourceRange.baseMipLevel = 0;
+            createInfo.subresourceRange.levelCount = 1;
+            createInfo.subresourceRange.baseArrayLayer = 0;
+            createInfo.subresourceRange.layerCount = 1;
+
+            if (vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS)
+                throw std::runtime_error("failed to create image view!");
+        }
+    }
+
+    void createRenderPass() {
+        VkAttachmentDescription colorAttachment{};
+        colorAttachment.format = swapChainImageFormat;
+        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+        VkAttachmentReference colorAttachmentRef{};
+        colorAttachmentRef.attachment = 0;
+        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorAttachmentRef;
+
+        VkRenderPassCreateInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.attachmentCount = 1;
+        renderPassInfo.pAttachments = &colorAttachment;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+
+        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS)
+            throw std::runtime_error("failed to create render pass!");
+    }
+
+    void createGraphicsPipeline() {
+        // Загружаем скомпилированные шейдеры из файлов
+        auto vertCode = readFile("vert.spv");
+        auto fragCode = readFile("frag.spv");
+
+        VkShaderModule vertModule, fragModule;
+        VkShaderModuleCreateInfo moduleInfo{};
+        moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+
+        moduleInfo.codeSize = vertCode.size();
+        moduleInfo.pCode = reinterpret_cast<const uint32_t*>(vertCode.data());
+        if (vkCreateShaderModule(device, &moduleInfo, nullptr, &vertModule) != VK_SUCCESS)
+            throw std::runtime_error("failed to create vertex shader module!");
+
+        moduleInfo.codeSize = fragCode.size();
+        moduleInfo.pCode = reinterpret_cast<const uint32_t*>(fragCode.data());
+        if (vkCreateShaderModule(device, &moduleInfo, nullptr, &fragModule) != VK_SUCCESS)
+            throw std::runtime_error("failed to create fragment shader module!");
+
+        VkPipelineShaderStageCreateInfo vertStageInfo{};
+        vertStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertStageInfo.module = vertModule;
+        vertStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragStageInfo{};
+        fragStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragStageInfo.module = fragModule;
+        fragStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {vertStageInfo, fragStageInfo};
+
+        // Vertex input
+        VkVertexInputBindingDescription bindingDesc{};
+        bindingDesc.binding = 0;
+        bindingDesc.stride = 6 * sizeof(float);
+        bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        std::array<VkVertexInputAttributeDescription, 2> attributeDescs{};
+        attributeDescs[0].location = 0;
+        attributeDescs[0].binding = 0;
+        attributeDescs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescs[0].offset = 0;
+        attributeDescs[1].location = 1;
+        attributeDescs[1].binding = 0;
+        attributeDescs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+        attributeDescs[1].offset = 3 * sizeof(float);
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
+        vertexInputInfo.vertexAttributeDescriptionCount = attributeDescs.size();
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescs.data();
+
+        // Input assembly
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        // Viewport and scissor (dynamic)
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+
+        // Rasterizer
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.lineWidth = 1.0f;
+
+        // Multisampling
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Color blending
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        // Dynamic states
+        std::vector<VkDynamicState> dynamicStates = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dynamicState{};
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = dynamicStates.size();
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        // Pipeline layout
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
+            throw std::runtime_error("failed to create pipeline layout!");
+
+        // Graphics pipeline
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = pipelineLayout;
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS)
+            throw std::runtime_error("failed to create graphics pipeline!");
+
+        // Cleanup shader modules
+        vkDestroyShaderModule(device, fragModule, nullptr);
+        vkDestroyShaderModule(device, vertModule, nullptr);
+    }
+
+    void createFramebuffers() {
+        swapChainFramebuffers.resize(swapChainImageViews.size());
+        for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+            VkImageView attachments[] = {swapChainImageViews[i]};
+
+            VkFramebufferCreateInfo framebufferInfo{};
+            framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            framebufferInfo.renderPass = renderPass;
+            framebufferInfo.attachmentCount = 1;
+            framebufferInfo.pAttachments = attachments;
+            framebufferInfo.width = swapChainExtent.width;
+            framebufferInfo.height = swapChainExtent.height;
+            framebufferInfo.layers = 1;
+
+            if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS)
+                throw std::runtime_error("failed to create framebuffer!");
+        }
+    }
+
+    void createVertexBuffer() {
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = sizeof(vertices[0]) * vertices.size();
+        bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        if (vkCreateBuffer(device, &bufferInfo, nullptr, &vertexBuffer) != VK_SUCCESS)
+            throw std::runtime_error("failed to create vertex buffer!");
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device, vertexBuffer, &memRequirements);
+
+        VkPhysicalDeviceMemoryProperties memProperties;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
+
+        uint32_t memoryTypeIndex = VK_MAX_MEMORY_TYPES;
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            if ((memRequirements.memoryTypeBits & (1 << i)) &&
+                (memProperties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+                memoryTypeIndex = i;
+                break;
+            }
+        }
+        if (memoryTypeIndex == VK_MAX_MEMORY_TYPES)
+            throw std::runtime_error("failed to find suitable memory type!");
+
+        VkMemoryAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+        if (vkAllocateMemory(device, &allocInfo, nullptr, &vertexBufferMemory) != VK_SUCCESS)
+            throw std::runtime_error("failed to allocate vertex buffer memory!");
+
+        vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+
+        void* data;
+        vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size, 0, &data);
+        memcpy(data, vertices.data(), (size_t)bufferInfo.size);
+        vkUnmapMemory(device, vertexBufferMemory);
+    }
+
+    void createCommandPool() {
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        poolInfo.queueFamilyIndex = graphicsQueueFamilyIndex;
+
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
+            throw std::runtime_error("failed to create command pool!");
+    }
+
+    void createCommandBuffer() {
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.commandPool = commandPool;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandBufferCount = 1;
+
+        if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS)
+            throw std::runtime_error("failed to allocate command buffer!");
+    }
+
+    void recordCommandBuffer(uint32_t imageIndex) {
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+        if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
+            throw std::runtime_error("failed to begin command buffer!");
+
+        VkRenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderPassInfo.renderPass = renderPass;
+        renderPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
+        renderPassInfo.renderArea.offset = {0, 0};
+        renderPassInfo.renderArea.extent = swapChainExtent;
+
+        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearColor;
+
+        vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = (float)swapChainExtent.width;
+        viewport.height = (float)swapChainExtent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = swapChainExtent;
+        vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+        VkBuffer vertexBuffers[] = {vertexBuffer};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+        vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+
+        vkCmdEndRenderPass(commandBuffer);
+
+        if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
+            throw std::runtime_error("failed to record command buffer!");
+    }
+
+    void createSyncObjects() {
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+        if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS ||
+            vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS ||
+            vkCreateFence(device, &fenceInfo, nullptr, &inFlightFence) != VK_SUCCESS)
+            throw std::runtime_error("failed to create synchronization objects!");
+    }
+
+    void mainLoop() {
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            drawFrame();
+        }
+        vkDeviceWaitIdle(device);
+    }
+
+    void drawFrame() {
+        vkWaitForFences(device, 1, &inFlightFence, VK_TRUE, UINT64_MAX);
+        vkResetFences(device, 1, &inFlightFence);
+
+        uint32_t imageIndex;
+        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        if (result != VK_SUCCESS)
+            throw std::runtime_error("failed to acquire swap chain image!");
+
+        vkResetCommandBuffer(commandBuffer, 0);
+        recordCommandBuffer(imageIndex);
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        submitInfo.waitSemaphoreCount = 1;
+        submitInfo.pWaitSemaphores = &imageAvailableSemaphore;
+        submitInfo.pWaitDstStageMask = waitStages;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &renderFinishedSemaphore;
+
+        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFence) != VK_SUCCESS)
+            throw std::runtime_error("failed to submit draw command buffer!");
+
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores = &renderFinishedSemaphore;
+        presentInfo.swapchainCount = 1;
+        presentInfo.pSwapchains = &swapChain;
+        presentInfo.pImageIndices = &imageIndex;
+
+        result = vkQueuePresentKHR(graphicsQueue, &presentInfo);
+        if (result != VK_SUCCESS)
+            throw std::runtime_error("failed to present swap chain image!");
+    }
+
+    void cleanup() {
+        vkDestroyBuffer(device, vertexBuffer, nullptr);
+        vkFreeMemory(device, vertexBufferMemory, nullptr);
+        vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
+        vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+        vkDestroyFence(device, inFlightFence, nullptr);
+        vkDestroyCommandPool(device, commandPool, nullptr);
+        for (auto fb : swapChainFramebuffers)
+            vkDestroyFramebuffer(device, fb, nullptr);
+        vkDestroyPipeline(device, graphicsPipeline, nullptr);
+        vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        vkDestroyRenderPass(device, renderPass, nullptr);
+        for (auto iv : swapChainImageViews)
+            vkDestroyImageView(device, iv, nullptr);
+        vkDestroySwapchainKHR(device, swapChain, nullptr);
+        vkDestroyDevice(device, nullptr);
+        vkDestroySurfaceKHR(instance, surface, nullptr);
+        vkDestroyInstance(instance, nullptr);
+        glfwDestroyWindow(window);
+        glfwTerminate();
     }
 };
 
-// Глобальный вектор объектов
-vector<PhysicsObject> physicsObjects;
-
-// ID управляемого объекта
-int controlled_object_id = -1;
-
-GLuint loadTextureFromFile(const char* filename) {
-    if (textureCache.find(filename) != textureCache.end()) {
-        return textureCache[filename];
+int main() {
+    HelloTriangleApp app;
+    try {
+        app.run();
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: " << e.what() << std::endl;
+        return EXIT_FAILURE;
     }
-    
-    GLuint textureID;
-    int width, height;
-    unsigned char* image = SOIL_load_image(filename, &width, &height, 0, SOIL_LOAD_RGB);
-    
-    if (!image) {
-        cout << "Ошибка загрузки текстуры: " << filename << endl;
-        textureCache[filename] = 0;
-        return 0;
-    }
-    
-    glGenTextures(1, &textureID);
-    glBindTexture(GL_TEXTURE_2D, textureID);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
-    SOIL_free_image_data(image);
-    textureCache[filename] = textureID;
-    return textureID;
-}
-
-void limiter() {
-    if (global_angle < 0.0f) global_angle += 360.0f;
-    if (global_angle >= 360.0f) global_angle -= 360.0f;
-}
-
-void rotatePoint(float& x, float& y, float center_x, float center_y, float angle_rad) {
-    float translated_x = x - center_x;
-    float translated_y = y - center_y;
-    float rotated_x = translated_x * cos(angle_rad) - translated_y * sin(angle_rad);
-    float rotated_y = translated_x * sin(angle_rad) + translated_y * cos(angle_rad);
-    x = rotated_x + center_x;
-    y = rotated_y + center_y;
-}
-
-// Функции для создания объектов (возвращают ID объекта)
-int createSquare(float x, float y, float size, float angle, 
-                float r, float g, float b,
-                float* vertices, bool gravity, bool collision, 
-                bool is_static = false, const char* texture_file = nullptr) {
-    
-    PhysicsObject obj;
-    obj.type = SQUARE_OBJ;
-    obj.x = x;
-    obj.y = y;
-    obj.size = size;
-    obj.angle = angle;
-    obj.color[0] = r;
-    obj.color[1] = g;
-    obj.color[2] = b;
-    obj.has_gravity = gravity;
-    obj.has_collision = collision;
-    obj.is_static = is_static;
-    obj.texture_file = texture_file;
-    
-    // Копируем вершины
-    for(int i = 0; i < 8; i++) {
-        obj.params.square.vertices[i] = vertices[i];
-    }
-    
-    // Рассчитываем радиус для коллизий
-    float half_width = fabs(vertices[0]) * size;
-    float half_height = fabs(vertices[1]) * size;
-    obj.radius = sqrt(half_width*half_width + half_height*half_height) * 0.5f;
-    
-    physicsObjects.push_back(obj);
-    return physicsObjects.size() - 1;
-}
-
-int createCircle(float x, float y, float size, float angle,
-                float r, float g, float b,
-                float outer_radius, float inner_radius, 
-                int slices, int loops, bool gravity, bool collision,
-                const char* texture_file = nullptr) {
-    
-    PhysicsObject obj;
-    obj.type = CIRCLE_OBJ;
-    obj.x = x;
-    obj.y = y;
-    obj.size = size;
-    obj.angle = angle;
-    obj.color[0] = r;
-    obj.color[1] = g;
-    obj.color[2] = b;
-    obj.has_gravity = gravity;
-    obj.has_collision = collision;
-    obj.is_static = false;
-    obj.texture_file = texture_file;
-    
-    obj.params.circle.outer_radius = outer_radius;
-    obj.params.circle.inner_radius = inner_radius;
-    obj.params.circle.slices = slices;
-    obj.params.circle.loops = loops;
-    
-    // Радиус для коллизий
-    obj.radius = outer_radius * size;
-    
-    physicsObjects.push_back(obj);
-    return physicsObjects.size() - 1;
-}
-
-int createTriangle(float x, float y, float size, float angle,
-                  float r, float g, float b,
-                  float* vertices, bool gravity, bool collision,
-                  const char* texture_file = nullptr) {
-    
-    PhysicsObject obj;
-    obj.type = TRIANGLE_OBJ;
-    obj.x = x;
-    obj.y = y;
-    obj.size = size;
-    obj.angle = angle;
-    obj.color[0] = r;
-    obj.color[1] = g;
-    obj.color[2] = b;
-    obj.has_gravity = gravity;
-    obj.has_collision = collision;
-    obj.is_static = false;
-    obj.texture_file = texture_file;
-    
-    for(int i = 0; i < 6; i++) {
-        obj.params.triangle.vertices[i] = vertices[i];
-    }
-    
-    // Рассчитываем радиус для коллизий
-    float max_dist = 0;
-    for(int i = 0; i < 3; i++) {
-        float dx = vertices[i*2];
-        float dy = vertices[i*2+1];
-        float dist = sqrt(dx*dx + dy*dy) * size;
-        if(dist > max_dist) max_dist = dist;
-    }
-    obj.radius = max_dist * 0.5f;
-    
-    physicsObjects.push_back(obj);
-    return physicsObjects.size() - 1;
-}
-
-// Функции отрисовки объектов
-void drawSquare(PhysicsObject& obj) {
-    glColor3f(obj.color[0], obj.color[1], obj.color[2]);
-    float angle_rad = obj.angle * M_PI / -180.0f;
-    
-    if (obj.texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(obj.texture_file);
-        if (textureID != 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
-    } else {
-        glDisable(GL_TEXTURE_2D);
-    }
-    
-    glBegin(GL_QUADS);
-    float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
-    
-    for (int i = 0; i < 4; i++) {
-        float point_x = obj.params.square.vertices[i*2] * obj.size;
-        float point_y = obj.params.square.vertices[i*2+1] * obj.size;
-        rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
-        
-        if (obj.texture_file != nullptr) {
-            glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
-        }
-        glVertex2f(obj.x + point_x, obj.y + point_y);
-    }
-    glEnd();
-    
-    if (obj.texture_file != nullptr) {
-        glDisable(GL_TEXTURE_2D);
-    }
-}
-
-void drawCircle(PhysicsObject& obj) {
-    glColor3f(obj.color[0], obj.color[1], obj.color[2]);
-    
-    if (obj.texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(obj.texture_file);
-        if (textureID != 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
-    } else {
-        glDisable(GL_TEXTURE_2D);
-    }
-    
-    glPushMatrix();
-    glTranslatef(obj.x, obj.y, 0.0f);
-    glRotatef(-obj.angle, 0.0f, 0.0f, 1.0f);
-    
-    GLUquadric* quadric = gluNewQuadric();
-    gluQuadricTexture(quadric, GL_TRUE);
-    gluQuadricDrawStyle(quadric, GLU_FILL);
-    
-    glMatrixMode(GL_TEXTURE);
-    glPushMatrix();
-    glScalef(1.0f, -1.0f, 1.0f);
-    
-    gluDisk(quadric, 
-            obj.params.circle.inner_radius * obj.size,
-            obj.params.circle.outer_radius * obj.size,
-            obj.params.circle.slices,
-            obj.params.circle.loops);
-    
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-    gluDeleteQuadric(quadric);
-    glPopMatrix();
-    
-    if (obj.texture_file != nullptr) {
-        glDisable(GL_TEXTURE_2D);
-    }
-}
-
-void drawTriangle(PhysicsObject& obj) {
-    glColor3f(obj.color[0], obj.color[1], obj.color[2]);
-    float angle_rad = obj.angle * M_PI / -180.0f;
-    
-    if (obj.texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(obj.texture_file);
-        if (textureID != 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
-    } else {
-        glDisable(GL_TEXTURE_2D);
-    }
-    
-    glBegin(GL_TRIANGLES);
-    float texCoords[6] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f};
-    
-    for (int i = 0; i < 3; i++) {
-        float point_x = obj.params.triangle.vertices[i*2] * obj.size;
-        float point_y = obj.params.triangle.vertices[i*2+1] * obj.size;
-        rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
-        
-        if (obj.texture_file != nullptr) {
-            glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
-        }
-        glVertex2f(obj.x + point_x, obj.y + point_y);
-    }
-    glEnd();
-    
-    if (obj.texture_file != nullptr) {
-        glDisable(GL_TEXTURE_2D);
-    }
-}
-
-// Функции для создания объектов с физикой (старый стиль)
-void square(float local_size, float x, float y, double r, double g, double b, 
-            float rotate, float* vertices, bool gravity, bool collision, 
-            bool is_static = false, const char* texture_file = nullptr) {
-    
-    createSquare(x, y, local_size, rotate, 
-                r, g, b,
-                vertices, gravity, collision, 
-                is_static, texture_file);
-}
-
-void circle(float local_size, float x, float y, double r, double g, double b, 
-            float outer_radius, float inner_radius, float rotate, 
-            int slices, int loops, bool gravity, bool collision, 
-            const char* texture_file = nullptr) {
-    
-    createCircle(x, y, local_size, rotate,
-                r, g, b,
-                outer_radius, inner_radius, 
-                slices, loops, gravity, collision,
-                texture_file);
-}
-
-void triangle(float local_size, float x, float y, double r, double g, double b, 
-              float rotate, float* vertices, bool gravity, bool collision, 
-              const char* texture_file = nullptr) {
-    
-    createTriangle(x, y, local_size, rotate,
-                  r, g, b,
-                  vertices, gravity, collision,
-                  texture_file);
-}
-
-// Обновление физики
-void updatePhysics(float dt) {
-    // Обновляем все объекты
-    for (auto& obj : physicsObjects) {
-        if (obj.is_static) continue;
-        
-        // Гравитация
-        if (obj.has_gravity) {
-            obj.velocity_y += GRAVITY * dt;
-        }
-        
-        // Трение
-        obj.velocity_x *= FRICTION;
-        obj.velocity_y *= FRICTION;
-        
-        // Обновляем позицию
-        obj.x += obj.velocity_x * dt;
-        obj.y += obj.velocity_y * dt;
-        
-        // Проверка границ экрана
-        const float boundary = 4.0f;
-        if (obj.has_collision) {
-            if (obj.x - obj.radius < -boundary) {
-                obj.x = -boundary + obj.radius;
-                obj.velocity_x = -obj.velocity_x * BOUNCE_FACTOR;
-            }
-            if (obj.x + obj.radius > boundary) {
-                obj.x = boundary - obj.radius;
-                obj.velocity_x = -obj.velocity_x * BOUNCE_FACTOR;
-            }
-            if (obj.y - obj.radius < -boundary) {
-                obj.y = -boundary + obj.radius;
-                obj.velocity_y = -obj.velocity_y * BOUNCE_FACTOR;
-            }
-            if (obj.y + obj.radius > boundary) {
-                obj.y = boundary - obj.radius;
-                obj.velocity_y = -obj.velocity_y * BOUNCE_FACTOR;
-            }
-        }
-    }
-    
-    // Проверка коллизий между объектами
-    for (size_t i = 0; i < physicsObjects.size(); i++) {
-        PhysicsObject& obj1 = physicsObjects[i];
-        if (!obj1.has_collision || obj1.is_static) continue;
-        
-        for (size_t j = i + 1; j < physicsObjects.size(); j++) {
-            PhysicsObject& obj2 = physicsObjects[j];
-            if (!obj2.has_collision) continue;
-            
-            float dx = obj1.x - obj2.x;
-            float dy = obj1.y - obj2.y;
-            float distance = sqrt(dx*dx + dy*dy);
-            float minDistance = obj1.radius + obj2.radius;
-            
-            if (distance < minDistance && distance > 0.001f) {
-                // Коллизия обнаружена
-                float overlap = minDistance - distance;
-                float nx = dx / distance;
-                float ny = dy / distance;
-                
-                // Разделяем объекты
-                if (!obj1.is_static) {
-                    obj1.x += nx * overlap * 0.5f;
-                    obj1.y += ny * overlap * 0.5f;
-                }
-                if (!obj2.is_static) {
-                    obj2.x -= nx * overlap * 0.5f;
-                    obj2.y -= ny * overlap * 0.5f;
-                }
-                
-                // Отскок (только если оба не статичны)
-                if (!obj1.is_static && !obj2.is_static) {
-                    float relativeVelocityX = obj1.velocity_x - obj2.velocity_x;
-                    float relativeVelocityY = obj1.velocity_y - obj2.velocity_y;
-                    float velocityAlongNormal = relativeVelocityX * nx + relativeVelocityY * ny;
-                    
-                    if (velocityAlongNormal < 0) {
-                        float impulse = -(1 + BOUNCE_FACTOR) * velocityAlongNormal;
-                        impulse /= 2.0f;
-                        
-                        obj1.velocity_x += impulse * nx;
-                        obj1.velocity_y += impulse * ny;
-                        obj2.velocity_x -= impulse * nx;
-                        obj2.velocity_y -= impulse * ny;
-                    }
-                } else if (!obj1.is_static && obj2.is_static) {
-                    // Объект сталкивается со статичным объектом
-                    obj1.velocity_x = -obj1.velocity_x * BOUNCE_FACTOR;
-                    obj1.velocity_y = -obj1.velocity_y * BOUNCE_FACTOR;
-                }
-            }
-        }
-    }
-}
-
-// Обновление управляемого объекта
-void updateControlledObject() {
-    if (controlled_object_id >= 0 && controlled_object_id < physicsObjects.size()) {
-        PhysicsObject& obj = physicsObjects[controlled_object_id];
-        obj.x = center_x;
-        obj.y = center_y;
-        obj.size = figure_size;
-        obj.angle = global_angle;
-    }
-}
-
-void displayWrapper() {
-    glClear(GL_COLOR_BUFFER_BIT);
-    
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    
-    // Обновляем управляемый объект
-    updateControlledObject();
-    
-    // Рисуем все объекты
-    for (auto& obj : physicsObjects) {
-        switch (obj.type) {
-            case SQUARE_OBJ:
-                drawSquare(obj);
-                break;
-            case CIRCLE_OBJ:
-                drawCircle(obj);
-                break;
-            case TRIANGLE_OBJ:
-                drawTriangle(obj);
-                break;
-        }
-    }
-    
-    glutSwapBuffers();
-}
-
-void changeSize(int w, int h) {
-    if (h == 0) h = 1;
-    glViewport(0, 0, w, h);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    float ratio = w / (float)h;
-    if (w <= h)
-        glOrtho(-5, 5, -5/ratio, 5/ratio, 1, -1);
-    else
-        glOrtho(-5*ratio, 5*ratio, -5, 5, 1, -1);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-}
-
-void setup_display(int* argc, char** argv, float r, float g, float b, float a) {
-    glutInit(argc, argv);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
-    glutInitWindowPosition(100, 100);
-    glutInitWindowSize(500, 500);
-
-    glutCreateWindow("avoengine");
-    glutReshapeFunc(changeSize);
-    glClearColor(r, g, b, a);
-}
-
-void processMovement() {
-    bool moved = false;
-
-    if (keyStates['w'] || keyStates['W']) {
-        figure_size += 0.01f;
-        moved = true;
-    }
-    if (keyStates['s'] || keyStates['S']) {
-        figure_size -= 0.01f;
-        moved = true;
-    }
-    if (keyStates['y'] || keyStates['Y']) {
-        center_y += 0.01f;
-        moved = true;
-    }
-    if (keyStates['h'] || keyStates['H']) {
-        center_y -= 0.01f;
-        moved = true;
-    }
-    if (keyStates['g'] || keyStates['G']) {
-        center_x -= 0.01f;
-        moved = true;
-    }
-    if (keyStates['j'] || keyStates['J']) {
-        center_x += 0.01f;
-        moved = true;
-    }
-    if (keyStates['a'] || keyStates['A']) {
-        global_angle -= 1.0f;
-        moved = true;
-    }
-    if (keyStates['d'] || keyStates['D']) {
-        global_angle += 1.0f;
-        moved = true;
-    }
-
-    if (moved) {
-        limiter();
-        glutPostRedisplay();
-    }
-}
-
-void keyboardDown(unsigned char key, int, int) {
-    keyStates[key] = true;
-
-    switch(key) {
-        case 27: // ESC
-            exit(0);
-        case 'f': case 'F':
-            isFullscreen = !isFullscreen;
-            isFullscreen ? glutFullScreen() : glutReshapeWindow(500, 500);
-            break;
-        case 'r': case 'R':
-            for (auto& texture : textureCache) {
-                glDeleteTextures(1, &texture.second);
-            }
-            textureCache.clear();
-            glutPostRedisplay();
-            break;
-        case ' ': // Пробел - прыжок
-            if (controlled_object_id >= 0 && controlled_object_id < physicsObjects.size()) {
-                physicsObjects[controlled_object_id].velocity_y = 0.1f;
-            }
-            break;
-        case '1': // Телепортация управляемого объекта
-            if (controlled_object_id >= 0 && controlled_object_id < physicsObjects.size()) {
-                physicsObjects[controlled_object_id].x = 0;
-                physicsObjects[controlled_object_id].y = 3;
-                center_x = 0;
-                center_y = 3;
-                physicsObjects[controlled_object_id].velocity_x = 0;
-                physicsObjects[controlled_object_id].velocity_y = 0;
-            }
-            break;
-    }
-    processMovement();
-}
-
-void keyboardUp(unsigned char key, int, int) {
-    keyStates[key] = false;
-}
-
-void timer(int value) {
-    static int last_time = glutGet(GLUT_ELAPSED_TIME);
-    int current_time = glutGet(GLUT_ELAPSED_TIME);
-    float dt = (current_time - last_time) / 1000.0f; // В секундах
-    last_time = current_time;
-    
-    processMovement();
-    updatePhysics(dt);
-    glutPostRedisplay();
-    glutTimerFunc(16, timer, 0);
-}
-
-// Инициализация объектов (вызывается один раз)
-void initObjects() {
-    physicsObjects.clear();
-    
-    // Управляемый квадрат (первый объект)
-    controlled_object_id = createSquare(center_x, center_y, figure_size, global_angle,
-                1.0f, 1.0f, 1.0f,
-                (float[]){-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f},
-                false, true, false, "src/god_png.png");
-    
-    // Круг с гравитацией и коллизией
-    createCircle(1.5f, 2.0f, 1.0f, 0.0f,
-                1.0f, 1.0f, 1.0f,
-                1.0f, 0.2f, 7, 1,
-                true, true, "src/diskriminant.png");
-    
-    // Треугольник с гравитацией и коллизией
-    createTriangle(-1.5f, 2.0f, 1.0f, 0.0f,
-                  1.0f, 1.0f, 1.0f,
-                  (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},
-                  true, true, "src/penza.png");
-    
-    // Статичная платформа
-    createSquare(0.0f, -2.0f, 3.0f, 0.0f,
-                0.5f, 0.5f, 0.5f,
-                (float[]){-0.5f, -0.1f, 0.5f, -0.1f, 0.5f, 0.1f, -0.5f, 0.1f},
-                false, true, true, "src/prime.png");
-}
-
-int main(int argc, char** argv) {
-    setup_display(&argc, argv, 0.2f, 0.2f, 0.2f, 1.0f);
-    
-    glEnable(GL_TEXTURE_2D);
-    
-    // Инициализация объектов один раз
-    initObjects();
-    
-    glutDisplayFunc(displayWrapper);
-    glutKeyboardFunc(keyboardDown);
-    glutKeyboardUpFunc(keyboardUp);
-    glutTimerFunc(0, timer, 0);
-    glutMainLoop();
-    
-    // Очистка
-    for (auto& texture : textureCache) {
-        glDeleteTextures(1, &texture.second);
-    }
-    
-    return 0;
+    return EXIT_SUCCESS;
 }
