@@ -3,15 +3,18 @@
 #include <map>
 #include <cmath>
 #include <GL/glu.h>
-#include <vector>
 #include <SOIL/SOIL.h>
 
 using namespace std;
 
 bool isFullscreen = 0;
+bool is_moving = 0;
 
-int global_width = 500;
-int global_height = 500;
+int tick = 0;
+const int max_tick = 64;
+
+int global_width = 1080;
+int global_height = 720;
 float figure_size = 1.0f;
 float center_x = 0.0f;
 float center_y = 0.0f;
@@ -19,55 +22,94 @@ float global_angle = 0.0f;
 
 map<string, GLuint> textureCache;
 
-map<unsigned char, bool> keyStates;
+map<int, bool> keyStates;
 
 GLuint loadTextureFromFile(const char* filename) {
-    // Проверяем, есть ли текстура в кэше
     if (textureCache.find(filename) != textureCache.end()) {
         return textureCache[filename];
     }
     
     GLuint textureID;
     
-    // Загружаем изображение с помощью SOIL
     int width, height;
     unsigned char* image = SOIL_load_image(filename, &width, &height, 0, SOIL_LOAD_RGB);
     
     if (!image) {
         cout << "Ошибка загрузки текстуры: " << filename << endl;
         cout << "SOIL error: " << SOIL_last_result() << endl;
-        textureCache[filename] = 0; // Помечаем как неудачную загрузку
+        textureCache[filename] = 0; 
         return 0;
     }
     
-    cout << "Текстура загружена: " << filename << " (" << width << "x" << height << ")" << endl;
-    
-    // Генерируем текстуру OpenGL
     glGenTextures(1, &textureID);
     glBindTexture(GL_TEXTURE_2D, textureID);
     
-    // Устанавливаем параметры текстуры
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     
-    // Загружаем данные изображения в текстуру
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
     
-    // Освобождаем память изображения
     SOIL_free_image_data(image);
     
-    // Сохраняем в кэш
     textureCache[filename] = textureID;
     
     return textureID;
 }
 
 void limiter() {
-    //if (figure_size < 0.0f) figure_size = 0.0f;
     if (global_angle < 0.0f) global_angle += 360.0f;
     if (global_angle >= 360.0f) global_angle -= 360.0f;
+    if(tick>max_tick) tick = 0;
+}
+
+void processMovement() {
+    bool moved = false;
+
+    if (keyStates['w'] || keyStates['W']) {
+        figure_size += 0.01f;
+        moved = true;
+    }
+    if (keyStates['s'] || keyStates['S']) {
+        figure_size -= 0.01f;
+        moved = true;
+    }
+    if (keyStates['y'] || keyStates['Y']) {
+        center_y += 0.01f;
+        moved = true;
+    }
+    if (keyStates['h'] || keyStates['H']) {
+        center_y -= 0.01f;
+        moved = true;
+    }
+    if (keyStates['g'] || keyStates['G']) {
+        center_x -= 0.01f;
+        moved = true;
+    }
+    if (keyStates['j'] || keyStates['J']) {
+        center_x += 0.01f;
+        moved = true;
+    }
+    if (keyStates['a'] || keyStates['A']) {
+        global_angle -= 1.0f;
+        moved = true;
+    }
+    if (keyStates['d'] || keyStates['D']) {
+        global_angle += 1.0f;
+        moved = true;
+    }
+    if (keyStates['t'] || keyStates['T']) {
+        moved = true;
+    }
+
+    if (moved) {
+        limiter();
+        glutPostRedisplay();
+        is_moving = 1;
+    }else{
+        is_moving = 0;
+    }
 }
 
 void rotatePoint(float& x, float& y, float center_x, float center_y, float angle_rad) {
@@ -85,7 +127,6 @@ void triangle(float local_size, float x, float y, double r, double g, double b, 
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
 
-    // Если указан файл текстуры - используем его
     if (texture_file != nullptr) {
         GLuint textureID = loadTextureFromFile(texture_file);
         if (textureID != 0) {
@@ -121,22 +162,34 @@ void triangle(float local_size, float x, float y, double r, double g, double b, 
     }
 }
 
-void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, bool gravity, bool colision, const char* texture_file = nullptr) {
+void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, int count_textures, const char* texture_file = nullptr, const char** textures = nullptr) {
     glColor3f(r, g, b);
-
-    // Преобразуем угол в радианы
     float angle_rad = rotate * M_PI / -180.0f;
 
     if (texture_file != nullptr) {
         GLuint textureID = loadTextureFromFile(texture_file);
+        glEnable(GL_TEXTURE_2D);
         if (textureID != 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, textureID);
+            if(textures != nullptr){
+                if(is_moving){
+                    int frame_tick = max_tick / count_textures;
+                    int frame_index = tick / frame_tick;
+                    if (frame_index >= count_textures) frame_index = count_textures - 1;
+                    textureID = loadTextureFromFile(textures[frame_index]);
+                    glBindTexture(GL_TEXTURE_2D, textureID);
+                }else{
+                    textureID = loadTextureFromFile(texture_file);
+                    glBindTexture(GL_TEXTURE_2D, textureID);
+                }
+            }else{
+                glBindTexture(GL_TEXTURE_2D, textureID);
+            }
         }
     } else {
         glDisable(GL_TEXTURE_2D);
     }
 
+    glutPostRedisplay();
     glBegin(GL_QUADS);
 
     // Координаты текстуры для квадрата
@@ -176,15 +229,11 @@ void circle(float local_size, float x, float y, double r, double g, double b, fl
         glDisable(GL_TEXTURE_2D);
     }
     
-    // Сохраняем текущую матрицу
     glPushMatrix();
-    
-    // Применяем преобразования относительно общего центра
     glTranslatef(x * local_size, y * local_size, 0.0f);
     glRotatef(rotate*-1, 0.0f, 0.0f, 1.0f);
     glScalef(local_size/2, local_size/2, 1.0f);
     
-    // Создаем объект квадрики
     GLUquadric* quadric = gluNewQuadric();
     gluQuadricTexture(quadric, GL_TRUE);
     gluQuadricDrawStyle(quadric, GLU_FILL);
@@ -218,11 +267,14 @@ void displayWrapper() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    square(figure_size, center_x, center_y, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, 0.5f, 0.5f, -0.5f, 0.5f},1,1, "src/god_png.png");
-    circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 7, 1, "src/diskriminant.png");
-    triangle(figure_size, center_x*2, center_y*2, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},"src/penza.png");
-    
-    square(figure_size, 0, -5, 1.0f, 1.0f, 1.0f, 0, (float[]){-250.5f, -5.5f, 250.5f, -5.5f, 250.5f, 0.5f, -250.5f, 0.5f},0,1, "src/prime.png");
+    const char* anim_textures[] = {"src/penza.png", "src/penza_low.png","src/prime.png"};
+
+    square(figure_size, center_x, center_y, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f,
+                                                                                       0.5f, -0.5f, 
+                                                                                       0.5f, 0.5f, 
+                                                                                       -0.5f, 0.5f},3, "src/god_png.png",anim_textures);
+    // circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 7, 1, "src/diskriminant.png");
+    // triangle(figure_size, center_x*2, center_y*2, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},"src/penza.png");
     
     glutSwapBuffers();
 }
@@ -254,54 +306,12 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a) {
     glutInit(argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
     glutInitWindowPosition(100, 100);
-    glutInitWindowSize(500, 500);
+    glutInitWindowSize(global_width, global_height);
 
     glutCreateWindow("avoengine");
     glutDisplayFunc(renderScene);
     glutReshapeFunc(changeSize);
     glClearColor(r, g, b, a);
-}
-
-void processMovement() {
-    bool moved = false;
-
-    if (keyStates['w'] || keyStates['W']) {
-        figure_size += 0.01f;
-        moved = true;
-    }
-    if (keyStates['s'] || keyStates['S']) {
-        figure_size -= 0.01f;
-        moved = true;
-    }
-    if (keyStates['y'] || keyStates['Y']) {
-        center_y += 0.01f;
-        moved = true;
-    }
-    if (keyStates['h'] || keyStates['H']) {
-        center_y -= 0.01f;
-        moved = true;
-    }
-    if (keyStates['g'] || keyStates['G']) {
-        center_x -= 0.01f;
-        moved = true;
-    }
-    if (keyStates['j'] || keyStates['J']) {
-        center_x += 0.01f;
-        moved = true;
-    }
-    // if (keyStates['a'] || keyStates['A']) {
-    //     global_angle -= 1.0f;
-    //     moved = true;
-    // }
-    // if (keyStates['d'] || keyStates['D']) {
-    //     global_angle += 1.0f;
-    //     moved = true;
-    // }
-
-    if (moved) {
-        limiter();
-        glutPostRedisplay();
-    }
 }
 
 void keyboardDown(unsigned char key, int, int) {
@@ -312,7 +322,7 @@ void keyboardDown(unsigned char key, int, int) {
             exit(0);
         case 'f': case 'F':
             isFullscreen = !isFullscreen;
-            isFullscreen ? glutFullScreen() : glutReshapeWindow(500, 500);
+            isFullscreen ? glutFullScreen() : glutReshapeWindow(global_width, global_height);
             break;
         case 'r': case 'R': // Перезагрузка текстур
             for (auto& texture : textureCache) {
@@ -327,12 +337,15 @@ void keyboardDown(unsigned char key, int, int) {
 
 void keyboardUp(unsigned char key, int, int) {
     keyStates[key] = false;
-    //cout<<key<<endl;
+    cout<<key<<endl;
 }
 
 void timer(int value) {
     processMovement();
     glutTimerFunc(16, timer, 0);
+    tick ++;
+    limiter();
+    // cout<<tick<<endl;
 }
 
 int main(int argc, char** argv) {
