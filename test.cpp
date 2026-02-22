@@ -123,7 +123,7 @@ void rotatePoint(float& x, float& y, float center_x, float center_y, float angle
     y = rotated_y + center_y;
 }
 
-void triangle(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, const char* texture_file = nullptr) {
+void triangle(float scale, float center_x, float center_y, double r, double g, double b, float rotate, float* vertices, const char* texture_file = nullptr) {
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
 
@@ -139,7 +139,6 @@ void triangle(float local_size, float x, float y, double r, double g, double b, 
     
     glBegin(GL_TRIANGLES);
     
-    // Координаты текстуры для треугольника
     float texCoords[6] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f};
 
     for (int i = 0; i < 3; i++) {
@@ -148,11 +147,13 @@ void triangle(float local_size, float x, float y, double r, double g, double b, 
         
         rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
         
+        float scaled_x = point_x * scale;
+        float scaled_y = point_y * scale;
+        
         if (texture_file != nullptr) {
             glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
         }
-        glVertex2f((x + point_x) * local_size,
-                   (y + point_y) * local_size);
+        glVertex2f(center_x + scaled_x, center_y + scaled_y);
     }
 
     glEnd();
@@ -162,7 +163,10 @@ void triangle(float local_size, float x, float y, double r, double g, double b, 
     }
 }
 
-void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, int count_textures, const char* texture_file = nullptr, const char** textures = nullptr) {
+void square(float local_size, float x, float y, double r, double g, double b, 
+            float rotate, float* vertices, int count_textures = 0, 
+            const char* texture_file = nullptr, const char** textures = nullptr) {
+    
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
 
@@ -191,16 +195,13 @@ void square(float local_size, float x, float y, double r, double g, double b, fl
 
     glutPostRedisplay();
     glBegin(GL_QUADS);
-
-    // Координаты текстуры для квадрата
+    
     float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
 
-    // Применяем поворот к каждой вершине относительно центра
     for (int i = 0; i < 4; i++) {
         float point_x = vertices[i*2];
         float point_y = vertices[i*2+1];
         
-        // Поворачиваем точку вокруг центра (0,0)
         rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
         
         if (texture_file != nullptr) {
@@ -211,12 +212,13 @@ void square(float local_size, float x, float y, double r, double g, double b, fl
     }
 
     glEnd();
+    
     if (texture_file != nullptr) {
         glDisable(GL_TEXTURE_2D);
     }
 }
 
-void circle(float local_size, float x, float y, double r, double g, double b, float radius,float in_radius, float rotate, int slices, int loops, const char* texture_file = nullptr) {
+void circle(float scale, float center_x, float center_y, double r, double g, double b, float radius, float in_radius, float rotate, int slices, int loops,const char* texture_file = nullptr) {
     glColor3f(r, g, b);
     
     if (texture_file != nullptr) {
@@ -230,30 +232,26 @@ void circle(float local_size, float x, float y, double r, double g, double b, fl
     }
     
     glPushMatrix();
-    glTranslatef(x * local_size, y * local_size, 0.0f);
+    // Перемещаемся в центр (без умножения на scale)
+    glTranslatef(center_x, center_y, 0.0f);
     glRotatef(rotate*-1, 0.0f, 0.0f, 1.0f);
-    glScalef(local_size/2, local_size/2, 1.0f);
+    // Масштабируем размеры круга
+    glScalef(scale, scale, 1.0f);
     
     GLUquadric* quadric = gluNewQuadric();
     gluQuadricTexture(quadric, GL_TRUE);
     gluQuadricDrawStyle(quadric, GLU_FILL);
     
-    // Исправление ориентации текстуры для круга
     glMatrixMode(GL_TEXTURE);
     glPushMatrix();
-    glScalef(1.0f, -1.0f, 1.0f); // Отражение по Y
+    glScalef(1.0f, -1.0f, 1.0f);
     
-    // Рисуем диск (центр теперь в точке (0,0) после трансформаций)
     gluDisk(quadric, in_radius, radius, slices, loops);
     
-    // Восстанавливаем матрицу текстуры
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
     
-    // Удаляем объект квадрики
     gluDeleteQuadric(quadric);
-    
-    // Восстанавливаем матрицу
     glPopMatrix();
     
     if (texture_file != nullptr) {
