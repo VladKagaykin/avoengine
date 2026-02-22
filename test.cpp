@@ -4,6 +4,7 @@
 #include <cmath>
 #include <GL/glu.h>
 #include <SOIL/SOIL.h>
+#include <vector>
 
 using namespace std;
 
@@ -163,9 +164,7 @@ void triangle(float scale, float center_x, float center_y, double r, double g, d
     }
 }
 
-void square(float local_size, float x, float y, double r, double g, double b, 
-            float rotate, float* vertices, int count_textures = 0, 
-            const char* texture_file = nullptr, const char** textures = nullptr) {
+void square(float local_size, float x, float y, double r, double g, double b, float rotate, float* vertices, const char* texture_file, vector<const char*> textures, bool condition) {
     
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
@@ -174,8 +173,9 @@ void square(float local_size, float x, float y, double r, double g, double b,
         GLuint textureID = loadTextureFromFile(texture_file);
         glEnable(GL_TEXTURE_2D);
         if (textureID != 0) {
-            if(textures != nullptr){
-                if(is_moving){
+            if(textures.size() != 0){
+                if(condition){
+                    int count_textures = textures.size();
                     int frame_tick = max_tick / count_textures;
                     int frame_index = tick / frame_tick;
                     if (frame_index >= count_textures) frame_index = count_textures - 1;
@@ -265,12 +265,12 @@ void displayWrapper() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    const char* anim_textures[] = {"src/penza.png", "src/penza_low.png","src/prime.png"};
+    vector<const char*> anim_textures = {"src/penza.png", "src/penza_low.png","src/prime.png"};
 
     square(figure_size, center_x, center_y, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f,
                                                                                        0.5f, -0.5f, 
                                                                                        0.5f, 0.5f, 
-                                                                                       -0.5f, 0.5f},3, "src/god_png.png",anim_textures);
+                                                                                       -0.5f, 0.5f}, "src/god_png.png",anim_textures,is_moving);
     // circle(figure_size, center_x*1.5, center_y*1.5, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, global_angle, 7, 1, "src/diskriminant.png");
     // triangle(figure_size, center_x*2, center_y*2, 1.0f, 1.0f, 1.0f, global_angle, (float[]){-0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f},"src/penza.png");
     
