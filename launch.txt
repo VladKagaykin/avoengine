@@ -7,3 +7,7 @@ cd /your/path
 g++ programm_name.cpp -o output_name -lglut -lGLU -lGL -lSOIL
 
 ./output_name
+
+if you want to compile game:
+
+g++ -o output_name programm_name.cpp avoengine.cpp -lglut -lGLU -lGL -lSOIL
