@@ -7,7 +7,6 @@
 using namespace std;
 
 bool isFullscreen = false;
-bool is_moving = false;
 int tick = 0;
 const int max_tick = 64;
 map<int, bool> keyStates;
@@ -108,7 +107,7 @@ void square(float local_size, float x, float y, double r, double g, double b,
         if (!textures.empty() && condition) {
             int count_textures = textures.size();
             int frame_tick = max_tick / count_textures;
-            int frame_index = std::min(tick / frame_tick, count_textures - 1);
+            int frame_index = min(tick / frame_tick, count_textures - 1);
             texture_to_load = textures[frame_index];
         }
         GLuint textureID = loadTextureFromFile(texture_to_load);
@@ -131,7 +130,7 @@ void square(float local_size, float x, float y, double r, double g, double b,
         if (texture_file != nullptr) {
             glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
         }
-        glVertex2f((x + point_x) * local_size, (y + point_y) * local_size);
+        glVertex2f(x + point_x * local_size, y + point_y * local_size);
     }
     glEnd();
     
