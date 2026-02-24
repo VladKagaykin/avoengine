@@ -66,15 +66,14 @@ void drawQuad(ScreenPoint p1, ScreenPoint p2, ScreenPoint p3, ScreenPoint p4, fl
     triangle(1.0f, 0.0f, 0.0f, r, g, b, 0.0f, tri2, nullptr);
 }
 
-// Процедурная псевдослучайная функция от 0 до 1
 float hash2d(int i, int j) {
     return fabs(sin(i * 12.9898f + j * 78.233f) * 43758.5453f - floor(sin(i * 12.9898f + j * 78.233f) * 43758.5453f));
 }
 
 // Отрисовка пола и сфер (бесконечное поле вокруг камеры)
 void drawFloorAndSpheres() {
-    const int rows = 40;               // сколько рядов вперёд/назад
-    const int cols = 40;               // сколько рядов влево/вправо
+    const int rows = 200;               // сколько рядов вперёд/назад
+    const int cols = 200;               // сколько рядов влево/вправо
     float size = 1.0f;                 // размер плитки
 
     // Диапазон плиток, центрированный относительно камеры (создаёт иллюзию бесконечности)
@@ -124,33 +123,23 @@ void drawFloorAndSpheres() {
     }
 }
 
-// Обработчик обычных клавиш (буквы, ESC, F)
 void keyboard(unsigned char key, int, int) {
     keyStates[key] = true;
 }
 
-// Обновление камеры по состоянию клавиш
 void updateCamera() {
-    // Поворот: A – налево, D – направо
     if (keyStates['a'] || keyStates['A']) camYaw -= rotSpeed;
     if (keyStates['d'] || keyStates['D']) camYaw += rotSpeed;
-
-    // Движение вперёд/назад по направлению взгляда (горизонтальная плоскость)
     float forward = 0.0f;
     if (keyStates['w'] || keyStates['W']) forward += moveSpeed;
     if (keyStates['s'] || keyStates['S']) forward -= moveSpeed;
-
     if (forward != 0.0f) {
         float dirX = sin(camYaw);
         float dirZ = cos(camYaw);
         camX += forward * dirX;
         camZ += forward * dirZ;
     }
-
-    // Выход по ESC
     if (keyStates[27]) exit(0);
-
-    // Полноэкранный режим по F (с защитой от повторного срабатывания)
     bool fPressed = keyStates['f'] || keyStates['F'];
     if (fPressed && !wasFPressed) {
         isFullscreen = !isFullscreen;
@@ -164,17 +153,12 @@ void updateCamera() {
     wasFPressed = fPressed;
 }
 
-// Функция отрисовки
 void display() {
     glClear(GL_COLOR_BUFFER_BIT);
     updateCamera();
     drawFloorAndSpheres();
     glutSwapBuffers();
 }
-
-// Стрелки не используем, оставляем пустыми
-void specialKeyboard(int, int, int) {}
-void specialKeyboardUp(int, int, int) {}
 
 void idle() {
     glutPostRedisplay();
@@ -185,8 +169,6 @@ int main(int argc, char** argv) {
 
     glutKeyboardFunc(keyboard);
     glutKeyboardUpFunc(keyboardUp);
-    glutSpecialFunc(specialKeyboard);
-    glutSpecialUpFunc(specialKeyboardUp);
     glutDisplayFunc(display);
     glutIdleFunc(idle);
 
