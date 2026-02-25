@@ -1,177 +1,144 @@
-// avoen_3d_demo.cpp – полная программа с бесконечным полом и редкими жёлтыми сферами
-// Управление: W/S – вперёд/назад, A/D – поворот влево/вправо
 #include "avoengine.h"
-#include <cmath>
-using namespace std;
+#include <iostream>
+#include <cstdlib>
 
-// Глобальные переменные из движка
-extern void keyboardUp(unsigned char key, int x, int y);
-extern map<int, bool> keyStates;
-extern int tick;
-extern bool isFullscreen;
+// Размеры окна
+const int WINDOW_WIDTH = 800;
+const int WINDOW_HEIGHT = 600;
 
-// Параметры камеры
-float camX = 0.0f, camY = 0.0f, camZ = 5.0f;   // позиция камеры (на уровне пола)
-float camYaw = 0.0f;                           // поворот вокруг Y (горизонтальный)
-const float camPitch = 0.4f;                  // небольшой наклон вниз, чтобы видеть пол
-const float moveSpeed = 0.03f;                  // очень медленное движение
-const float rotSpeed = 0.05f;                   // скорость поворота
+// Идентификаторы текстур (для демо)
+GLuint texChecker = 0;  // текстура для куба
+GLuint texSmile = 0;    // текстура для 2D квадрата
 
-bool wasFPressed = false;                       // для обработки F
+// Состояние анимации
+bool animate = true;
 
-// Структура для хранения экранных координат и признака видимости
-struct ScreenPoint {
-    float x, y;
-    float scale;
-    bool valid;   // true, если точка перед камерой
-};
-
-// Преобразование мировых координат в экранные с учётом поворота и наклона
-ScreenPoint worldToScreen(float wx, float wy, float wz) {
-    ScreenPoint sp;
-    float dx = wx - camX;
-    float dy = wy - camY;
-    float dz = wz - camZ;
-
-    // Поворот по горизонтали (yaw)
-    float x1 = dx * cos(camYaw) - dz * sin(camYaw);
-    float z1 = dx * sin(camYaw) + dz * cos(camYaw);
-    float y1 = dy;
-
-    // Поворот по вертикали (pitch) – фиксированный
-    float y2 = y1 * cos(camPitch) - z1 * sin(camPitch);
-    float z2 = y1 * sin(camPitch) + z1 * cos(camPitch);
-    float x2 = x1;
-
-    if (z2 > 0.0f) {    // точка перед камерой
-        sp.valid = true;
-        float invZ = 1.0f / z2;
-        sp.x = x2 * invZ * 0.8f;
-        sp.y = y2 * invZ * 0.8f;
-        sp.scale = 0.2f * invZ;
-    } else {
-        sp.valid = false;
-    }
-    return sp;
-}
-
-// Рисование четырёхугольника по четырём точкам (два треугольника)
-void drawQuad(ScreenPoint p1, ScreenPoint p2, ScreenPoint p3, ScreenPoint p4, float r, float g, float b) {
-    // Даже если некоторые точки невалидны, мы всё равно рисуем – OpenGL отсечёт их.
-    // Но для избежания вырожденных треугольников лучше проверять валидность всех.
-    if (!p1.valid || !p2.valid || !p3.valid || !p4.valid) return;
-    float tri1[6] = { p1.x, p1.y, p2.x, p2.y, p3.x, p3.y };
-    float tri2[6] = { p1.x, p1.y, p3.x, p3.y, p4.x, p4.y };
-    triangle(1.0f, 0.0f, 0.0f, r, g, b, 0.0f, tri1, nullptr);
-    triangle(1.0f, 0.0f, 0.0f, r, g, b, 0.0f, tri2, nullptr);
-}
-
-float hash2d(int i, int j) {
-    return fabs(sin(i * 12.9898f + j * 78.233f) * 43758.5453f - floor(sin(i * 12.9898f + j * 78.233f) * 43758.5453f));
-}
-
-// Отрисовка пола и сфер (бесконечное поле вокруг камеры)
-void drawFloorAndSpheres() {
-    const int rows = 200;               // сколько рядов вперёд/назад
-    const int cols = 200;               // сколько рядов влево/вправо
-    float size = 1.0f;                 // размер плитки
-
-    // Диапазон плиток, центрированный относительно камеры (создаёт иллюзию бесконечности)
-    int iStart = (int)(camZ / size) - rows/2;
-    int iEnd = iStart + rows;
-    int jStart = (int)(camX / size) - cols/2;
-    int jEnd = jStart + cols;
-
-    for (int i = iStart; i < iEnd; ++i) {
-        float wz = i * size;            // мировая координата Z центра плитки
-        for (int j = jStart; j < jEnd; ++j) {
-            float wx = j * size;        // мировая координата X центра плитки
-            float wy = -1.0f;            // уровень пола
-
-            // Проверяем центр плитки – если он не перед камерой, плитку не рисуем
-            // ScreenPoint center = worldToScreen(wx, wy, wz);
-            // if (!center.valid) continue;
-
-            // Четыре угла плитки
-            float h = size * 0.5f;
-            float x1 = wx - h, z1 = wz - h;
-            float x2 = wx + h, z2 = wz - h;
-            float x3 = wx + h, z3 = wz + h;
-            float x4 = wx - h, z4 = wz + h;
-
-            ScreenPoint p1 = worldToScreen(x1, wy, z1);
-            ScreenPoint p2 = worldToScreen(x2, wy, z2);
-            ScreenPoint p3 = worldToScreen(x3, wy, z3);
-            ScreenPoint p4 = worldToScreen(x4, wy, z4);
-
-            // Шахматная раскраска плитки
-            bool even = ((i + j) & 1) == 0;
-            float r = even ? 0.5f : 0.3f;
-            float g = even ? 0.4f : 0.2f;
-            float b = even ? 0.3f : 0.2f;
-            drawQuad(p1, p2, p3, p4, r, g, b);
-
-            // С вероятностью 3% рисуем жёлтую сферу над этой плиткой
-            if (hash2d(i, j) < 0.03f) {
-                float sphereY = hash2d(i + 100, j + 200) * 5.0f; // высота от 0 до 5
-                ScreenPoint sp = worldToScreen(wx, sphereY, wz);
-                if (sp.valid) {
-                    circle(sp.scale, sp.x, sp.y, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 16, 8, nullptr);
-                }
-            }
-        }
-    }
-}
-
-void keyboard(unsigned char key, int, int) {
+// Обработчик клавиатуры (нажатие)
+void keyboard(unsigned char key, int x, int y) {
     keyStates[key] = true;
+
+    switch (key) {
+        case 27: // ESC
+            exit(0);
+            break;
+        case 'f':
+        case 'F':
+            isFullscreen = !isFullscreen;
+            if (isFullscreen)
+                glutFullScreen();
+            else {
+                glutReshapeWindow(WINDOW_WIDTH, WINDOW_HEIGHT);
+                glutPositionWindow(100, 100);
+            }
+            break;
+        case ' ':
+            animate = !animate;
+            break;
+    }
 }
 
-void updateCamera() {
-    if (keyStates['a'] || keyStates['A']) camYaw -= rotSpeed;
-    if (keyStates['d'] || keyStates['D']) camYaw += rotSpeed;
-    float forward = 0.0f;
-    if (keyStates['w'] || keyStates['W']) forward += moveSpeed;
-    if (keyStates['s'] || keyStates['S']) forward -= moveSpeed;
-    if (forward != 0.0f) {
-        float dirX = sin(camYaw);
-        float dirZ = cos(camYaw);
-        camX += forward * dirX;
-        camZ += forward * dirZ;
-    }
-    if (keyStates[27]) exit(0);
-    bool fPressed = keyStates['f'] || keyStates['F'];
-    if (fPressed && !wasFPressed) {
-        isFullscreen = !isFullscreen;
-        if (isFullscreen)
-            glutFullScreen();
-        else {
-            glutReshapeWindow(800, 600);
-            glutPositionWindow(100, 100);
-        }
-    }
-    wasFPressed = fPressed;
+// Обработчик отпускания клавиш
+void keyboardUp(unsigned char key, int x, int y) {
+    keyStates[key] = false;
 }
 
+// Таймер для анимации (обновляет tick)
+void timer(int value) {
+    if (animate) {
+        tick = (tick + 1) % max_tick;
+    }
+    glutPostRedisplay();
+    glutTimerFunc(16, timer, 0); // ~60 FPS
+}
+
+// Функция отрисовки
 void display() {
-    glClear(GL_COLOR_BUFFER_BIT);
-    updateCamera();
-    drawFloorAndSpheres();
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // ---------- 3D часть ----------
+    glEnable(GL_DEPTH_TEST);
+
+    // Устанавливаем перспективную камеру
+    float aspect = (float)glutGet(GLUT_WINDOW_WIDTH) / (float)glutGet(GLUT_WINDOW_HEIGHT);
+    setup_camera(45.0f, aspect, 0.1f, 100.0f,
+                 3.0f, 2.0f, 5.0f,    // позиция камеры
+                 0.0f, 0.0f, 0.0f,    // центр сцены
+                 0.0f, 1.0f, 0.0f);   // вектор вверх
+
+    // Рисуем куб с текстурой (если текстура загружена)
+    if (texChecker) {
+        cube3D(0.7f, -1.2f, 0.0f, 0.0f,
+               1.0f, 1.0f, 1.0f,
+               0.0f, tick * 2.0f, 0.0f,   // вращение по Y зависит от tick
+               "checker.jpg");  // предполагается, что файл есть
+    } else {
+        // Если текстура не загружена, рисуем цветной куб
+        cube3D(0.7f, -1.2f, 0.0f, 0.0f,
+               1.0f, 0.0f, 0.0f,
+               0.0f, tick * 2.0f, 0.0f,
+               nullptr);
+    }
+
+    // Рисуем сферу без текстуры
+    sphere3D(0.5f, 1.2f, 0.0f, 0.0f,
+             0.0f, 1.0f, 0.0f,
+             tick * 1.5f, 0.0f, 0.0f,
+             1.0f, 30, 30,
+             nullptr);
+
+    // ---------- 2D часть (GUI) ----------
+    glDisable(GL_DEPTH_TEST);
+
+    // Возвращаемся в ортографическую проекцию (как в исходном changeSize)
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    float w = glutGet(GLUT_WINDOW_WIDTH);
+    float h = glutGet(GLUT_WINDOW_HEIGHT);
+    float ratio = w / h;
+    if (w <= h)
+        glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
+    else
+        glOrtho(-1*ratio, 1*ratio, -1, 1, 1, -1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    // Рисуем квадрат (диалоговое окно) с текстурой смайлика
+    float squareVerts[] = {-0.5f, -0.3f, 0.5f, -0.3f, 0.5f, 0.3f, -0.5f, 0.3f};
+    if (texSmile) {
+        square(0.5f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+               0.0f, squareVerts, "smile.jpg",
+               std::vector<const char*>(), false);
+    } else {
+        // Просто цветной прямоугольник
+        glColor3f(0.2f, 0.2f, 0.8f);
+        glBegin(GL_QUADS);
+            for (int i = 0; i < 4; ++i)
+                glVertex2f(squareVerts[i*2], squareVerts[i*2+1]);
+        glEnd();
+    }
+
+    // Можно добавить текст (но для простоты пропустим)
+
     glutSwapBuffers();
 }
 
-void idle() {
-    glutPostRedisplay();
-}
-
 int main(int argc, char** argv) {
-    setup_display(&argc, argv, 0.1f, 0.1f, 0.2f, 1.0f, "avoengine_3D_demo", 800, 600);
+    // Инициализация окна
+    setup_display(&argc, argv, 0.2f, 0.2f, 0.2f, 1.0f,
+                  "AVO Engine Demo", WINDOW_WIDTH, WINDOW_HEIGHT);
 
+    // Регистрация callback-функций
+    glutDisplayFunc(display);
     glutKeyboardFunc(keyboard);
     glutKeyboardUpFunc(keyboardUp);
-    glutDisplayFunc(display);
-    glutIdleFunc(idle);
+    glutTimerFunc(0, timer, 0);
 
+    // Попытка загрузить текстуры (файлы должны существовать)
+    texChecker = loadTextureFromFile("checker.jpg");
+    texSmile = loadTextureFromFile("smile.jpg");
+
+    // Главный цикл
     glutMainLoop();
+
     return 0;
 }

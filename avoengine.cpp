@@ -178,6 +178,127 @@ void circle(float scale, float center_x, float center_y, double r, double g, dou
     }
 }
 
+void setup_camera(float fov, float aspect, float near_plane, float far_plane,
+                  float eye_x, float eye_y, float eye_z,
+                  float center_x, float center_y, float center_z,
+                  float up_x, float up_y, float up_z) {
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(fov, aspect, near_plane, far_plane);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(eye_x, eye_y, eye_z,
+              center_x, center_y, center_z,
+              up_x, up_y, up_z);
+}
+
+void draw3DObject(float scale,
+                  float center_x, float center_y, float center_z,
+                  float rotate_x, float rotate_y, float rotate_z,
+                  double r, double g, double b,
+                  const char* texture_file,
+                  int num_vertices, float* vertices,          // массив вершин (x,y,z подряд)
+                  int num_indices, int* indices,              // массив индексов (треугольники)
+                  float* texcoords = nullptr) {               // массив текстурных координат (s,t подряд)
+    glColor3f(r, g, b);
+
+    if (texture_file != nullptr) {
+        GLuint textureID = loadTextureFromFile(texture_file);
+        if (textureID != 0) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, textureID);
+        }
+    } else {
+        glDisable(GL_TEXTURE_2D);
+    }
+
+    glPushMatrix();
+    glTranslatef(center_x, center_y, center_z);
+    glRotatef(rotate_x, 1.0f, 0.0f, 0.0f);
+    glRotatef(rotate_y, 0.0f, 1.0f, 0.0f);
+    glRotatef(rotate_z, 0.0f, 0.0f, 1.0f);
+    glScalef(scale, scale, scale);
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, vertices);
+
+    if (texcoords != nullptr && texture_file != nullptr) {
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        glTexCoordPointer(2, GL_FLOAT, 0, texcoords);
+    }
+
+    glDrawElements(GL_TRIANGLES, num_indices, GL_UNSIGNED_INT, indices);
+
+    glDisableClientState(GL_VERTEX_ARRAY);
+    if (texcoords != nullptr && texture_file != nullptr) {
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    }
+
+    glPopMatrix();
+
+    if (texture_file != nullptr) {
+        glDisable(GL_TEXTURE_2D);
+    }
+}
+
+void cube3D(float scale,
+            float center_x, float center_y, float center_z,
+            double r, double g, double b,
+            float rotate_x, float rotate_y, float rotate_z,
+            const char* texture_file) {
+    // Вершины куба (8)
+    float vertices[] = {
+        -1, -1, -1,   1, -1, -1,   1,  1, -1,  -1,  1, -1, // перед
+        -1, -1,  1,   1, -1,  1,   1,  1,  1,  -1,  1,  1  // зад
+    };
+    // Индексы треугольников (12 граней = 36 индексов)
+    int indices[] = {
+        0,1,2, 0,2,3,       // перед
+        4,6,5, 4,7,6,       // зад
+        0,3,7, 0,7,4,       // лево
+        1,5,6, 1,6,2,       // право
+        0,4,5, 0,5,1,       // низ
+        3,2,6, 3,6,7        // верх
+    };
+    // Простейшие текстурные координаты (для каждой грани нужны отдельные вершины, здесь для демонстрации)
+    float texcoords[] = {
+        0,0, 1,0, 1,1, 0,1,  0,0, 1,0, 1,1, 0,1,
+        0,0, 1,0, 1,1, 0,1,  0,0, 1,0, 1,1, 0,1,
+        0,0, 1,0, 1,1, 0,1,  0,0, 1,0, 1,1, 0,1
+    };
+    draw3DObject(scale, center_x, center_y, center_z,
+                 rotate_x, rotate_y, rotate_z,
+                 r, g, b, texture_file,
+                 8, vertices, 36, indices, texcoords);
+}
+
+void sphere3D(float scale,
+              float center_x, float center_y, float center_z,
+              double r, double g, double b,
+              float rotate_x, float rotate_y, float rotate_z,
+              float radius, int slices, int stacks,
+              const char* texture_file) {
+    glColor3f(r, g, b);
+    if (texture_file) {
+        GLuint tex = loadTextureFromFile(texture_file);
+        if (tex) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex); }
+    } else glDisable(GL_TEXTURE_2D);
+
+    glPushMatrix();
+    glTranslatef(center_x, center_y, center_z);
+    glRotatef(rotate_x, 1,0,0); glRotatef(rotate_y,0,1,0); glRotatef(rotate_z,0,0,1);
+    glScalef(scale,scale,scale);
+
+    GLUquadric* q = gluNewQuadric();
+    gluQuadricTexture(q, GL_TRUE);
+    gluSphere(q, radius, slices, stacks);
+    gluDeleteQuadric(q);
+
+    glPopMatrix();
+    if (texture_file) glDisable(GL_TEXTURE_2D);
+}
+
 void changeSize(int w, int h) {
     if (h == 0) h = 1;
     glViewport(0, 0, w, h);
@@ -192,13 +313,15 @@ void changeSize(int w, int h) {
     glLoadIdentity();
 }
 
-void setup_display(int* argc, char** argv, float r, float g, float b, float a, 
+void setup_display(int* argc, char** argv, float r, float g, float b, float a,
                    const char* name, int w, int h) {
     glutInit(argc, argv);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
     glutInitWindowPosition(100, 100);
     glutInitWindowSize(w, h);
     glutCreateWindow(name);
     glutReshapeFunc(changeSize);
     glClearColor(r, g, b, a);
+    glEnable(GL_DEPTH_TEST);
+    glClearDepth(1.0f);
 }
