@@ -7,8 +7,6 @@
 using namespace std;
 
 bool isFullscreen = false;
-int tick = 0;
-const int max_tick = 64;
 map<int, bool> keyStates;
 
 static map<string, GLuint> textureCache;
@@ -203,13 +201,4 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a,
     glutCreateWindow(name);
     glutReshapeFunc(changeSize);
     glClearColor(r, g, b, a);
-}
-
-void keyboardUp(unsigned char key, int, int) {
-    keyStates[key] = false;
-}
-
-void timer(int value) {
-    glutTimerFunc(16, timer, 0);
-    tick++;
 }

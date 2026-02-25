@@ -89,8 +89,8 @@ void drawFloorAndSpheres() {
             float wy = -1.0f;            // уровень пола
 
             // Проверяем центр плитки – если он не перед камерой, плитку не рисуем
-            ScreenPoint center = worldToScreen(wx, wy, wz);
-            if (!center.valid) continue;
+            // ScreenPoint center = worldToScreen(wx, wy, wz);
+            // if (!center.valid) continue;
 
             // Четыре угла плитки
             float h = size * 0.5f;
