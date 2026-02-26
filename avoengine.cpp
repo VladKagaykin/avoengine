@@ -6,10 +6,15 @@
 
 using namespace std;
 
-bool isFullscreen = false;
-map<int, bool> keyStates;
-
 static map<string, GLuint> textureCache;
+
+struct CameraParams {
+    bool initialized;
+    float fov, near, far;
+    float eye_x, eye_y, eye_z;
+    float center_x, center_y, center_z;
+    float up_x, up_y, up_z;
+} camera = {false};
 
 GLuint loadTextureFromFile(const char* filename) {
     if (textureCache.find(filename) != textureCache.end()) {
@@ -99,22 +104,22 @@ void square(float local_size, float x, float y, double r, double g, double b,
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
     
-    if (texture_file != nullptr) {
-        glEnable(GL_TEXTURE_2D);
-        const char* texture_to_load = texture_file;
-        if (!textures.empty() && condition) {
-            int count_textures = textures.size();
-            int frame_tick = max_tick / count_textures;
-            int frame_index = min(tick / frame_tick, count_textures - 1);
-            texture_to_load = textures[frame_index];
-        }
-        GLuint textureID = loadTextureFromFile(texture_to_load);
-        if (textureID != 0) {
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
-    } else {
-        glDisable(GL_TEXTURE_2D);
-    }
+    // if (texture_file != nullptr) {
+    //     glEnable(GL_TEXTURE_2D);
+    //     const char* texture_to_load = texture_file;
+    //     if (!textures.empty() && condition) {
+    //         int count_textures = textures.size();
+    //         int frame_tick = max_tick / count_textures;
+    //         int frame_index = min(tick / frame_tick, count_textures - 1);
+    //         texture_to_load = textures[frame_index];
+    //     }
+    //     GLuint textureID = loadTextureFromFile(texture_to_load);
+    //     if (textureID != 0) {
+    //         glBindTexture(GL_TEXTURE_2D, textureID);
+    //     }
+    // } else {
+    //     glDisable(GL_TEXTURE_2D);
+    // }
 
     glBegin(GL_QUADS);
     float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
@@ -182,7 +187,16 @@ void setup_camera(float fov, float aspect, float near_plane, float far_plane,
                   float eye_x, float eye_y, float eye_z,
                   float center_x, float center_y, float center_z,
                   float up_x, float up_y, float up_z) {
+    // Сохраняем параметры
+    camera.initialized = true;
+    camera.fov = fov;
+    camera.near = near_plane;
+    camera.far = far_plane;
+    camera.eye_x = eye_x; camera.eye_y = eye_y; camera.eye_z = eye_z;
+    camera.center_x = center_x; camera.center_y = center_y; camera.center_z = center_z;
+    camera.up_x = up_x; camera.up_y = up_y; camera.up_z = up_z;
 
+    // Устанавливаем текущую проекцию
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     gluPerspective(fov, aspect, near_plane, far_plane);
@@ -200,7 +214,7 @@ void draw3DObject(float scale,
                   const char* texture_file,
                   int num_vertices, float* vertices,          // массив вершин (x,y,z подряд)
                   int num_indices, int* indices,              // массив индексов (треугольники)
-                  float* texcoords = nullptr) {               // массив текстурных координат (s,t подряд)
+                  float* texcoords) {               // массив текстурных координат (s,t подряд)
     glColor3f(r, g, b);
 
     if (texture_file != nullptr) {
@@ -302,15 +316,30 @@ void sphere3D(float scale,
 void changeSize(int w, int h) {
     if (h == 0) h = 1;
     glViewport(0, 0, w, h);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    float ratio = w / (float)h;
-    if (w <= h)
-        glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
-    else
-        glOrtho(-1*ratio, 1*ratio, -1, 1, 1, -1);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
+
+    if (camera.initialized) {
+        // Режим 3D: обновляем перспективу с новым соотношением сторон
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        float aspect = (float)w / (float)h;
+        gluPerspective(camera.fov, aspect, camera.near, camera.far);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+        gluLookAt(camera.eye_x, camera.eye_y, camera.eye_z,
+                  camera.center_x, camera.center_y, camera.center_z,
+                  camera.up_x, camera.up_y, camera.up_z);
+    } else {
+        // Режим 2D: классическая ортографическая проекция
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        float ratio = w / (float)h;
+        if (w <= h)
+            glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
+        else
+            glOrtho(-1*ratio, 1*ratio, -1, 1, 1, -1);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
+    }
 }
 
 void setup_display(int* argc, char** argv, float r, float g, float b, float a,

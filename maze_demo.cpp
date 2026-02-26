@@ -186,7 +186,25 @@ static void display() {
             }
         }
     }
+    // После всей 3D отрисовки, перед circle:
 
+    int w = vp[2], h = vp[3];
+    float ratio = (float)w / h;
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(-ratio, ratio, -1, 1, -1, 1);  // та же логика что в changeSize для 2D
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    glDisable(GL_DEPTH_TEST);  // чтобы HUD рисовался поверх всего
+
+    // circle(1, 0, 0, 1.0f, 1.0f, 1.0f, 1.0f, 0.2f, 0, 7, 1, "src/diskriminant.png");
+
+    glEnable(GL_DEPTH_TEST);  // восстанавливаем для следующего кадра
+
+    // camera.initialized = 0 убрать — он не нужен
     glutSwapBuffers();
 }
 
