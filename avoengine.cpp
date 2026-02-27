@@ -9,7 +9,6 @@ using namespace std;
 static map<string, GLuint> textureCache;
 
 struct CameraParams {
-    bool initialized;
     float fov, near, far;
     float eye_x, eye_y, eye_z;
     float center_x, center_y, center_z;
@@ -187,8 +186,6 @@ void setup_camera(float fov, float aspect, float near_plane, float far_plane,
                   float eye_x, float eye_y, float eye_z,
                   float center_x, float center_y, float center_z,
                   float up_x, float up_y, float up_z) {
-    // Сохраняем параметры
-    camera.initialized = true;
     camera.fov = fov;
     camera.near = near_plane;
     camera.far = far_plane;
@@ -313,33 +310,36 @@ void sphere3D(float scale,
     if (texture_file) glDisable(GL_TEXTURE_2D);
 }
 
-void changeSize(int w, int h) {
+void changeSize3D(int w, int h) {
     if (h == 0) h = 1;
     glViewport(0, 0, w, h);
 
-    if (camera.initialized) {
-        // Режим 3D: обновляем перспективу с новым соотношением сторон
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        float aspect = (float)w / (float)h;
-        gluPerspective(camera.fov, aspect, camera.near, camera.far);
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-        gluLookAt(camera.eye_x, camera.eye_y, camera.eye_z,
-                  camera.center_x, camera.center_y, camera.center_z,
-                  camera.up_x, camera.up_y, camera.up_z);
-    } else {
-        // Режим 2D: классическая ортографическая проекция
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        float ratio = w / (float)h;
-        if (w <= h)
-            glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
-        else
-            glOrtho(-1*ratio, 1*ratio, -1, 1, 1, -1);
-        glMatrixMode(GL_MODELVIEW);
-        glLoadIdentity();
-    }
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    float aspect = (float)w / (float)h;
+    gluPerspective(camera.fov, aspect, camera.near, camera.far);
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(camera.eye_x, camera.eye_y, camera.eye_z,
+              camera.center_x, camera.center_y, camera.center_z,
+              camera.up_x, camera.up_y, camera.up_z);
+}
+
+void changeSize2D(int w, int h) {
+    if (h == 0) h = 1;
+    glViewport(0, 0, w, h);
+
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    float ratio = w / (float)h;
+    if (w <= h)
+        glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
+    else
+        glOrtho(-1*ratio, 1*ratio, -1, 1, 1, -1);
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
 }
 
 void setup_display(int* argc, char** argv, float r, float g, float b, float a,
@@ -349,7 +349,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a,
     glutInitWindowPosition(100, 100);
     glutInitWindowSize(w, h);
     glutCreateWindow(name);
-    glutReshapeFunc(changeSize);
+    glutReshapeFunc(changeSize2D);
     glClearColor(r, g, b, a);
     glEnable(GL_DEPTH_TEST);
     glClearDepth(1.0f);

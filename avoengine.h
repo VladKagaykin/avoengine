@@ -5,7 +5,7 @@
 #include <map>
 #include <string>
 #include <vector>
-
+#include<cmath>
 
 // Функции работы с текстурами
 GLuint loadTextureFromFile(const char* filename);
@@ -23,8 +23,94 @@ void circle(float scale, float center_x, float center_y, double r, double g, dou
             float radius, float in_radius, float rotate, int slices, int loops,
             const char* texture_file = nullptr);
 
+class pseudo_3d_entity {
+private:
+    float x, y, z;
+    float g_angle;
+    float v_angle;
+    std::vector<const char*> textures;
+
+public:
+    pseudo_3d_entity(float x, float y, float z,
+                     float g_angle, float v_angle,
+                     std::vector<const char*> textures)
+        : x(x), y(y), z(z),
+          g_angle(g_angle), v_angle(v_angle),
+          textures(textures) {}
+
+    int getTextureIndex(float camera_h_angle) const {
+        if (textures.empty()) return -1;
+        int count = (int)textures.size();
+        float sector = 360.0f / count;
+        float relative = (camera_h_angle + 180.0f) - g_angle;
+        while (relative < 0)    relative += 360.0f;
+        while (relative >= 360) relative -= 360.0f;
+        relative = fmod(relative + sector * 0.5f, 360.0f);
+        int index = (int)(relative / sector);
+        if (index >= count) index = count - 1;
+        return index;
+    }
+
+    const char* getCurrentTexture(float camera_h_angle) const {
+        int idx = getTextureIndex(camera_h_angle);
+        if (idx < 0) return nullptr;
+        return textures[idx];
+    }
+
+    void draw(float camera_h_angle,
+          float cam_x, float cam_y, float cam_z,
+          float size = 0.25f) const {
+        const char* tex = getCurrentTexture(camera_h_angle);
+
+        if (tex != nullptr) {
+            GLuint textureID = loadTextureFromFile(tex);
+            if (textureID != 0) {
+                glEnable(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, textureID);
+            }
+        } else {
+            glDisable(GL_TEXTURE_2D);
+        }
+
+        // Вектор от entity к камере (для billboard-поворота)
+        float dx = cam_x - x;
+        float dz = cam_z - z;
+        float billboard_angle = atan2(dx, dz) * 180.0f / M_PI;
+
+        glPushMatrix();
+        glTranslatef(x, y, z);
+        glRotatef(billboard_angle, 0, 1, 0); // всегда лицом к камере
+
+        glColor3f(1, 1, 1);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 1); glVertex3f(-size, -size, 0);
+        glTexCoord2f(1, 1); glVertex3f( size, -size, 0);
+        glTexCoord2f(1, 0); glVertex3f( size,  size, 0);
+        glTexCoord2f(0, 0); glVertex3f(-size,  size, 0);
+        glEnd();
+
+        glDisable(GL_TEXTURE_2D);
+
+        // Стрелка — куда смотрит entity (в горизонтальной плоскости)
+        float rad = g_angle * M_PI / 180.0f;
+        glColor3f(1, 0, 0);
+        glBegin(GL_LINES);
+        glVertex3f(0, 0, 0);
+        glVertex3f(sin(rad) * size * 2, 0, cos(rad) * size * 2);
+        glEnd();
+
+        glPopMatrix();
+    }
+
+    void setGAngle(float a) { g_angle = a; }
+    float getGAngle() const { return g_angle; }
+    float getX() const { return x; }
+    float getY() const { return y; }
+};
+
 // Функции настройки OpenGL
-void changeSize(int w, int h);
+void changeSize3D(int w, int h);
+void changeSize2D(int w, int h);
 void setup_display(int* argc, char** argv, float r, float g, float b, float a, 
                    const char* name, int w, int h);
 
