@@ -19,31 +19,31 @@ GLuint loadTextureFromFile(const char* filename) {
     if (textureCache.find(filename) != textureCache.end()) {
         return textureCache[filename];
     }
-    
+
     GLuint textureID;
     int width, height;
-    unsigned char* image = SOIL_load_image(filename, &width, &height, 0, SOIL_LOAD_RGB);
-    
+    unsigned char* image = SOIL_load_image(filename, &width, &height, 0, SOIL_LOAD_RGBA);
+
     if (!image) {
         cout << "error to load texture: " << filename << endl;
         cout << "SOIL error: " << SOIL_last_result() << endl;
-        textureCache[filename] = 0; 
+        textureCache[filename] = 0;
         return 0;
     }
-    
+
     glGenTextures(1, &textureID);
     glBindTexture(GL_TEXTURE_2D, textureID);
-    
+
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image);
-    
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
+
     SOIL_free_image_data(image);
     textureCache[filename] = textureID;
-    
+
     return textureID;
 }
 
@@ -182,36 +182,45 @@ void circle(float scale, float center_x, float center_y, double r, double g, dou
     }
 }
 
-void setup_camera(float fov, float aspect, float near_plane, float far_plane,
-                  float eye_x, float eye_y, float eye_z,
-                  float center_x, float center_y, float center_z,
-                  float up_x, float up_y, float up_z) {
+void setup_camera(float fov, float eye_x, float eye_y, float eye_z,
+                  float pitch, float yaw) {
     camera.fov = fov;
-    camera.near = near_plane;
-    camera.far = far_plane;
+    camera.near = 0.1f;
+    camera.far = 1000.0f;
     camera.eye_x = eye_x; camera.eye_y = eye_y; camera.eye_z = eye_z;
-    camera.center_x = center_x; camera.center_y = center_y; camera.center_z = center_z;
-    camera.up_x = up_x; camera.up_y = up_y; camera.up_z = up_z;
 
-    // Устанавливаем текущую проекцию
+    // pitch — вертикальный наклон (градусы), yaw — горизонтальный
+    float pitch_rad = pitch * M_PI / 180.0f;
+    float yaw_rad   = yaw   * M_PI / 180.0f;
+
+    float dir_x = cos(pitch_rad) * sin(yaw_rad);
+    float dir_y = sin(pitch_rad);
+    float dir_z = cos(pitch_rad) * cos(yaw_rad);
+
+    camera.center_x = eye_x + dir_x;
+    camera.center_y = eye_y + dir_y;
+    camera.center_z = eye_z + dir_z;
+
+    camera.up_x = 0.0f; camera.up_y = 1.0f; camera.up_z = 0.0f;
+
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(fov, aspect, near_plane, far_plane);
+    // aspect временно 1.0, changeSize3D пересчитает при reshape
+    gluPerspective(fov, 1.0f, camera.near, camera.far);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(eye_x, eye_y, eye_z,
-              center_x, center_y, center_z,
-              up_x, up_y, up_z);
+              camera.center_x, camera.center_y, camera.center_z,
+              0.0f, 1.0f, 0.0f);
 }
 
-void draw3DObject(float scale,
-                  float center_x, float center_y, float center_z,
-                  float rotate_x, float rotate_y, float rotate_z,
+void draw3DObject(float center_x, float center_y, float center_z,
                   double r, double g, double b,
                   const char* texture_file,
-                  int num_vertices, float* vertices,          // массив вершин (x,y,z подряд)
-                  int num_indices, int* indices,              // массив индексов (треугольники)
-                  float* texcoords) {               // массив текстурных координат (s,t подряд)
+                  const vector<float>& vertices,   // x,y,z подряд
+                  const vector<int>& indices,       // тройки — треугольники
+                  const vector<float>& texcoords) { // s,t подряд
+
     glColor3f(r, g, b);
 
     if (texture_file != nullptr) {
@@ -226,23 +235,19 @@ void draw3DObject(float scale,
 
     glPushMatrix();
     glTranslatef(center_x, center_y, center_z);
-    glRotatef(rotate_x, 1.0f, 0.0f, 0.0f);
-    glRotatef(rotate_y, 0.0f, 1.0f, 0.0f);
-    glRotatef(rotate_z, 0.0f, 0.0f, 1.0f);
-    glScalef(scale, scale, scale);
 
     glEnableClientState(GL_VERTEX_ARRAY);
-    glVertexPointer(3, GL_FLOAT, 0, vertices);
+    glVertexPointer(3, GL_FLOAT, 0, vertices.data());
 
-    if (texcoords != nullptr && texture_file != nullptr) {
+    if (!texcoords.empty() && texture_file != nullptr) {
         glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-        glTexCoordPointer(2, GL_FLOAT, 0, texcoords);
+        glTexCoordPointer(2, GL_FLOAT, 0, texcoords.data());
     }
 
-    glDrawElements(GL_TRIANGLES, num_indices, GL_UNSIGNED_INT, indices);
+    glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, indices.data());
 
     glDisableClientState(GL_VERTEX_ARRAY);
-    if (texcoords != nullptr && texture_file != nullptr) {
+    if (!texcoords.empty() && texture_file != nullptr) {
         glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     }
 
@@ -258,30 +263,37 @@ void cube3D(float scale,
             double r, double g, double b,
             float rotate_x, float rotate_y, float rotate_z,
             const char* texture_file) {
-    // Вершины куба (8)
-    float vertices[] = {
-        -1, -1, -1,   1, -1, -1,   1,  1, -1,  -1,  1, -1, // перед
-        -1, -1,  1,   1, -1,  1,   1,  1,  1,  -1,  1,  1  // зад
+    std::vector<float> vertices = {
+        -1,-1,-1,  1,-1,-1,  1, 1,-1, -1, 1,-1,
+        -1,-1, 1,  1,-1, 1,  1, 1, 1, -1, 1, 1
     };
-    // Индексы треугольников (12 граней = 36 индексов)
-    int indices[] = {
-        0,1,2, 0,2,3,       // перед
-        4,6,5, 4,7,6,       // зад
-        0,3,7, 0,7,4,       // лево
-        1,5,6, 1,6,2,       // право
-        0,4,5, 0,5,1,       // низ
-        3,2,6, 3,6,7        // верх
+    std::vector<int> indices = {
+        0,1,2, 0,2,3,
+        4,6,5, 4,7,6,
+        0,3,7, 0,7,4,
+        1,5,6, 1,6,2,
+        0,4,5, 0,5,1,
+        3,2,6, 3,6,7
     };
-    // Простейшие текстурные координаты (для каждой грани нужны отдельные вершины, здесь для демонстрации)
-    float texcoords[] = {
-        0,0, 1,0, 1,1, 0,1,  0,0, 1,0, 1,1, 0,1,
-        0,0, 1,0, 1,1, 0,1,  0,0, 1,0, 1,1, 0,1,
-        0,0, 1,0, 1,1, 0,1,  0,0, 1,0, 1,1, 0,1
+    std::vector<float> texcoords = {
+        0,0, 1,0, 1,1, 0,1,
+        0,0, 1,0, 1,1, 0,1,
+        0,0, 1,0, 1,1, 0,1,
+        0,0, 1,0, 1,1, 0,1,
+        0,0, 1,0, 1,1, 0,1,
+        0,0, 1,0, 1,1, 0,1
     };
-    draw3DObject(scale, center_x, center_y, center_z,
-                 rotate_x, rotate_y, rotate_z,
-                 r, g, b, texture_file,
-                 8, vertices, 36, indices, texcoords);
+
+    glPushMatrix();
+    glTranslatef(center_x, center_y, center_z);
+    glRotatef(rotate_x, 1,0,0);
+    glRotatef(rotate_y, 0,1,0);
+    glRotatef(rotate_z, 0,0,1);
+    glScalef(scale, scale, scale);
+
+    draw3DObject(0, 0, 0, r, g, b, texture_file, vertices, indices, texcoords);
+
+    glPopMatrix();
 }
 
 void sphere3D(float scale,
@@ -342,6 +354,48 @@ void changeSize2D(int w, int h) {
     glLoadIdentity();
 }
 
+void move_camera(float eye_x, float eye_y, float eye_z,
+                 float pitch, float yaw) {
+    float pitch_rad = pitch * M_PI / 180.0f;
+    float yaw_rad   = yaw   * M_PI / 180.0f;
+
+    // смотрим к origin, а не от него
+    float dir_x = -cos(pitch_rad) * sin(yaw_rad);
+    float dir_y = -sin(pitch_rad);
+    float dir_z = -cos(pitch_rad) * cos(yaw_rad);
+
+    camera.eye_x = eye_x; camera.eye_y = eye_y; camera.eye_z = eye_z;
+    camera.center_x = eye_x + dir_x;
+    camera.center_y = eye_y + dir_y;
+    camera.center_z = eye_z + dir_z;
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(eye_x, eye_y, eye_z,
+              camera.center_x, camera.center_y, camera.center_z,
+              0.0f, 1.0f, 0.0f);
+}
+
+void begin_2d(int w, int h) {
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    glOrtho(0, w, 0, h, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    glDisable(GL_DEPTH_TEST);
+}
+
+void end_2d() {
+    glEnable(GL_DEPTH_TEST);
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+}
+
 void setup_display(int* argc, char** argv, float r, float g, float b, float a,
                    const char* name, int w, int h) {
     glutInit(argc, argv);
@@ -353,4 +407,6 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a,
     glClearColor(r, g, b, a);
     glEnable(GL_DEPTH_TEST);
     glClearDepth(1.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }

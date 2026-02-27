@@ -4,11 +4,12 @@
 #include <cstdio>
 #include <vector>
 
-static float cam_angle  = 0.0f;
-static float cam_dist   = 3.0f;
-static float cam_pitch  = 0.0f;   // вертикальный угол, 0 = на уровне entity
+static float cam_angle = 0.0f;
+static float cam_dist  = 3.0f;
+static float cam_pitch = 0.0f;
 static const float PITCH_MIN = -60.0f;
 static const float PITCH_MAX =  60.0f;
+static int win_w = 800, win_h = 600;
 
 static pseudo_3d_entity* entity = nullptr;
 
@@ -19,21 +20,14 @@ float camZ() { return cos(cam_angle * M_PI / 180.0f) * cam_dist * cos(cam_pitch 
 void display() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    gluLookAt(camX(), camY(), camZ(),
-              0, 0, 0,
-              0, 1, 0);
+    move_camera(camX(), camY(), camZ(), cam_pitch, cam_angle);
 
     // Пол
-    glDisable(GL_TEXTURE_2D);
-    glColor3f(0.3f, 0.3f, 0.3f);
-    glBegin(GL_QUADS);
-    glVertex3f(-5, -0.5f, -5);
-    glVertex3f( 5, -0.5f, -5);
-    glVertex3f( 5, -0.5f,  5);
-    glVertex3f(-5, -0.5f,  5);
-    glEnd();
+    std::vector<float> floor_verts = {
+        -5, 0, -5,  5, 0, -5,  5, 0, 5,  -5, 0, 5
+    };
+    std::vector<int> floor_idx = { 0,1,2, 0,2,3 };
+    draw3DObject(0, -0.5f, 0, 0.3, 0.3, 0.3, nullptr, floor_verts, floor_idx);
 
     entity->draw(cam_angle, camX(), camY(), camZ());
 
@@ -43,23 +37,12 @@ void display() {
              entity->getTextureIndex(cam_angle),
              cam_angle, cam_pitch, entity->getGAngle());
 
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(0, 800, 0, 600, -1, 1);
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-    glDisable(GL_DEPTH_TEST);
+    begin_2d(win_w, win_h);
     glColor3f(1, 1, 1);
     glRasterPos2f(10, 10);
     for (char* c = buf; *c; c++)
         glutBitmapCharacter(GLUT_BITMAP_8_BY_13, *c);
-    glEnable(GL_DEPTH_TEST);
-    glPopMatrix();
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
+    end_2d();
 
     glutSwapBuffers();
 }
@@ -78,28 +61,27 @@ void keyboard(unsigned char key, int, int) {
 }
 
 void reshape(int w, int h) {
+    win_w = w; win_h = h;
     changeSize3D(w, h);
 }
 
 int main(int argc, char** argv) {
     std::vector<const char*> textures = {
-        "tex_front.png",
-        "tex_front_left.png",
-        "tex_left.png",
-        "tex_back_left.png",
-        "tex_back.png",
-        "tex_back_right.png",
-        "tex_right.png",
-        "tex_front_right.png",
+        "src/hand/0.png",
+        "src/hand/45.png",
+        "src/hand/90.png",
+        "src/hand/135.png",
+        "src/hand/180.png",
+        "src/hand/225.png",
+        "src/hand/270.png",
+        "src/hand/315.png",
     };
 
     entity = new pseudo_3d_entity(0, 0, 0, 0, 0, textures);
 
     setup_display(&argc, argv, 0.1f, 0.1f, 0.15f, 1.0f, "Pseudo3D Demo", 800, 600);
-    setup_camera(60.0f, 800.0f/600.0f, 0.1f, 100.0f,
-                 camX(), camY(), camZ(),
-                 0, 0, 0,
-                 0, 1, 0);
+    setup_camera(60.0f, camX(), camY(), camZ(), cam_pitch, cam_angle);
+    move_camera(camX(), camY(), camZ(), cam_pitch, cam_angle);
 
     glutDisplayFunc(display);
     glutKeyboardFunc(keyboard);

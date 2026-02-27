@@ -115,19 +115,16 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a,
                    const char* name, int w, int h);
 
 // Новые 3D-функции
-void setup_camera(float fov, float aspect, float near_plane, float far_plane,
+void setup_camera(float fov,
                   float eye_x, float eye_y, float eye_z,
-                  float center_x, float center_y, float center_z,
-                  float up_x, float up_y, float up_z);
+                  float pitch, float yaw);
 
-void draw3DObject(float scale,
-                  float center_x, float center_y, float center_z,
-                  float rotate_x, float rotate_y, float rotate_z,
+void draw3DObject(float center_x, float center_y, float center_z,
                   double r, double g, double b,
                   const char* texture_file,
-                  int num_vertices, float* vertices,
-                  int num_indices, int* indices,
-                  float* texcoords = nullptr);
+                  const std::vector<float>& vertices,
+                  const std::vector<int>& indices,
+                  const std::vector<float>& texcoords = {});
 
 void cube3D(float scale,
             float center_x, float center_y, float center_z,
@@ -141,5 +138,11 @@ void sphere3D(float scale,
               float rotate_x, float rotate_y, float rotate_z,
               float radius, int slices, int stacks,
               const char* texture_file);
+
+void move_camera(float eye_x, float eye_y, float eye_z,
+                 float pitch, float yaw);
+
+void begin_2d(int w, int h);
+void end_2d();
 
 #endif
