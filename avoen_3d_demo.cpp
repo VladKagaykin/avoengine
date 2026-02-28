@@ -29,19 +29,11 @@ void display() {
     std::vector<int> floor_idx = { 0,1,2, 0,2,3 };
     draw3DObject(0, -0.5f, 0, 0.3, 0.3, 0.3, nullptr, floor_verts, floor_idx);
 
-    entity->draw(cam_angle, camX(), camY(), camZ());
-
-    // HUD
-    char buf[128];
-    snprintf(buf, sizeof(buf), "Texture idx: %d | Cam: %.0f | Pitch: %.0f | Entity: %.0f",
-             entity->getTextureIndex(cam_angle),
-             cam_angle, cam_pitch, entity->getGAngle());
+    // entity->draw(cam_angle, camX(), camY(), camZ());
+    entity->draw(cam_angle, 0, 0, 0);
 
     begin_2d(win_w, win_h);
-    glColor3f(1, 1, 1);
-    glRasterPos2f(10, 10);
-    for (char* c = buf; *c; c++)
-        glutBitmapCharacter(GLUT_BITMAP_8_BY_13, *c);
+    draw_text("test",0,0,GLUT_BITMAP_HELVETICA_10,1,1,1);
     end_2d();
 
     glutSwapBuffers();

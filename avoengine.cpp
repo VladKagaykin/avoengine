@@ -3,8 +3,11 @@
 #include <cmath>
 #include <SOIL/SOIL.h>
 #include <GL/glu.h>
+#include <GL/glut.h>
 
 using namespace std;
+
+int window_w, window_h, screen_w, screen_h;
 
 static map<string, GLuint> textureCache;
 
@@ -182,6 +185,14 @@ void circle(float scale, float center_x, float center_y, double r, double g, dou
     }
 }
 
+void draw_text(const char* text, float x, float y, void* font, float r, float g, float b) {
+    glColor3f(r, g, b);
+    glRasterPos2f(x, y);
+    for (const char* c = text; *c != '\0'; ++c) {
+        glutBitmapCharacter(font, *c);
+    }
+}
+
 void setup_camera(float fov, float eye_x, float eye_y, float eye_z,
                   float pitch, float yaw) {
     camera.fov = fov;
@@ -352,6 +363,8 @@ void changeSize2D(int w, int h) {
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
+    window_w = w;
+    window_h = h;
 }
 
 void move_camera(float eye_x, float eye_y, float eye_z,
@@ -409,4 +422,8 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a,
     glClearDepth(1.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    window_w = glutGet(GLUT_WINDOW_WIDTH);
+    window_h = glutGet(GLUT_WINDOW_HEIGHT);
+    screen_w = glutGet(GLUT_SCREEN_WIDTH);
+    screen_h = glutGet(GLUT_SCREEN_HEIGHT);
 }

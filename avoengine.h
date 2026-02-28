@@ -7,6 +7,11 @@
 #include <vector>
 #include<cmath>
 
+extern int window_w;
+extern int window_h;
+extern int screen_w;
+extern int screen_h;
+
 // Функции работы с текстурами
 GLuint loadTextureFromFile(const char* filename);
 void rotatePoint(float& x, float& y, float center_x, float center_y, float angle_rad);
@@ -22,6 +27,8 @@ void square(float local_size, float x, float y, double r, double g, double b,
 void circle(float scale, float center_x, float center_y, double r, double g, double b, 
             float radius, float in_radius, float rotate, int slices, int loops,
             const char* texture_file = nullptr);
+
+void draw_text(const char* text, float x, float y, void* font, float r, float g, float b);
 
 class pseudo_3d_entity {
 private:
