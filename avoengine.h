@@ -42,12 +42,14 @@ public:
         if (textures.empty()) return -1;
         int count = (int)textures.size();
         float sector = 360.0f / count;
-        float relative = (camera_h_angle + 180.0f) - g_angle;
-        while (relative < 0)    relative += 360.0f;
+
+        // угол камеры относительно направления взгляда entity
+        float relative = camera_h_angle - g_angle;
+        while (relative <    0) relative += 360.0f;
         while (relative >= 360) relative -= 360.0f;
-        relative = fmod(relative + sector * 0.5f, 360.0f);
-        int index = (int)(relative / sector);
-        if (index >= count) index = count - 1;
+
+        // 0° = камера спереди (совпадает с g_angle)
+        int index = (int)((relative + sector * 0.5f) / sector) % count;
         return index;
     }
 
@@ -60,26 +62,32 @@ public:
     void draw(float camera_h_angle,
           float cam_x, float cam_y, float cam_z,
           float size = 0.25f) const {
-        const char* tex = getCurrentTexture(camera_h_angle);
+        // Стрелка — в мировых координатах, до billboard-поворота
+        float rad = g_angle * M_PI / 180.0f;
+        glDisable(GL_TEXTURE_2D);
+        glColor3f(1, 0, 0);
+        glBegin(GL_LINES);
+        glVertex3f(x, y, z);
+        glVertex3f(x + sin(rad) * size * 2, y, z + cos(rad) * size * 2);
+        glEnd();
 
+        // Billboard
+        const char* tex = getCurrentTexture(camera_h_angle);
         if (tex != nullptr) {
             GLuint textureID = loadTextureFromFile(tex);
             if (textureID != 0) {
                 glEnable(GL_TEXTURE_2D);
                 glBindTexture(GL_TEXTURE_2D, textureID);
             }
-        } else {
-            glDisable(GL_TEXTURE_2D);
         }
 
-        // Вектор от entity к камере (для billboard-поворота)
         float dx = cam_x - x;
         float dz = cam_z - z;
         float billboard_angle = atan2(dx, dz) * 180.0f / M_PI;
 
         glPushMatrix();
         glTranslatef(x, y, z);
-        glRotatef(billboard_angle, 0, 1, 0); // всегда лицом к камере
+        glRotatef(billboard_angle, 0, 1, 0);
 
         glColor3f(1, 1, 1);
         glBegin(GL_QUADS);
@@ -90,15 +98,6 @@ public:
         glEnd();
 
         glDisable(GL_TEXTURE_2D);
-
-        // Стрелка — куда смотрит entity (в горизонтальной плоскости)
-        float rad = g_angle * M_PI / 180.0f;
-        glColor3f(1, 0, 0);
-        glBegin(GL_LINES);
-        glVertex3f(0, 0, 0);
-        glVertex3f(sin(rad) * size * 2, 0, cos(rad) * size * 2);
-        glEnd();
-
         glPopMatrix();
     }
 
