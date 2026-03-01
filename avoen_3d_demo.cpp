@@ -10,7 +10,6 @@ static float cam_pitch = 0.0f;
 static const float PITCH_MIN = -60.0f;
 static const float PITCH_MAX =  60.0f;
 static int win_w = 800, win_h = 600;
-
 static pseudo_3d_entity* entity = nullptr;
 
 float camX() { return sin(cam_angle * M_PI / 180.0f) * cam_dist * cos(cam_pitch * M_PI / 180.0f); }
@@ -19,21 +18,22 @@ float camZ() { return cos(cam_angle * M_PI / 180.0f) * cam_dist * cos(cam_pitch 
 
 void display() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
     move_camera(camX(), camY(), camZ(), cam_pitch, cam_angle);
 
     // Пол
     std::vector<float> floor_verts = {
-        -5, 0, -5,  5, 0, -5,  5, 0, 5,  -5, 0, 5
+        -5, 0, -5,   5, 0, -5,   5, 0, 5,   -5, 0, 5
     };
-    std::vector<int> floor_idx = { 0,1,2, 0,2,3 };
-    draw3DObject(0, -0.5f, 0, 0.3, 0.3, 0.3, nullptr, floor_verts, floor_idx);
+    std::vector<int> floor_idx = { 0, 1, 2, 0, 2, 3 };
+    std::vector<float> floor_uvs = {
+        0, 0,   1, 0,   1, 1,   0, 1
+    };
+    draw3DObject(0, -0.5f, 0, 0.3, 0.3, 0.3, nullptr, floor_verts, floor_idx, floor_uvs);
 
-    // entity->draw(cam_angle, camX(), camY(), camZ());
-    entity->draw(cam_angle, 0, 0, 0);
+    entity->draw(cam_angle, camX(), camY(), camZ());
 
     begin_2d(win_w, win_h);
-    draw_text("test",0,0,GLUT_BITMAP_HELVETICA_10,1,1,1);
+    draw_text("test", 0, 0, GLUT_BITMAP_HELVETICA_10, 1, 1, 1);
     end_2d();
 
     glutSwapBuffers();
@@ -69,15 +69,23 @@ int main(int argc, char** argv) {
         "src/hand/315.png",
     };
 
-    entity = new pseudo_3d_entity(0, 0, 0, 0, 0, textures);
+    // Вершины billboard-quad в локальных координатах (x, y) — 4 точки
+    static float verts[] = {
+        -0.5f, -0.5f,
+         0.5f, -0.5f,
+         0.5f,  0.5f,
+        -0.5f,  0.5f
+    };
 
-    setup_display(&argc, argv, 0.1f, 0.1f, 0.15f, 1.0f, "Pseudo3D Demo", 800, 600);
+    entity = new pseudo_3d_entity(0, 0, 0, 0, 0, textures, 1, verts);
+
+    setup_display(&argc, argv, 0.1f, 0.1f, 0.15f, 1.0f, "entity_3D_Demo", 800, 600);
     setup_camera(60.0f, camX(), camY(), camZ(), cam_pitch, cam_angle);
-    move_camera(camX(), camY(), camZ(), cam_pitch, cam_angle);
 
     glutDisplayFunc(display);
     glutKeyboardFunc(keyboard);
     glutReshapeFunc(reshape);
+
     glutMainLoop();
 
     delete entity;

@@ -102,26 +102,26 @@ void triangle(float scale, float center_x, float center_y, double r, double g, d
 
 void square(float local_size, float x, float y, double r, double g, double b, 
             float rotate, float* vertices, const char* texture_file, 
-            vector<const char*> textures, bool condition) {
+            vector<const char*> textures, bool condition, const int max_tick, int tick) {
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
     
-    // if (texture_file != nullptr) {
-    //     glEnable(GL_TEXTURE_2D);
-    //     const char* texture_to_load = texture_file;
-    //     if (!textures.empty() && condition) {
-    //         int count_textures = textures.size();
-    //         int frame_tick = max_tick / count_textures;
-    //         int frame_index = min(tick / frame_tick, count_textures - 1);
-    //         texture_to_load = textures[frame_index];
-    //     }
-    //     GLuint textureID = loadTextureFromFile(texture_to_load);
-    //     if (textureID != 0) {
-    //         glBindTexture(GL_TEXTURE_2D, textureID);
-    //     }
-    // } else {
-    //     glDisable(GL_TEXTURE_2D);
-    // }
+    if (texture_file != nullptr) {
+        glEnable(GL_TEXTURE_2D);
+        const char* texture_to_load = texture_file;
+        if (!textures.empty() && condition) {
+            int count_textures = textures.size();
+            int frame_tick = max_tick / count_textures;
+            int frame_index = min(tick / frame_tick, count_textures - 1);
+            texture_to_load = textures[frame_index];
+        }
+        GLuint textureID = loadTextureFromFile(texture_to_load);
+        if (textureID != 0) {
+            glBindTexture(GL_TEXTURE_2D, textureID);
+        }
+    } else {
+        glDisable(GL_TEXTURE_2D);
+    }
 
     glBegin(GL_QUADS);
     float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
@@ -412,8 +412,12 @@ void end_2d() {
 void setup_display(int* argc, char** argv, float r, float g, float b, float a,
                    const char* name, int w, int h) {
     glutInit(argc, argv);
+    window_w = glutGet(GLUT_WINDOW_WIDTH);
+    window_h = glutGet(GLUT_WINDOW_HEIGHT);
+    screen_w = glutGet(GLUT_SCREEN_WIDTH);
+    screen_h = glutGet(GLUT_SCREEN_HEIGHT);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-    glutInitWindowPosition(100, 100);
+    glutInitWindowPosition(screen_w/4, screen_h/8);
     glutInitWindowSize(w, h);
     glutCreateWindow(name);
     glutReshapeFunc(changeSize2D);
@@ -422,8 +426,4 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a,
     glClearDepth(1.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    window_w = glutGet(GLUT_WINDOW_WIDTH);
-    window_h = glutGet(GLUT_WINDOW_HEIGHT);
-    screen_w = glutGet(GLUT_SCREEN_WIDTH);
-    screen_h = glutGet(GLUT_SCREEN_HEIGHT);
 }
