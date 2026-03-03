@@ -48,10 +48,37 @@ public:
         int h_count = total / v_angles;
         if (h_count <= 0) return nullptr;
 
-        float v_relative = fmax(0.0f, fmin(180.0f, (cam_v - v_angle) + 90.0f));
+        // Переводим углы камеры в вектор направления
+        float ch = cam_h * M_PI / 180.0f;
+        float cv = cam_v * M_PI / 180.0f;
+        float dir_x = cos(cv) * sin(ch);
+        float dir_y = sin(cv);
+        float dir_z = cos(cv) * cos(ch);
+
+        // Поворачиваем вектор в систему координат entity
+        // Entity повёрнут на g_angle по горизонтали и v_angle по вертикали
+        float ga = g_angle * M_PI / 180.0f;
+        float va = v_angle * M_PI / 180.0f;
+
+        // Сначала отменяем горизонтальный поворот entity
+        float lx =  dir_x * cos(-ga) + dir_z * sin(-ga);
+        float ly =  dir_y;
+        float lz = -dir_x * sin(-ga) + dir_z * cos(-ga);
+
+        // Затем отменяем вертикальный поворот entity (вращение вокруг оси X)
+        float fx =  lx;
+        float fy =  ly * cos(va) + lz * sin(va);
+        float fz = -ly * sin(va) + lz * cos(va);
+
+        // Из локального вектора получаем локальные углы
+        float local_v = atan2(fy, sqrt(fx*fx + fz*fz)) * 180.0f / M_PI;
+        float local_h = (fabs(local_v) > 88.0f) ? 0.0f : atan2(fx, fz) * 180.0f / M_PI;
+
+        float v_relative = fmax(0.0f, fmin(180.0f, local_v + 90.0f));
         int v_index = fmin((int)(v_relative / (180.0f / v_angles)), v_angles - 1);
 
-        int h_index = (int)((fmod(cam_h - g_angle + 360.0f, 360.0f) + 360.0f / h_count * 0.5f) / (360.0f / h_count)) % h_count;
+        int h_index = (int)((fmod(local_h + 360.0f, 360.0f) + 360.0f / h_count * 0.5f) 
+                            / (360.0f / h_count)) % h_count;
 
         int idx = v_index * h_count + h_index;
         return (idx < total) ? textures[idx] : nullptr;
@@ -59,7 +86,7 @@ public:
 
     void draw(float cam_h, float cam_x, float cam_y, float cam_z) const {
         float dx = cam_x - x, dy = cam_y - y, dz = cam_z - z;
-        float yaw   = atan2(dx, dz) * 180.0f / M_PI;
+        float dist = sqrt(dx*dx + dy*dy + dz*dz);
         float pitch = atan2(dy, sqrt(dx*dx + dz*dz)) * 180.0f / M_PI;
 
         glDisable(GL_TEXTURE_2D);
@@ -75,10 +102,59 @@ public:
             if (tid) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tid); }
         }
 
+        float fx = (dist > 0.0001f) ? dx / dist : 0.0f;
+        float fy = (dist > 0.0001f) ? dy / dist : 1.0f;
+        float fz = (dist > 0.0001f) ? dz / dist : 0.0f;
+
+        float wx = 0.0f, wy = 1.0f, wz = 0.0f;
+        if (fabs(fy) > 0.999f) {
+            wx = 0.0f; wy = 0.0f; wz = 1.0f;
+        }
+
+        float rx = wy * fz - wz * fy;
+        float ry = wz * fx - wx * fz;
+        float rz = wx * fy - wy * fx;
+        float rlen = sqrt(rx*rx + ry*ry + rz*rz);
+        if (rlen > 0.0001f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+
+        float ux = fy * rz - fz * ry;
+        float uy = fz * rx - fx * rz;
+        float uz = fx * ry - fy * rx;
+
+        float mat[16] = {
+            rx,   ry,   rz,   0.0f,
+            ux,   uy,   uz,   0.0f,
+            fx,   fy,   fz,   0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        };
+
+        // Вычисляем крен текстуры в локальном пространстве entity
+        float ga = g_angle * M_PI / 180.0f;
+        float va = v_angle * M_PI / 180.0f;
+
+        float ch = atan2(dx, dz);
+        float cv = atan2(dy, sqrt(dx*dx + dz*dz));
+
+        float dir_x = cos(cv) * sin(ch);
+        float dir_y = sin(cv);
+        float dir_z = cos(cv) * cos(ch);
+
+        // Отменяем горизонтальный поворот entity
+        float lx =  dir_x * cos(-ga) + dir_z * sin(-ga);
+        float ly =  dir_y;
+        float lz = -dir_x * sin(-ga) + dir_z * cos(-ga);
+
+        // Отменяем вертикальный поворот entity
+        float loc_x =  lx;
+        float loc_y =  ly * cos(-va) - lz * sin(-va);
+        float loc_z =  ly * sin(-va) + lz * cos(-va);
+
+        float roll = atan2(loc_x, loc_z) * 180.0f / M_PI * fabs(sin(va));
+
         glPushMatrix();
         glTranslatef(x, y, z);
-        glRotatef(yaw,    0, 1, 0);
-        glRotatef(-pitch, 1, 0, 0);
+        glMultMatrixf(mat);
+        glRotatef(roll, 0.0f, 0.0f, 1.0f);
         glColor3f(1, 1, 1);
         glBegin(GL_QUADS);
         glTexCoord2f(0,1); glVertex3f(vertices[0], vertices[1], 0);
