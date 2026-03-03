@@ -21,8 +21,7 @@ void triangle(float scale, float center_x, float center_y, double r, double g, d
               float rotate, float* vertices, const char* texture_file = nullptr);
 
 void square(float local_size, float x, float y, double r, double g, double b, 
-            float rotate, float* vertices, const char* texture_file, 
-            std::vector<const char*> textures, bool condition, const int max_tick, int tick);
+            float rotate, float* vertices, const char* texture_file);
 
 void circle(float scale, float center_x, float center_y, double r, double g, double b, 
             float radius, float in_radius, float rotate, int slices, int loops,
@@ -117,19 +116,6 @@ void draw3DObject(float center_x, float center_y, float center_z,
                   const std::vector<float>& vertices,
                   const std::vector<int>& indices,
                   const std::vector<float>& texcoords = {});
-
-void cube3D(float scale,
-            float center_x, float center_y, float center_z,
-            double r, double g, double b,
-            float rotate_x, float rotate_y, float rotate_z,
-            const char* texture_file);
-
-void sphere3D(float scale,
-              float center_x, float center_y, float center_z,
-              double r, double g, double b,
-              float rotate_x, float rotate_y, float rotate_z,
-              float radius, int slices, int stacks,
-              const char* texture_file);
 
 void move_camera(float eye_x, float eye_y, float eye_z,
                  float pitch, float yaw);

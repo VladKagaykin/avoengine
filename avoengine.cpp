@@ -101,24 +101,15 @@ void triangle(float scale, float center_x, float center_y, double r, double g, d
 }
 
 void square(float local_size, float x, float y, double r, double g, double b, 
-            float rotate, float* vertices, const char* texture_file, 
-            vector<const char*> textures, bool condition, const int max_tick, int tick) {
+            float rotate, float* vertices, const char* texture_file) {
     glColor3f(r, g, b);
     float angle_rad = rotate * M_PI / -180.0f;
     
     if (texture_file != nullptr) {
         glEnable(GL_TEXTURE_2D);
         const char* texture_to_load = texture_file;
-        if (!textures.empty() && condition) {
-            int count_textures = textures.size();
-            int frame_tick = max_tick / count_textures;
-            int frame_index = min(tick / frame_tick, count_textures - 1);
-            texture_to_load = textures[frame_index];
-        }
         GLuint textureID = loadTextureFromFile(texture_to_load);
-        if (textureID != 0) {
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
+        glBindTexture(GL_TEXTURE_2D, textureID);
     } else {
         glDisable(GL_TEXTURE_2D);
     }
@@ -267,70 +258,6 @@ void draw3DObject(float center_x, float center_y, float center_z,
     if (texture_file != nullptr) {
         glDisable(GL_TEXTURE_2D);
     }
-}
-
-void cube3D(float scale,
-            float center_x, float center_y, float center_z,
-            double r, double g, double b,
-            float rotate_x, float rotate_y, float rotate_z,
-            const char* texture_file) {
-    std::vector<float> vertices = {
-        -1,-1,-1,  1,-1,-1,  1, 1,-1, -1, 1,-1,
-        -1,-1, 1,  1,-1, 1,  1, 1, 1, -1, 1, 1
-    };
-    std::vector<int> indices = {
-        0,1,2, 0,2,3,
-        4,6,5, 4,7,6,
-        0,3,7, 0,7,4,
-        1,5,6, 1,6,2,
-        0,4,5, 0,5,1,
-        3,2,6, 3,6,7
-    };
-    std::vector<float> texcoords = {
-        0,0, 1,0, 1,1, 0,1,
-        0,0, 1,0, 1,1, 0,1,
-        0,0, 1,0, 1,1, 0,1,
-        0,0, 1,0, 1,1, 0,1,
-        0,0, 1,0, 1,1, 0,1,
-        0,0, 1,0, 1,1, 0,1
-    };
-
-    glPushMatrix();
-    glTranslatef(center_x, center_y, center_z);
-    glRotatef(rotate_x, 1,0,0);
-    glRotatef(rotate_y, 0,1,0);
-    glRotatef(rotate_z, 0,0,1);
-    glScalef(scale, scale, scale);
-
-    draw3DObject(0, 0, 0, r, g, b, texture_file, vertices, indices, texcoords);
-
-    glPopMatrix();
-}
-
-void sphere3D(float scale,
-              float center_x, float center_y, float center_z,
-              double r, double g, double b,
-              float rotate_x, float rotate_y, float rotate_z,
-              float radius, int slices, int stacks,
-              const char* texture_file) {
-    glColor3f(r, g, b);
-    if (texture_file) {
-        GLuint tex = loadTextureFromFile(texture_file);
-        if (tex) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tex); }
-    } else glDisable(GL_TEXTURE_2D);
-
-    glPushMatrix();
-    glTranslatef(center_x, center_y, center_z);
-    glRotatef(rotate_x, 1,0,0); glRotatef(rotate_y,0,1,0); glRotatef(rotate_z,0,0,1);
-    glScalef(scale,scale,scale);
-
-    GLUquadric* q = gluNewQuadric();
-    gluQuadricTexture(q, GL_TRUE);
-    gluSphere(q, radius, slices, stacks);
-    gluDeleteQuadric(q);
-
-    glPopMatrix();
-    if (texture_file) glDisable(GL_TEXTURE_2D);
 }
 
 void changeSize3D(int w, int h) {
