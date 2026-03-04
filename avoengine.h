@@ -89,11 +89,19 @@ public:
         float dist = sqrt(dx*dx + dy*dy + dz*dz);
         float pitch = atan2(dy, sqrt(dx*dx + dz*dz)) * 180.0f / M_PI;
 
+        float ga = g_angle * M_PI / 180.0f;
+        float va = v_angle * M_PI / 180.0f;
+
+        // Стрелка направления entity
         glDisable(GL_TEXTURE_2D);
         glColor3f(1, 0, 0);
         glBegin(GL_LINES);
         glVertex3f(x, y, z);
-        glVertex3f(x + sin(g_angle * M_PI / 180.0f) * 2, y, z + cos(g_angle * M_PI / 180.0f) * 2);
+        glVertex3f(
+            x + cos(va) * sin(ga) * 2,
+            y - sin(va) * 2,
+            z + cos(va) * cos(ga) * 2
+        );
         glEnd();
 
         const char* tex = getCurrentTexture(cam_h, pitch);
@@ -102,59 +110,67 @@ public:
             if (tid) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tid); }
         }
 
+        // Billboard: forward = от entity к камере
         float fx = (dist > 0.0001f) ? dx / dist : 0.0f;
         float fy = (dist > 0.0001f) ? dy / dist : 1.0f;
         float fz = (dist > 0.0001f) ? dz / dist : 0.0f;
 
         float wx = 0.0f, wy = 1.0f, wz = 0.0f;
-        if (fabs(fy) > 0.999f) {
-            wx = 0.0f; wy = 0.0f; wz = 1.0f;
-        }
+        if (fabs(fy) > 0.999f) { wx = 0.0f; wy = 0.0f; wz = 1.0f; }
 
-        float rx = wy * fz - wz * fy;
-        float ry = wz * fx - wx * fz;
-        float rz = wx * fy - wy * fx;
+        float rx = wy*fz - wz*fy;
+        float ry = wz*fx - wx*fz;
+        float rz = wx*fy - wy*fx;
         float rlen = sqrt(rx*rx + ry*ry + rz*rz);
         if (rlen > 0.0001f) { rx /= rlen; ry /= rlen; rz /= rlen; }
 
-        float ux = fy * rz - fz * ry;
-        float uy = fz * rx - fx * rz;
-        float uz = fx * ry - fy * rx;
+        float ux = fy*rz - fz*ry;
+        float uy = fz*rx - fx*rz;
+        float uz = fx*ry - fy*rx;
 
         float mat[16] = {
-            rx,   ry,   rz,   0.0f,
-            ux,   uy,   uz,   0.0f,
-            fx,   fy,   fz,   0.0f,
-            0.0f, 0.0f, 0.0f, 1.0f
+            rx, ry, rz, 0,
+            ux, uy, uz, 0,
+            fx, fy, fz, 0,
+            0,  0,  0,  1
         };
 
-        // Вычисляем крен текстуры в локальном пространстве entity
-        float ga = g_angle * M_PI / 180.0f;
-        float va = v_angle * M_PI / 180.0f;
+        // "Вверх" entity в мировых координатах (local Y)
+        float eu_x = -sin(ga) * sin(va);
+        float eu_y = -cos(va);
+        float eu_z = -cos(ga) * sin(va);
 
-        float ch = atan2(dx, dz);
-        float cv = atan2(dy, sqrt(dx*dx + dz*dz));
+        // "Вперёд" entity в мировых координатах (local Z) — запасной вектор
+        float ef_x = cos(va) * sin(ga);
+        float ef_y = -sin(va);
+        float ef_z = cos(va) * cos(ga);
 
-        float dir_x = cos(cv) * sin(ch);
-        float dir_y = sin(cv);
-        float dir_z = cos(cv) * cos(ch);
+        // Проецируем "вверх" entity на плоскость билборда
+        float dot = eu_x*fx + eu_y*fy + eu_z*fz;
+        float pu_x = eu_x - dot*fx;
+        float pu_y = eu_y - dot*fy;
+        float pu_z = eu_z - dot*fz;
+        float plen = sqrt(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
 
-        // Отменяем горизонтальный поворот entity
-        float lx =  dir_x * cos(-ga) + dir_z * sin(-ga);
-        float ly =  dir_y;
-        float lz = -dir_x * sin(-ga) + dir_z * cos(-ga);
+        // Вырожденный случай: "вверх" entity совпадает с направлением взгляда —
+        // используем "вперёд" entity как ориентир
+        if (plen < 0.01f) {
+            float dot2 = ef_x*fx + ef_y*fy + ef_z*fz;
+            pu_x = ef_x - dot2*fx;
+            pu_y = ef_y - dot2*fy;
+            pu_z = ef_z - dot2*fz;
+            plen = sqrt(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
+        }
 
-        // Отменяем вертикальный поворот entity
-        float loc_x =  lx;
-        float loc_y =  ly * cos(-va) - lz * sin(-va);
-        float loc_z =  ly * sin(-va) + lz * cos(-va);
-
-        float roll = atan2(loc_x, loc_z) * 180.0f / M_PI * fabs(sin(va));
+        float roll = atan2(
+                -(pu_x*rx + pu_y*ry + pu_z*rz),
+                pu_x*ux + pu_y*uy + pu_z*uz
+            ) * 180.0f / M_PI;
 
         glPushMatrix();
         glTranslatef(x, y, z);
         glMultMatrixf(mat);
-        glRotatef(roll, 0.0f, 0.0f, 1.0f);
+        glRotatef(roll+180, 0, 0, 1);
         glColor3f(1, 1, 1);
         glBegin(GL_QUADS);
         glTexCoord2f(0,1); glVertex3f(vertices[0], vertices[1], 0);
