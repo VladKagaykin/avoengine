@@ -93,16 +93,16 @@ public:
         float va = v_angle * M_PI / 180.0f;
 
         // Стрелка направления entity
-        glDisable(GL_TEXTURE_2D);
-        glColor3f(1, 0, 0);
-        glBegin(GL_LINES);
-        glVertex3f(x, y, z);
-        glVertex3f(
-            x + cos(va) * sin(ga) * 2,
-            y - sin(va) * 2,
-            z + cos(va) * cos(ga) * 2
-        );
-        glEnd();
+        // glDisable(GL_TEXTURE_2D);
+        // glColor3f(1, 0, 0);
+        // glBegin(GL_LINES);
+        // glVertex3f(x, y, z);
+        // glVertex3f(
+        //     x + cos(va) * sin(ga) * 2,
+        //     y - sin(va) * 2,
+        //     z + cos(va) * cos(ga) * 2
+        // );
+        // glEnd();
 
         const char* tex = getCurrentTexture(cam_h, pitch);
         if (tex) {
