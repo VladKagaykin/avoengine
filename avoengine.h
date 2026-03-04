@@ -221,4 +221,6 @@ void play_sound_3d(const char* filename, float x, float y, float z, float volume
 void play_sound_3d_loop(const char* filename, float x, float y, float z, float volume = 1.0f);
 void play_white_noise_3d(float x, float y, float z, float volume = 1.0f);
 
+void draw_performance_hud(int win_w, int win_h);
+
 #endif

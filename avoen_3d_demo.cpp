@@ -59,7 +59,10 @@ void display() {
     snprintf(buf_h, sizeof(buf_h), "Angle: %.1f  Pos: %.1f %.1f", cam_angle, cam_x, cam_z);
 
     begin_2d(win_w, win_h);
-    draw_text(buf_h, 10, win_h - 20, GLUT_BITMAP_HELVETICA_12, 1, 1, 1);
+    // draw_text(buf_h, 10, win_h - 20, GLUT_BITMAP_HELVETICA_12, 1, 1, 1);
+    // volatile double x = 0;
+    // for (int i = 0; i < 10000000; i++) x += i * 3.14;
+    draw_performance_hud(win_w,win_h);
     end_2d();
 
     glutSwapBuffers();
@@ -169,8 +172,8 @@ int main(int argc, char** argv) {
     setup_display(&argc, argv, 0.1f, 0.1f, 0.15f, 1.0f, "entity_3D_Demo", 800, 600);
     setup_camera(60.0f, cam_x, CAM_HEIGHT, cam_z, -cam_pitch, cam_angle);
 
-    play_sound_3d_loop("src/radio/radio.wav", 10, 0.5f, 10, 1.5f);
-    play_white_noise_3d(-10, 0.5f, -10);
+    // play_sound_3d_loop("src/radio/radio.wav", 10, 0.5f, 10, 1.5f);
+    // play_white_noise_3d(-10, 0.5f, -10);
 
     glutDisplayFunc(display);
     glutKeyboardFunc(keyboard);

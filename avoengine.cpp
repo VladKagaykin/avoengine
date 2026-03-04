@@ -8,6 +8,7 @@
 #include <SOIL/SOIL.h>
 #include <GL/glu.h>
 #include <GL/glut.h>
+#include <chrono>
 
 using namespace std;
 
@@ -430,6 +431,41 @@ void play_white_noise_3d(float x, float y, float z, float volume) {
     ma_sound_set_volume(&noise_sound, volume);
     ma_sound_set_looping(&noise_sound, MA_TRUE);
     ma_sound_start(&noise_sound);
+}
+
+void draw_performance_hud(int win_w, int win_h) {
+    static long prev_cpu = 0;
+    static double cpu = 0;
+    static long ram_kb = 0;
+    static auto prev_time = std::chrono::steady_clock::now();
+
+    auto now = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(now - prev_time).count();
+
+    if (elapsed >= 1.0) {
+        FILE* f = fopen("/proc/self/status", "r");
+        char line[128];
+        while (fgets(line, sizeof(line), f))
+            if (sscanf(line, "VmRSS: %ld", &ram_kb) == 1) break;
+        fclose(f);
+
+        long utime, stime;
+        FILE* s = fopen("/proc/self/stat", "r");
+        fscanf(s, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %ld %ld", &utime, &stime);
+        fclose(s);
+
+        long cur_cpu = utime + stime;
+        cpu = (cur_cpu - prev_cpu) / (double)sysconf(_SC_CLK_TCK) / elapsed*10.0;
+        prev_cpu  = cur_cpu;
+        prev_time = now;
+    }
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "RAM: %ld MB  CPU: %.1f%%", ram_kb / 1024, cpu);
+
+    begin_2d(win_w, win_h);
+    draw_text(buf, 10.0f, win_h - 20.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    end_2d();
 }
 
 void setup_display(int* argc, char** argv, float r, float g, float b, float a,
