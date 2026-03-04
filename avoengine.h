@@ -5,7 +5,7 @@
 #include <map>
 #include <string>
 #include <vector>
-#include<cmath>
+#include <cmath>
 
 extern int window_w;
 extern int window_h;
@@ -214,5 +214,11 @@ void move_camera(float eye_x, float eye_y, float eye_z,
 
 void begin_2d(int w, int h);
 void end_2d();
+
+void init_audio();
+void play_sound(const char* filename, float volume = 1.0f);
+void play_sound_3d(const char* filename, float x, float y, float z, float volume = 1.0f);
+void play_sound_3d_loop(const char* filename, float x, float y, float z, float volume = 1.0f);
+void play_white_noise_3d(float x, float y, float z, float volume = 1.0f);
 
 #endif

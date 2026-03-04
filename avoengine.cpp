@@ -1,3 +1,7 @@
+#define MINIAUDIO_IMPLEMENTATION
+#define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
+#define MA_ENABLE_ALSA
+#include "miniaudio.h"
 #include "avoengine.h"
 #include <iostream>
 #include <cmath>
@@ -10,6 +14,7 @@ using namespace std;
 int window_w, window_h, screen_w, screen_h;
 
 static map<string, GLuint> textureCache;
+static ma_engine audio_engine;
 
 struct CameraParams {
     float fov, near, far;
@@ -214,6 +219,7 @@ void setup_camera(float fov, float eye_x, float eye_y, float eye_z,
     gluLookAt(eye_x, eye_y, eye_z,
               camera.center_x, camera.center_y, camera.center_z,
               0.0f, 1.0f, 0.0f);
+    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
 }
 
 void draw3DObject(float center_x, float center_y, float center_z,
@@ -314,6 +320,8 @@ void move_camera(float eye_x, float eye_y, float eye_z,
     gluLookAt(eye_x, eye_y, eye_z,
               camera.center_x, camera.center_y, camera.center_z,
               0.0f, 1.0f, 0.0f);
+    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
+    ma_engine_listener_set_direction(&audio_engine, 0, dir_x, dir_y, dir_z);
 }
 
 void begin_2d(int w, int h) {
@@ -336,8 +344,97 @@ void end_2d() {
     glMatrixMode(GL_MODELVIEW);
 }
 
+void init_audio() {
+    ma_result result = ma_engine_init(NULL, &audio_engine);
+    if (result != MA_SUCCESS) {
+        cout << "Failed to init audio engine: " << result << endl;
+        return;
+    }
+    cout << "Audio engine initialized OK" << endl;
+    
+    // проверим что engine вообще работает простым тестом
+    ma_uint32 channels = ma_engine_get_channels(&audio_engine);
+    ma_uint32 sampleRate = ma_engine_get_sample_rate(&audio_engine);
+    cout << "Channels: " << channels << " SampleRate: " << sampleRate << endl;
+}
+
+void play_sound(const char* filename, float volume) {
+    ma_sound* sound = new ma_sound();
+    ma_sound_init_from_file(&audio_engine, filename,
+        MA_SOUND_FLAG_ASYNC, NULL, NULL, sound);
+    ma_sound_set_volume(sound, volume);
+    ma_sound_start(sound);
+    ma_sound_set_end_callback(sound, [](void* userData, ma_sound* pSound) {
+        ma_sound_uninit(pSound);
+        delete pSound;
+    }, nullptr);
+}
+
+void play_sound_3d(const char* filename, float x, float y, float z, float volume) {
+    ma_sound* sound = new ma_sound();
+    ma_sound_init_from_file(&audio_engine, filename,
+        MA_SOUND_FLAG_ASYNC, NULL, NULL, sound);
+    ma_sound_set_positioning(sound, ma_positioning_absolute);
+    ma_sound_set_position(sound, x, y, z);
+    ma_sound_set_spatialization_enabled(sound, MA_TRUE);
+    ma_sound_set_volume(sound, volume);
+    ma_sound_start(sound);
+    ma_sound_set_end_callback(sound, [](void* userData, ma_sound* pSound) {
+        ma_sound_uninit(pSound);
+        delete pSound;
+    }, nullptr);
+}
+
+void play_sound_3d_loop(const char* filename, float x, float y, float z, float volume) {
+    ma_sound* sound = new ma_sound();
+    ma_result result = ma_sound_init_from_file(&audio_engine, filename,
+        0, NULL, NULL, sound);  // убрали MA_SOUND_FLAG_ASYNC
+    
+    if (result != MA_SUCCESS) {
+        cout << "Failed to load sound: " << filename << " error: " << result << endl;
+        delete sound;
+        return;
+    }
+    
+    ma_sound_set_positioning(sound, ma_positioning_absolute);
+    ma_sound_set_position(sound, x, y, z);
+    ma_sound_set_spatialization_enabled(sound, MA_TRUE);
+    ma_sound_set_volume(sound, volume);
+    ma_sound_set_looping(sound, MA_TRUE);
+    ma_sound_start(sound);
+}
+
+static ma_noise noise_source;
+static ma_sound noise_sound;
+
+void play_white_noise_3d(float x, float y, float z, float volume) {
+    ma_noise_config noiseCfg = ma_noise_config_init(
+        ma_format_f32, 2, ma_noise_type_white, 0, 0.3f);
+    ma_noise_init(&noiseCfg, NULL, &noise_source);
+
+    ma_audio_buffer_config bufCfg = ma_audio_buffer_config_init(
+        ma_format_f32, 2, 48000, NULL, NULL);
+    
+    // генерируем 1 секунду шума
+    static float noiseData[48000 * 2];
+    ma_noise_read_pcm_frames(&noise_source, noiseData, 48000, NULL);
+
+    ma_audio_buffer* pBuffer;
+    bufCfg.pData = noiseData;
+    ma_audio_buffer_alloc_and_init(&bufCfg, &pBuffer);
+
+    ma_sound_init_from_data_source(&audio_engine, pBuffer, 0, NULL, &noise_sound);
+    ma_sound_set_positioning(&noise_sound, ma_positioning_absolute);
+    ma_sound_set_position(&noise_sound, x, y, z);
+    ma_sound_set_spatialization_enabled(&noise_sound, MA_TRUE);
+    ma_sound_set_volume(&noise_sound, volume);
+    ma_sound_set_looping(&noise_sound, MA_TRUE);
+    ma_sound_start(&noise_sound);
+}
+
 void setup_display(int* argc, char** argv, float r, float g, float b, float a,
                    const char* name, int w, int h) {
+    init_audio();
     glutInit(argc, argv);
     window_w = glutGet(GLUT_WINDOW_WIDTH);
     window_h = glutGet(GLUT_WINDOW_HEIGHT);
