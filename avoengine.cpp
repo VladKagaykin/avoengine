@@ -56,6 +56,30 @@ GLuint loadTextureFromFile(const char* filename) {
     return textureID;
 }
 
+void deleteTexture(const char* filename) {
+    auto it = textureCache.find(filename);
+    if (it == textureCache.end()) {
+        cout << "Texture not found in cache: " << filename << endl;
+        return;
+    }
+
+    GLuint textureID = it->second;
+    if (textureID != 0) {
+        glDeleteTextures(1, &textureID);
+    }
+
+    textureCache.erase(it);
+}
+
+void clearTextureCache() {
+    for (auto& pair : textureCache) {
+        if (pair.second != 0) {
+            glDeleteTextures(1, &pair.second);
+        }
+    }
+    textureCache.clear();
+}
+
 void rotatePoint(float& x, float& y, float center_x, float center_y, float angle_rad) {
     float translated_x = x - center_x;
     float translated_y = y - center_y;

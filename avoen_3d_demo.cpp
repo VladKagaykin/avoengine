@@ -172,10 +172,11 @@ int main(int argc, char** argv) {
     setup_display(&argc, argv, 0.1f, 0.1f, 0.15f, 1.0f, "entity_3D_Demo", 800, 600);
     setup_camera(60.0f, cam_x, CAM_HEIGHT, cam_z, -cam_pitch, cam_angle);
 
-    // play_sound_3d_loop("src/radio/radio.wav", 10, 0.5f, 10, 1.5f);
-    // play_white_noise_3d(-10, 0.5f, -10);
+    play_sound_3d_loop("src/radio/radio.wav", 10, 0.5f, 10, 1.5f);
+    play_white_noise_3d(-10, 0.5f, -10);
 
     glutDisplayFunc(display);
+    clearTextureCache();
     glutKeyboardFunc(keyboard);
     glutReshapeFunc(reshape);
 

@@ -14,6 +14,9 @@ extern int screen_h;
 
 // Функции работы с текстурами
 GLuint loadTextureFromFile(const char* filename);
+void deleteTexture(const char* filename);
+void clearTextureCache();
+
 void rotatePoint(float& x, float& y, float center_x, float center_y, float angle_rad);
 
 // Функции отрисовки 2D-примитивов
@@ -92,25 +95,8 @@ public:
         float ga = g_angle * M_PI / 180.0f;
         float va = v_angle * M_PI / 180.0f;
 
-        // Стрелка направления entity
-        // glDisable(GL_TEXTURE_2D);
-        // glColor3f(1, 0, 0);
-        // glBegin(GL_LINES);
-        // glVertex3f(x, y, z);
-        // glVertex3f(
-        //     x + cos(va) * sin(ga) * 2,
-        //     y - sin(va) * 2,
-        //     z + cos(va) * cos(ga) * 2
-        // );
-        // glEnd();
-
         const char* tex = getCurrentTexture(cam_h, pitch);
-        if (tex) {
-            GLuint tid = loadTextureFromFile(tex);
-            if (tid) { glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, tid); }
-        }
 
-        // Billboard: forward = от entity к камере
         float fx = (dist > 0.0001f) ? dx / dist : 0.0f;
         float fy = (dist > 0.0001f) ? dy / dist : 1.0f;
         float fz = (dist > 0.0001f) ? dz / dist : 0.0f;
@@ -135,25 +121,20 @@ public:
             0,  0,  0,  1
         };
 
-        // "Вверх" entity в мировых координатах (local Y)
         float eu_x = -sin(ga) * sin(va);
         float eu_y = -cos(va);
         float eu_z = -cos(ga) * sin(va);
 
-        // "Вперёд" entity в мировых координатах (local Z) — запасной вектор
         float ef_x = cos(va) * sin(ga);
         float ef_y = -sin(va);
         float ef_z = cos(va) * cos(ga);
 
-        // Проецируем "вверх" entity на плоскость билборда
         float dot = eu_x*fx + eu_y*fy + eu_z*fz;
         float pu_x = eu_x - dot*fx;
         float pu_y = eu_y - dot*fy;
         float pu_z = eu_z - dot*fz;
         float plen = sqrt(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
 
-        // Вырожденный случай: "вверх" entity совпадает с направлением взгляда —
-        // используем "вперёд" entity как ориентир
         if (plen < 0.01f) {
             float dot2 = ef_x*fx + ef_y*fy + ef_z*fz;
             pu_x = ef_x - dot2*fx;
@@ -170,16 +151,14 @@ public:
         glPushMatrix();
         glTranslatef(x, y, z);
         glMultMatrixf(mat);
-        glRotatef(roll+180, 0, 0, 1);
-        glColor3f(1, 1, 1);
-        glBegin(GL_QUADS);
-        glTexCoord2f(0,1); glVertex3f(vertices[0], vertices[1], 0);
-        glTexCoord2f(1,1); glVertex3f(vertices[2], vertices[3], 0);
-        glTexCoord2f(1,0); glVertex3f(vertices[4], vertices[5], 0);
-        glTexCoord2f(0,0); glVertex3f(vertices[6], vertices[7], 0);
-        glEnd();
-        glDisable(GL_TEXTURE_2D);
+        glRotatef(roll + 180.0f, 0.0f, 0.0f, 1.0f);
+
+        square(1.0f, 0.0f, 0.0f, 1.0, 1.0, 1.0, (tex == textures[0]) ? -180.0f : 0.0f, vertices, tex);
+
         glPopMatrix();
+        if (tex != nullptr) {
+            deleteTexture(tex);
+        }
     }
 
     void setGAngle(float a) { g_angle = a; }
