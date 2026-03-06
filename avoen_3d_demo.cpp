@@ -7,45 +7,65 @@
 using namespace std;
 
 static float cam_angle = 0.0f;
-static float cam_dist  = 3.0f;
 static float cam_pitch = 20.0f;
-static float cam_x = 0.0f;
-static float cam_z = 3.0f;
+static float cam_x     = 0.0f;
+static float cam_z     = 3.0f;
+
 static const float CAM_HEIGHT = 1.0f;
 static const float MOVE_SPEED = 0.2f;
+static const float C          = 1.0f;
+
 static int win_w = 800, win_h = 600;
+
 static pseudo_3d_entity* radio_vol = nullptr;
 static pseudo_3d_entity* radio_mus = nullptr;
 
-static const float C = 1.0f;
+// ── Статическая геометрия пола ───────────────────────────────────────────────
+// Никаких heap-аллокаций: всё в стеке/BSS-сегменте.
+static const int   FLOOR_TILES  = 20;
+static const float FLOOR_OFFSET = FLOOR_TILES * C / 2.0f;
 
-static void drawFloorTile(float wx, float wz, float r, float g, float b) {
-    float hw = C * 0.5f;
-    vector<float> v = {
-        -hw, 0, -hw,  hw, 0, -hw,  hw, 0, hw,  -hw, 0, hw
-    };
-    vector<int> idx = {0,1,2, 0,2,3, 2,1,0, 3,2,0};
-    vector<float> tc = {0,0, 1,0, 1,1, 0,1};
-    draw3DObject(wx, 0, wz, r, g, b, nullptr, v, idx, tc);
+// Два цвета тайлов
+static const float FLOOR_COL[2][3] = {
+    {0.91f, 0.84f, 0.72f},
+    {0.72f, 0.63f, 0.50f}
+};
+
+// Предпосчитанные центры тайлов и индексы цветов (400 записей, POD-массив в BSS)
+struct TileData { float wx, wz; int ci; };
+static TileData floor_tiles[FLOOR_TILES * FLOOR_TILES];
+
+static void buildFloor() {
+    int k = 0;
+    for (int row = 0; row < FLOOR_TILES; row++)
+        for (int col = 0; col < FLOOR_TILES; col++, k++) {
+            floor_tiles[k].wx = col * C - FLOOR_OFFSET + C * 0.5f;
+            floor_tiles[k].wz = row * C - FLOOR_OFFSET + C * 0.5f;
+            floor_tiles[k].ci = (row + col) % 2;
+        }
 }
 
 void draw_floor() {
-    const int TILES = 20;
-    const float OFFSET = TILES * C / 2.0f;
+    // Display List строится один раз — весь пол рисуется одним вызовом GL
+    static GLuint floorList = 0;
+    if (floorList == 0) {
+        static const float hw = C * 0.5f;
+        static const vector<float> v  = {-hw,0,-hw,  hw,0,-hw,  hw,0,hw,  -hw,0,hw};
+        static const vector<int>   ix = {0,1,2, 0,2,3, 2,1,0, 3,2,0};
+        static const vector<float> tc = {0,0, 1,0, 1,1, 0,1};
 
-    float color1[3] = {0.91f, 0.84f, 0.72f};
-    float color2[3] = {0.72f, 0.63f, 0.50f};
-
-    for (int row = 0; row < TILES; row++) {
-        for (int col = 0; col < TILES; col++) {
-            float* c = ((row + col) % 2 == 0) ? color1 : color2;
-            float wx = col * C - OFFSET + C * 0.5f;
-            float wz = row * C - OFFSET + C * 0.5f;
-            drawFloorTile(wx, wz, c[0], c[1], c[2]);
+        floorList = glGenLists(1);
+        glNewList(floorList, GL_COMPILE);
+        for (const TileData& t : floor_tiles) {
+            const float* c = FLOOR_COL[t.ci];
+            draw3DObject(t.wx, 0, t.wz, c[0], c[1], c[2], nullptr, v, ix, tc);
         }
+        glEndList();
     }
+    glCallList(floorList);
 }
 
+// ── Рендер ───────────────────────────────────────────────────────────────────
 void display() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     move_camera(cam_x, CAM_HEIGHT, cam_z, -cam_pitch, cam_angle);
@@ -54,32 +74,26 @@ void display() {
     radio_vol->draw(cam_angle, cam_x, CAM_HEIGHT, cam_z);
     radio_mus->draw(cam_angle, cam_x, CAM_HEIGHT, cam_z);
 
-    // HUD
-    char buf_h[64];
-    snprintf(buf_h, sizeof(buf_h), "Angle: %.1f  Pos: %.1f %.1f", cam_angle, cam_x, cam_z);
-
     begin_2d(win_w, win_h);
-    // draw_text(buf_h, 10, win_h - 20, GLUT_BITMAP_HELVETICA_12, 1, 1, 1);
-    // volatile double x = 0;
-    // for (int i = 0; i < 10000000; i++) x += i * 3.14;
-    draw_performance_hud(win_w,win_h);
+    draw_performance_hud(win_w, win_h);
     end_2d();
 
     glutSwapBuffers();
 }
 
+// ── Управление ───────────────────────────────────────────────────────────────
 void keyboard(unsigned char key, int, int) {
-    float rad = cam_angle * M_PI / 180.0f;
+    const float rad = cam_angle * float(M_PI) / 180.0f;
     switch (key) {
-        case 'a': cam_angle += 5.0f; break;  // было -= 
-        case 'd': cam_angle -= 5.0f; break;  // было +=
+        case 'a': cam_angle += 5.0f; break;
+        case 'd': cam_angle -= 5.0f; break;
         case 'w':
-            cam_x -= sin(rad) * MOVE_SPEED;
-            cam_z -= cos(rad) * MOVE_SPEED;
+            cam_x -= sinf(rad) * MOVE_SPEED;
+            cam_z -= cosf(rad) * MOVE_SPEED;
             break;
         case 's':
-            cam_x += sin(rad) * MOVE_SPEED;
-            cam_z += cos(rad) * MOVE_SPEED;
+            cam_x += sinf(rad) * MOVE_SPEED;
+            cam_z += cosf(rad) * MOVE_SPEED;
             break;
         case 27: exit(0);
     }
@@ -91,8 +105,10 @@ void reshape(int w, int h) {
     changeSize3D(w, h);
 }
 
+// ── Точка входа ──────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
-    std::vector<const char*> textures = {
+
+    static const vector<const char*> textures = {
         "src/radio/render_000_ring00_az000.png",
         "src/radio/render_001_ring00_az045.png",
         "src/radio/render_002_ring00_az090.png",
@@ -156,7 +172,7 @@ int main(int argc, char** argv) {
         "src/radio/render_060_ring07_az180.png",
         "src/radio/render_061_ring07_az225.png",
         "src/radio/render_062_ring07_az270.png",
-        "src/radio/render_063_ring07_az315.png"
+        "src/radio/render_063_ring07_az315.png",
     };
 
     static float verts[] = {
@@ -166,22 +182,27 @@ int main(int argc, char** argv) {
         -0.5f,  0.5f
     };
 
-    radio_vol = new pseudo_3d_entity(-10, 0.5f, -10, 0, 0, textures, 8, verts);
-    radio_mus = new pseudo_3d_entity(10, 0.5f, 10, 0, 0, textures, 8, verts);
-
     setup_display(&argc, argv, 0.1f, 0.1f, 0.15f, 1.0f, "entity_3D_Demo", 800, 600);
     setup_camera(60.0f, cam_x, CAM_HEIGHT, cam_z, -cam_pitch, cam_angle);
+
+    radio_vol = new pseudo_3d_entity(-10, 0.5f, -10, 0, 0, textures, 8, verts);
+    radio_mus = new pseudo_3d_entity( 10, 0.5f,  10, 0, 0, textures, 8, verts);
 
     play_sound_3d_loop("src/radio/radio.wav", 10, 0.5f, 10, 1.5f);
     play_white_noise_3d(-10, 0.5f, -10);
 
+    buildFloor();   // строим таблицу тайлов один раз
+
     glutDisplayFunc(display);
-    clearTextureCache();
+    glutIdleFunc(display);      // непрерывная отрисовка без ожидания событий
     glutKeyboardFunc(keyboard);
     glutReshapeFunc(reshape);
 
     glutMainLoop();
 
+    // Корректная очистка после выхода из главного цикла
+    stop_all_looping_sounds();
+    clearTextureCache();
     delete radio_mus;
     delete radio_vol;
     return 0;

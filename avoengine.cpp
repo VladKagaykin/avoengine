@@ -3,353 +3,570 @@
 #define MA_ENABLE_ALSA
 #include "miniaudio.h"
 #include "avoengine.h"
-#include <iostream>
-#include <cmath>
-#include <SOIL/SOIL.h>
+
 #include <GL/glu.h>
 #include <GL/glut.h>
+#include <SOIL/SOIL.h>
+
 #include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <iostream>
+#include <unordered_map>   // ← O(1) вместо O(log n) у std::map
+#include <vector>
 
 using namespace std;
 
-int window_w, window_h, screen_w, screen_h;
+// ═══════════════════════════════════════════════════════════════════════════
+//  Глобальные переменные
+// ═══════════════════════════════════════════════════════════════════════════
+int window_w = 0, window_h = 0, screen_w = 0, screen_h = 0;
 
-static map<string, GLuint> textureCache;
+// ── Текстурный кэш ──────────────────────────────────────────────────────────
+static unordered_map<string, GLuint> textureCache;
+static GLuint boundTextureID = 0;   // отслеживаем текущую привязку
+
+// ── Аудио ───────────────────────────────────────────────────────────────────
 static ma_engine audio_engine;
+static vector<ma_sound*> loopingSounds;   // для корректного освобождения
 
+// ── Параметры камеры ─────────────────────────────────────────────────────────
 struct CameraParams {
-    float fov, near, far;
-    float eye_x, eye_y, eye_z;
-    float center_x, center_y, center_z;
-    float up_x, up_y, up_z;
-} camera = {false};
+    float fov   = 60.0f;
+    float znear = 0.1f;
+    float zfar  = 1000.0f;
+    float eye_x = 0, eye_y = 0, eye_z = 0;
+    float ctr_x = 0, ctr_y = 0, ctr_z = 1;   // look-at point
+    float up_x  = 0, up_y  = 1, up_z  = 0;
+};
+static CameraParams camera;
 
-GLuint loadTextureFromFile(const char* filename) {
-    if (textureCache.find(filename) != textureCache.end()) {
-        return textureCache[filename];
+// ═══════════════════════════════════════════════════════════════════════════
+//  Вспомогательные функции
+// ═══════════════════════════════════════════════════════════════════════════
+
+// setup_camera: смотрит В направлении (pitch,yaw) — используется при инициализации.
+static inline void lookAtForward(float eye_x, float eye_y, float eye_z,
+                                  float pitch_deg, float yaw_deg,
+                                  float& cx, float& cy, float& cz)
+{
+    const float p = pitch_deg * float(M_PI) / 180.0f;
+    const float y = yaw_deg   * float(M_PI) / 180.0f;
+    cx = eye_x + cosf(p) * sinf(y);
+    cy = eye_y + sinf(p);
+    cz = eye_z + cosf(p) * cosf(y);
+}
+
+// move_camera: смотрит ПРОТИВ направления (pitch,yaw) — оригинальная конвенция.
+// display() передаёт -cam_pitch и cam_angle, управление WASD рассчитано под это.
+static inline void lookAtBackward(float eye_x, float eye_y, float eye_z,
+                                   float pitch_deg, float yaw_deg,
+                                   float& cx, float& cy, float& cz,
+                                   float& dx, float& dy, float& dz)
+{
+    const float p = pitch_deg * float(M_PI) / 180.0f;
+    const float y = yaw_deg   * float(M_PI) / 180.0f;
+    dx = -cosf(p) * sinf(y);
+    dy = -sinf(p);
+    dz = -cosf(p) * cosf(y);
+    cx = eye_x + dx;
+    cy = eye_y + dy;
+    cz = eye_z + dz;
+}
+
+// Безопасная привязка текстуры: пропускает вызов, если уже привязана нужная.
+static inline void bindTexture(GLuint id)
+{
+    if (id != boundTextureID) {
+        glBindTexture(GL_TEXTURE_2D, id);
+        boundTextureID = id;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Текстуры
+// ═══════════════════════════════════════════════════════════════════════════
+
+GLuint loadTextureFromFile(const char* filename)
+{
+    auto it = textureCache.find(filename);
+    if (it != textureCache.end())
+        return it->second;
+
+    int w, h;
+    unsigned char* img = SOIL_load_image(filename, &w, &h, nullptr, SOIL_LOAD_RGBA);
+    if (!img) {
+        cerr << "Cannot load texture: " << filename
+             << " (" << SOIL_last_result() << ")\n";
+        return textureCache[filename] = 0;
     }
 
-    GLuint textureID;
-    int width, height;
-    unsigned char* image = SOIL_load_image(filename, &width, &height, 0, SOIL_LOAD_RGBA);
+    GLuint id;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+    boundTextureID = id;
 
-    if (!image) {
-        cout << "error to load texture: " << filename << endl;
-        cout << "SOIL error: " << SOIL_last_result() << endl;
-        textureCache[filename] = 0;
-        return 0;
-    }
-
-    glGenTextures(1, &textureID);
-    glBindTexture(GL_TEXTURE_2D, textureID);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, img);
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image);
-
-    SOIL_free_image_data(image);
-    textureCache[filename] = textureID;
-
-    return textureID;
+    SOIL_free_image_data(img);
+    return textureCache[filename] = id;
 }
 
-void deleteTexture(const char* filename) {
-    auto it = textureCache.find(filename);
-    if (it == textureCache.end()) {
-        cout << "Texture not found in cache: " << filename << endl;
-        return;
-    }
-
-    GLuint textureID = it->second;
-    if (textureID != 0) {
-        glDeleteTextures(1, &textureID);
-    }
-
-    textureCache.erase(it);
-}
-
-void clearTextureCache() {
-    for (auto& pair : textureCache) {
-        if (pair.second != 0) {
-            glDeleteTextures(1, &pair.second);
-        }
-    }
+void clearTextureCache()
+{
+    for (auto& [name, id] : textureCache)
+        if (id) glDeleteTextures(1, &id);
     textureCache.clear();
+    boundTextureID = 0;
 }
 
-void rotatePoint(float& x, float& y, float center_x, float center_y, float angle_rad) {
-    float translated_x = x - center_x;
-    float translated_y = y - center_y;
-    
-    float rotated_x = translated_x * cos(angle_rad) - translated_y * sin(angle_rad);
-    float rotated_y = translated_x * sin(angle_rad) + translated_y * cos(angle_rad);
-    
-    x = rotated_x + center_x;
-    y = rotated_y + center_y;
+// ═══════════════════════════════════════════════════════════════════════════
+//  2-D утилиты
+// ═══════════════════════════════════════════════════════════════════════════
+
+void rotatePoint(float& x, float& y, float cx, float cy, float angle_rad)
+{
+    const float tx = x - cx, ty = y - cy;
+    const float c  = cosf(angle_rad), s = sinf(angle_rad);
+    x = cx + tx * c - ty * s;
+    y = cy + tx * s + ty * c;
 }
 
-void triangle(float scale, float center_x, float center_y, double r, double g, double b, 
-              float rotate, float* vertices, const char* texture_file) {
-    glColor3f(r, g, b);
-    float angle_rad = rotate * M_PI / -180.0f;
+// ── Общая логика enable/bind для текстурных примитивов ──────────────────────
+static void enableTex(const char* file)
+{
+    if (!file) { glDisable(GL_TEXTURE_2D); return; }
+    GLuint id = loadTextureFromFile(file);
+    if (id) { glEnable(GL_TEXTURE_2D); bindTexture(id); }
+    else      glDisable(GL_TEXTURE_2D);
+}
 
-    if (texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(texture_file);
-        if (textureID != 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
-    } else {
-        glDisable(GL_TEXTURE_2D);
-    }
-    
+// ═══════════════════════════════════════════════════════════════════════════
+//  Примитивы
+// ═══════════════════════════════════════════════════════════════════════════
+
+void triangle(float scale, float cx, float cy,
+              double r, double g, double b,
+              float rotate, const float* vertices, const char* tex)
+{
+    glColor3f(float(r), float(g), float(b));
+    enableTex(tex);
+
+    const float ar  = rotate * float(M_PI) / -180.0f;
+    const float tc[6] = {0,1, 1,1, 0,0};
+
     glBegin(GL_TRIANGLES);
-    float texCoords[6] = {0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f};
-
-    for (int i = 0; i < 3; i++) {
-        float point_x = vertices[i*2];
-        float point_y = vertices[i*2 + 1];
-        
-        rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
-        
-        float scaled_x = point_x * scale;
-        float scaled_y = point_y * scale;
-        
-        if (texture_file != nullptr) {
-            glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
-        }
-        glVertex2f(center_x + scaled_x, center_y + scaled_y);
+    for (int i = 0; i < 3; ++i) {
+        float px = vertices[i*2], py = vertices[i*2+1];
+        rotatePoint(px, py, 0, 0, ar);
+        if (tex) glTexCoord2f(tc[i*2], tc[i*2+1]);
+        glVertex2f(cx + px * scale, cy + py * scale);
     }
     glEnd();
-    
-    if (texture_file != nullptr) {
-        glDisable(GL_TEXTURE_2D);
-    }
+
+    if (tex) glDisable(GL_TEXTURE_2D);
 }
 
-void square(float local_size, float x, float y, double r, double g, double b, 
-            float rotate, float* vertices, const char* texture_file) {
-    glColor3f(r, g, b);
-    float angle_rad = rotate * M_PI / -180.0f;
-    
-    if (texture_file != nullptr) {
-        glEnable(GL_TEXTURE_2D);
-        const char* texture_to_load = texture_file;
-        GLuint textureID = loadTextureFromFile(texture_to_load);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-    } else {
-        glDisable(GL_TEXTURE_2D);
-    }
+void square(float local_size, float x, float y,
+            double r, double g, double b,
+            float rotate, const float* vertices, const char* tex)
+{
+    glColor3f(float(r), float(g), float(b));
+    enableTex(tex);
+
+    const float ar  = rotate * float(M_PI) / -180.0f;
+    const float tc[8] = {0,1, 1,1, 1,0, 0,0};
 
     glBegin(GL_QUADS);
-    float texCoords[8] = {0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f};
-
-    for (int i = 0; i < 4; i++) {
-        float point_x = vertices[i*2];
-        float point_y = vertices[i*2+1];
-        
-        rotatePoint(point_x, point_y, 0.0f, 0.0f, angle_rad);
-        
-        if (texture_file != nullptr) {
-            glTexCoord2f(texCoords[i*2], texCoords[i*2+1]);
-        }
-        glVertex2f(x + point_x * local_size, y + point_y * local_size);
+    for (int i = 0; i < 4; ++i) {
+        float px = vertices[i*2], py = vertices[i*2+1];
+        rotatePoint(px, py, 0, 0, ar);
+        if (tex) glTexCoord2f(tc[i*2], tc[i*2+1]);
+        glVertex2f(x + px * local_size, y + py * local_size);
     }
     glEnd();
-    
-    if (texture_file != nullptr) {
-        glDisable(GL_TEXTURE_2D);
-    }
+
+    if (tex) glDisable(GL_TEXTURE_2D);
 }
 
-void circle(float scale, float center_x, float center_y, double r, double g, double b, 
-            float radius, float in_radius, float rotate, int slices, int loops,
-            const char* texture_file) {
-    glColor3f(r, g, b);
-    
-    if (texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(texture_file);
-        if (textureID != 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
-    } else {
-        glDisable(GL_TEXTURE_2D);
-    }
-    
+void circle(float scale, float cx, float cy,
+            double r, double g, double b,
+            float radius, float in_radius,
+            float rotate, int slices, int loops, const char* tex)
+{
+    glColor3f(float(r), float(g), float(b));
+    enableTex(tex);
+
     glPushMatrix();
-    glTranslatef(center_x, center_y, 0.0f);
-    glRotatef(rotate * -1, 0.0f, 0.0f, 1.0f);
-    glScalef(scale, scale, 1.0f);
-    
-    GLUquadric* quadric = gluNewQuadric();
-    gluQuadricTexture(quadric, GL_TRUE);
-    gluQuadricDrawStyle(quadric, GLU_FILL);
-    
+    glTranslatef(cx, cy, 0);
+    glRotatef(-rotate, 0, 0, 1);
+    glScalef(scale, scale, 1);
+
+    // Один quadric на весь lifetime программы — не аллоцируем/удаляем каждый вызов
+    static GLUquadric* q = nullptr;
+    if (!q) {
+        q = gluNewQuadric();
+        gluQuadricTexture(q, GL_TRUE);
+        gluQuadricDrawStyle(q, GLU_FILL);
+    }
+
     glMatrixMode(GL_TEXTURE);
     glPushMatrix();
-    glScalef(1.0f, -1.0f, 1.0f);
-    
-    gluDisk(quadric, in_radius, radius, slices, loops);
-    
+    glScalef(1, -1, 1);
+    gluDisk(q, in_radius, radius, slices, loops);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
-    
-    gluDeleteQuadric(quadric);
+
     glPopMatrix();
-    
-    if (texture_file != nullptr) {
-        glDisable(GL_TEXTURE_2D);
-    }
+
+    if (tex) glDisable(GL_TEXTURE_2D);
 }
 
-void draw_text(const char* text, float x, float y, void* font, float r, float g, float b) {
+void draw_text(const char* text, float x, float y,
+               void* font, float r, float g, float b)
+{
     glColor3f(r, g, b);
     glRasterPos2f(x, y);
-    for (const char* c = text; *c != '\0'; ++c) {
+    for (const char* c = text; *c; ++c)
         glutBitmapCharacter(font, *c);
-    }
 }
 
-void setup_camera(float fov, float eye_x, float eye_y, float eye_z,
-                  float pitch, float yaw) {
-    camera.fov = fov;
-    camera.near = 0.1f;
-    camera.far = 1000.0f;
-    camera.eye_x = eye_x; camera.eye_y = eye_y; camera.eye_z = eye_z;
+// ═══════════════════════════════════════════════════════════════════════════
+//  pseudo_3d_entity
+// ═══════════════════════════════════════════════════════════════════════════
 
-    // pitch — вертикальный наклон (градусы), yaw — горизонтальный
-    float pitch_rad = pitch * M_PI / 180.0f;
-    float yaw_rad   = yaw   * M_PI / 180.0f;
+pseudo_3d_entity::pseudo_3d_entity(float x, float y, float z,
+                                   float g_angle, float v_angle,
+                                   vector<const char*> textures,
+                                   int v_angles, float* vertices)
+    : x(x), y(y), z(z), g_angle(g_angle), v_angle(v_angle),
+      textures(std::move(textures)), v_angles(v_angles), vertices(vertices)
+{}
 
-    float dir_x = cos(pitch_rad) * sin(yaw_rad);
-    float dir_y = sin(pitch_rad);
-    float dir_z = cos(pitch_rad) * cos(yaw_rad);
+// ── Frustum culling ─────────────────────────────────────────────────────────
+// Проверяем пересечение сферы (позиция entity + radius) с усечённой пирамидой.
+// Используем параметры из глобального camera — без обращения к GL.
+bool pseudo_3d_entity::isVisible(float cam_x, float cam_y, float cam_z) const
+{
+    const float dx = x - cam_x, dy = y - cam_y, dz = z - cam_z;
 
-    camera.center_x = eye_x + dir_x;
-    camera.center_y = eye_y + dir_y;
-    camera.center_z = eye_z + dir_z;
+    // Единичный вектор взгляда камеры (ctr - eye уже единичный, см. lookAt*)
+    const float fx = camera.ctr_x - camera.eye_x;
+    const float fy = camera.ctr_y - camera.eye_y;
+    const float fz = camera.ctr_z - camera.eye_z;
 
-    camera.up_x = 0.0f; camera.up_y = 1.0f; camera.up_z = 0.0f;
+    // Глубина вдоль оси взгляда
+    const float depth = dx*fx + dy*fy + dz*fz;
 
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    // aspect временно 1.0, changeSize3D пересчитает при reshape
-    gluPerspective(fov, 1.0f, camera.near, camera.far);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    gluLookAt(eye_x, eye_y, eye_z,
-              camera.center_x, camera.center_y, camera.center_z,
-              0.0f, 1.0f, 0.0f);
-    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
+    // Near / far planes
+    if (depth + radius < camera.znear) return false;
+    if (depth - radius > camera.zfar)  return false;
+
+    // Угловая проверка: считаем диагональный half-FOV и добавляем угловой slack
+    // на радиус entity. Это консервативная оценка — лучше лишний раз нарисовать,
+    // чем пропустить видимую сущность.
+    const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+    if (dist < 1e-4f) return true;
+
+    const float aspect    = (window_h > 0) ? float(window_w) / float(window_h) : 1.0f;
+    const float half_v    = camera.fov * 0.5f * float(M_PI) / 180.0f;
+    const float half_h    = atanf(tanf(half_v) * aspect);
+    const float half_diag = sqrtf(half_h*half_h + half_v*half_v);
+    const float slack     = asinf(fminf(1.0f, radius / dist));
+
+    return (depth / dist) >= cosf(half_diag + slack);
 }
 
-void draw3DObject(float center_x, float center_y, float center_z,
-                  double r, double g, double b,
-                  const char* texture_file,
-                  const vector<float>& vertices,   // x,y,z подряд
-                  const vector<int>& indices,       // тройки — треугольники
-                  const vector<float>& texcoords) { // s,t подряд
+// ── Вычисление индекса текстуры (с кэшированием) ────────────────────────────
+// Пересчёт нужен только если углы камеры изменились относительно прошлого кадра.
+int pseudo_3d_entity::getTextureIndex(float cam_h, float cam_v) const
+{
+    // Порог 0.5° — ниже этого изменение текстуры незаметно
+    if (fabsf(cam_h - cachedCamH) < 0.5f && fabsf(cam_v - cachedCamV) < 0.5f)
+        return cachedTexIdx;
 
-    glColor3f(r, g, b);
+    cachedCamH = cam_h;
+    cachedCamV = cam_v;
 
-    if (texture_file != nullptr) {
-        GLuint textureID = loadTextureFromFile(texture_file);
-        if (textureID != 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, textureID);
-        }
-    } else {
-        glDisable(GL_TEXTURE_2D);
+    if (textures.empty()) { cachedTexIdx = -1; return -1; }
+    const int total   = int(textures.size());
+    const int h_count = total / v_angles;
+    if (h_count <= 0)  { cachedTexIdx = -1; return -1; }
+
+    const float ch     = cam_h * float(M_PI) / 180.0f;
+    const float cv     = cam_v * float(M_PI) / 180.0f;
+    const float cos_cv = cosf(cv);
+    const float dir_x  = cos_cv * sinf(ch);
+    const float dir_y  = sinf(cv);
+    const float dir_z  = cos_cv * cosf(ch);
+
+    const float ga     = g_angle * float(M_PI) / 180.0f;
+    const float va     = v_angle * float(M_PI) / 180.0f;
+
+    const float cos_ga = cosf(-ga), sin_ga = sinf(-ga);
+    const float lx     =  dir_x * cos_ga + dir_z * sin_ga;
+    const float ly     =  dir_y;
+    const float lz     = -dir_x * sin_ga + dir_z * cos_ga;
+
+    const float cos_va = cosf(va), sin_va = sinf(va);
+    const float fx     =  lx;
+    const float fy     =  ly * cos_va + lz * sin_va;
+    const float fz     = -ly * sin_va + lz * cos_va;
+
+    const float local_v = atan2f(fy, sqrtf(fx*fx + fz*fz)) * 180.0f / float(M_PI);
+    const float local_h = (fabsf(local_v) > 88.0f)
+                          ? 0.0f
+                          : atan2f(fx, fz) * 180.0f / float(M_PI);
+
+    const float v_rel   = fmaxf(0.0f, fminf(180.0f, local_v + 90.0f));
+    const int   v_index = int(fminf(v_rel / (180.0f / v_angles), float(v_angles - 1)));
+
+    const float step_h  = 360.0f / h_count;
+    const int   h_index = int((fmodf(local_h + 360.0f, 360.0f) + step_h * 0.5f)
+                              / step_h) % h_count;
+
+    cachedTexIdx = v_index * h_count + h_index;
+    if (cachedTexIdx >= total) cachedTexIdx = total - 1;
+    return cachedTexIdx;
+}
+
+void pseudo_3d_entity::draw(float cam_h, float cam_x, float cam_y, float cam_z) const
+{
+    // ── Frustum culling: самая дешёвая проверка — первой ────────────────────
+    if (!isVisible(cam_x, cam_y, cam_z)) return;
+
+    const float dx   = cam_x - x, dy = cam_y - y, dz = cam_z - z;
+    const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+
+    const float pitch = atan2f(dy, sqrtf(dx*dx + dz*dz)) * 180.0f / float(M_PI);
+
+    // Индекс текстуры из кэша
+    const int   tidx  = getTextureIndex(cam_h, pitch);
+    const char* tex   = (tidx >= 0) ? textures[tidx] : nullptr;
+
+    // Единичный вектор "от entity к камере"
+    const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
+    const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
+    const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
+
+    // Ортонормированный базис billboard
+    float wx = 0, wy = 1, wz = 0;
+    if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+
+    float rx = wy*fz - wz*fy, ry = wz*fx - wx*fz, rz = wx*fy - wy*fx;
+    const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+    if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+
+    const float ux = fy*rz - fz*ry, uy = fz*rx - fx*rz, uz = fx*ry - fy*rx;
+
+    const float mat[16] = {
+        rx, ry, rz, 0,
+        ux, uy, uz, 0,
+        fx, fy, fz, 0,
+         0,  0,  0, 1
+    };
+
+    const float ga = g_angle * float(M_PI) / 180.0f;
+    const float va = v_angle * float(M_PI) / 180.0f;
+
+    float eu_x = -sinf(ga) * sinf(va);
+    float eu_y = -cosf(va);
+    float eu_z = -cosf(ga) * sinf(va);
+
+    float dot  = eu_x*fx + eu_y*fy + eu_z*fz;
+    float pu_x = eu_x - dot*fx, pu_y = eu_y - dot*fy, pu_z = eu_z - dot*fz;
+    float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
+
+    if (plen < 0.01f) {
+        const float ef_x = cosf(va) * sinf(ga);
+        const float ef_y = -sinf(va);
+        const float ef_z = cosf(va) * cosf(ga);
+        const float d2   = ef_x*fx + ef_y*fy + ef_z*fz;
+        pu_x = ef_x - d2*fx; pu_y = ef_y - d2*fy; pu_z = ef_z - d2*fz;
     }
+
+    const float roll = atan2f(
+        -(pu_x*rx + pu_y*ry + pu_z*rz),
+          pu_x*ux + pu_y*uy + pu_z*uz
+    ) * 180.0f / float(M_PI);
+
+    const bool mirror = (tidx == 0);
 
     glPushMatrix();
-    glTranslatef(center_x, center_y, center_z);
-
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glVertexPointer(3, GL_FLOAT, 0, vertices.data());
-
-    if (!texcoords.empty() && texture_file != nullptr) {
-        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-        glTexCoordPointer(2, GL_FLOAT, 0, texcoords.data());
-    }
-
-    glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, indices.data());
-
-    glDisableClientState(GL_VERTEX_ARRAY);
-    if (!texcoords.empty() && texture_file != nullptr) {
-        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    }
-
+    glTranslatef(x, y, z);
+    glMultMatrixf(mat);
+    glRotatef(roll + 180.0f, 0, 0, 1);
+    square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices, tex);
     glPopMatrix();
-
-    if (texture_file != nullptr) {
-        glDisable(GL_TEXTURE_2D);
-    }
 }
 
-void changeSize3D(int w, int h) {
+// ═══════════════════════════════════════════════════════════════════════════
+//  OpenGL / окно
+// ═══════════════════════════════════════════════════════════════════════════
+
+void changeSize3D(int w, int h)
+{
     if (h == 0) h = 1;
     glViewport(0, 0, w, h);
-
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    float aspect = (float)w / (float)h;
-    gluPerspective(camera.fov, aspect, camera.near, camera.far);
-
+    gluPerspective(camera.fov, float(w) / float(h), camera.znear, camera.zfar);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(camera.eye_x, camera.eye_y, camera.eye_z,
-              camera.center_x, camera.center_y, camera.center_z,
-              camera.up_x, camera.up_y, camera.up_z);
+              camera.ctr_x, camera.ctr_y, camera.ctr_z,
+              camera.up_x,  camera.up_y,  camera.up_z);
 }
 
-void changeSize2D(int w, int h) {
+void changeSize2D(int w, int h)
+{
     if (h == 0) h = 1;
     glViewport(0, 0, w, h);
-
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    float ratio = w / (float)h;
-    if (w <= h)
-        glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
-    else
-        glOrtho(-1*ratio, 1*ratio, -1, 1, 1, -1);
-
+    const float ratio = float(w) / float(h);
+    if (w <= h) glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
+    else        glOrtho(-ratio, ratio, -1, 1, 1, -1);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     window_w = w;
     window_h = h;
 }
 
-void move_camera(float eye_x, float eye_y, float eye_z,
-                 float pitch, float yaw) {
-    float pitch_rad = pitch * M_PI / 180.0f;
-    float yaw_rad   = yaw   * M_PI / 180.0f;
+void setup_display(int* argc, char** argv,
+                   float r, float g, float b, float a,
+                   const char* name, int w, int h)
+{
+    init_audio();
 
-    // смотрим к origin, а не от него
-    float dir_x = -cos(pitch_rad) * sin(yaw_rad);
-    float dir_y = -sin(pitch_rad);
-    float dir_z = -cos(pitch_rad) * cos(yaw_rad);
+    glutInit(argc, argv);
+    screen_w = glutGet(GLUT_SCREEN_WIDTH);
+    screen_h = glutGet(GLUT_SCREEN_HEIGHT);
+    window_w = w;
+    window_h = h;
 
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
+    glutInitWindowPosition(screen_w / 4, screen_h / 8);
+    glutInitWindowSize(w, h);
+    glutCreateWindow(name);
+    glutReshapeFunc(changeSize2D);
+
+    glClearColor(r, g, b, a);
+    glEnable(GL_DEPTH_TEST);
+    glClearDepth(1.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Камера
+// ═══════════════════════════════════════════════════════════════════════════
+
+void setup_camera(float fov,
+                  float eye_x, float eye_y, float eye_z,
+                  float pitch, float yaw)
+{
+    camera.fov   = fov;
+    camera.znear = 0.1f;
+    camera.zfar  = 1000.0f;
     camera.eye_x = eye_x; camera.eye_y = eye_y; camera.eye_z = eye_z;
-    camera.center_x = eye_x + dir_x;
-    camera.center_y = eye_y + dir_y;
-    camera.center_z = eye_z + dir_z;
+    camera.up_x  = 0; camera.up_y = 1; camera.up_z = 0;
+
+    lookAtForward(eye_x, eye_y, eye_z, pitch, yaw,
+                  camera.ctr_x, camera.ctr_y, camera.ctr_z);
+
+    // Проекция с корректным aspect (используем текущий размер окна)
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    const float aspect = (window_h > 0) ? float(window_w) / float(window_h) : 1.0f;
+    gluPerspective(fov, aspect, camera.znear, camera.zfar);
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(eye_x, eye_y, eye_z,
-              camera.center_x, camera.center_y, camera.center_z,
-              0.0f, 1.0f, 0.0f);
+              camera.ctr_x, camera.ctr_y, camera.ctr_z,
+              0, 1, 0);
+
     ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
-    ma_engine_listener_set_direction(&audio_engine, 0, dir_x, dir_y, dir_z);
 }
 
-void begin_2d(int w, int h) {
+void move_camera(float eye_x, float eye_y, float eye_z,
+                 float pitch, float yaw)
+{
+    camera.eye_x = eye_x; camera.eye_y = eye_y; camera.eye_z = eye_z;
+
+    // Оригинальная конвенция: look-at строится через ОТРИЦАТЕЛЬНОЕ направление.
+    // display() компенсирует это, передавая -cam_pitch.
+    // Менять знак здесь нельзя — иначе сломается W/S и горизонт.
+    float dx, dy, dz;
+    lookAtBackward(eye_x, eye_y, eye_z, pitch, yaw,
+                   camera.ctr_x, camera.ctr_y, camera.ctr_z,
+                   dx, dy, dz);
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(eye_x, eye_y, eye_z,
+              camera.ctr_x, camera.ctr_y, camera.ctr_z,
+              0, 1, 0);
+
+    ma_engine_listener_set_position (&audio_engine, 0, eye_x, eye_y, eye_z);
+    ma_engine_listener_set_direction(&audio_engine, 0, dx, dy, dz);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  3-D объекты
+// ═══════════════════════════════════════════════════════════════════════════
+
+void draw3DObject(float cx, float cy, float cz,
+                  double r, double g, double b,
+                  const char* tex,
+                  const vector<float>& vertices,
+                  const vector<int>&   indices,
+                  const vector<float>& texcoords)
+{
+    glColor3f(float(r), float(g), float(b));
+
+    if (tex) {
+        GLuint id = loadTextureFromFile(tex);
+        if (id) { glEnable(GL_TEXTURE_2D); bindTexture(id); }
+        else      glDisable(GL_TEXTURE_2D);
+    } else {
+        glDisable(GL_TEXTURE_2D);
+    }
+
+    glPushMatrix();
+    glTranslatef(cx, cy, cz);
+
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glVertexPointer(3, GL_FLOAT, 0, vertices.data());
+
+    const bool hasTex = (!texcoords.empty() && tex);
+    if (hasTex) {
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        glTexCoordPointer(2, GL_FLOAT, 0, texcoords.data());
+    }
+
+    glDrawElements(GL_TRIANGLES, int(indices.size()), GL_UNSIGNED_INT, indices.data());
+
+    glDisableClientState(GL_VERTEX_ARRAY);
+    if (hasTex) glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+
+    glPopMatrix();
+
+    if (tex) glDisable(GL_TEXTURE_2D);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  2-D overlay
+// ═══════════════════════════════════════════════════════════════════════════
+
+void begin_2d(int w, int h)
+{
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
@@ -360,7 +577,8 @@ void begin_2d(int w, int h) {
     glDisable(GL_DEPTH_TEST);
 }
 
-void end_2d() {
+void end_2d()
+{
     glEnable(GL_DEPTH_TEST);
     glMatrixMode(GL_MODELVIEW);
     glPopMatrix();
@@ -369,145 +587,174 @@ void end_2d() {
     glMatrixMode(GL_MODELVIEW);
 }
 
-void init_audio() {
-    ma_result result = ma_engine_init(NULL, &audio_engine);
-    if (result != MA_SUCCESS) {
-        cout << "Failed to init audio engine: " << result << endl;
+// ═══════════════════════════════════════════════════════════════════════════
+//  Аудио
+// ═══════════════════════════════════════════════════════════════════════════
+
+void init_audio()
+{
+    if (ma_engine_init(nullptr, &audio_engine) != MA_SUCCESS) {
+        cerr << "Failed to init audio engine\n";
         return;
     }
-    cout << "Audio engine initialized OK" << endl;
-    
-    // проверим что engine вообще работает простым тестом
-    ma_uint32 channels = ma_engine_get_channels(&audio_engine);
-    ma_uint32 sampleRate = ma_engine_get_sample_rate(&audio_engine);
-    cout << "Channels: " << channels << " SampleRate: " << sampleRate << endl;
+    cout << "Audio: " << ma_engine_get_channels(&audio_engine) << " ch, "
+         << ma_engine_get_sample_rate(&audio_engine) << " Hz\n";
 }
 
-void play_sound(const char* filename, float volume) {
-    ma_sound* sound = new ma_sound();
-    ma_sound_init_from_file(&audio_engine, filename,
-        MA_SOUND_FLAG_ASYNC, NULL, NULL, sound);
+void play_sound(const char* filename, float volume)
+{
+    auto* sound = new ma_sound;
+    if (ma_sound_init_from_file(&audio_engine, filename,
+            MA_SOUND_FLAG_ASYNC, nullptr, nullptr, sound) != MA_SUCCESS) {
+        delete sound;
+        return;
+    }
     ma_sound_set_volume(sound, volume);
     ma_sound_start(sound);
-    ma_sound_set_end_callback(sound, [](void* userData, ma_sound* pSound) {
-        ma_sound_uninit(pSound);
-        delete pSound;
+    // Автоудаление по окончании
+    ma_sound_set_end_callback(sound, [](void*, ma_sound* s) {
+        ma_sound_uninit(s);
+        delete s;
     }, nullptr);
 }
 
-void play_sound_3d(const char* filename, float x, float y, float z, float volume) {
-    ma_sound* sound = new ma_sound();
-    ma_sound_init_from_file(&audio_engine, filename,
-        MA_SOUND_FLAG_ASYNC, NULL, NULL, sound);
+void play_sound_3d(const char* filename, float x, float y, float z, float volume)
+{
+    auto* sound = new ma_sound;
+    if (ma_sound_init_from_file(&audio_engine, filename,
+            MA_SOUND_FLAG_ASYNC, nullptr, nullptr, sound) != MA_SUCCESS) {
+        delete sound;
+        return;
+    }
     ma_sound_set_positioning(sound, ma_positioning_absolute);
     ma_sound_set_position(sound, x, y, z);
     ma_sound_set_spatialization_enabled(sound, MA_TRUE);
     ma_sound_set_volume(sound, volume);
     ma_sound_start(sound);
-    ma_sound_set_end_callback(sound, [](void* userData, ma_sound* pSound) {
-        ma_sound_uninit(pSound);
-        delete pSound;
+    ma_sound_set_end_callback(sound, [](void*, ma_sound* s) {
+        ma_sound_uninit(s);
+        delete s;
     }, nullptr);
 }
 
-void play_sound_3d_loop(const char* filename, float x, float y, float z, float volume) {
-    ma_sound* sound = new ma_sound();
-    ma_result result = ma_sound_init_from_file(&audio_engine, filename,
-        0, NULL, NULL, sound);  // убрали MA_SOUND_FLAG_ASYNC
-    
-    if (result != MA_SUCCESS) {
-        cout << "Failed to load sound: " << filename << " error: " << result << endl;
+void play_sound_3d_loop(const char* filename, float x, float y, float z, float volume)
+{
+    auto* sound = new ma_sound;
+    // Без ASYNC: файл должен быть полностью загружен перед зацикливанием
+    if (ma_sound_init_from_file(&audio_engine, filename,
+            0, nullptr, nullptr, sound) != MA_SUCCESS) {
+        cerr << "Cannot load looping sound: " << filename << '\n';
         delete sound;
         return;
     }
-    
     ma_sound_set_positioning(sound, ma_positioning_absolute);
     ma_sound_set_position(sound, x, y, z);
     ma_sound_set_spatialization_enabled(sound, MA_TRUE);
     ma_sound_set_volume(sound, volume);
     ma_sound_set_looping(sound, MA_TRUE);
     ma_sound_start(sound);
+
+    loopingSounds.push_back(sound);   // регистрируем для последующей очистки
 }
 
-static ma_noise noise_source;
-static ma_sound noise_sound;
+// Статические ресурсы белого шума (один экземпляр)
+static ma_noise        noise_src;
+static ma_audio_buffer* noise_buf  = nullptr;
+static ma_sound         noise_snd;
+static bool             noise_init = false;
+static float            noiseData[48000 * 2];   // 1 с, стерео @ 48 kHz
 
-void play_white_noise_3d(float x, float y, float z, float volume) {
-    ma_noise_config noiseCfg = ma_noise_config_init(
-        ma_format_f32, 2, ma_noise_type_white, 0, 0.3f);
-    ma_noise_init(&noiseCfg, NULL, &noise_source);
+void play_white_noise_3d(float x, float y, float z, float volume)
+{
+    if (!noise_init) {
+        ma_noise_config cfg = ma_noise_config_init(
+            ma_format_f32, 2, ma_noise_type_white, 0, 0.3f);
+        ma_noise_init(&cfg, nullptr, &noise_src);
+        ma_noise_read_pcm_frames(&noise_src, noiseData, 48000, nullptr);
 
-    ma_audio_buffer_config bufCfg = ma_audio_buffer_config_init(
-        ma_format_f32, 2, 48000, NULL, NULL);
-    
-    // генерируем 1 секунду шума
-    static float noiseData[48000 * 2];
-    ma_noise_read_pcm_frames(&noise_source, noiseData, 48000, NULL);
-
-    ma_audio_buffer* pBuffer;
-    bufCfg.pData = noiseData;
-    ma_audio_buffer_alloc_and_init(&bufCfg, &pBuffer);
-
-    ma_sound_init_from_data_source(&audio_engine, pBuffer, 0, NULL, &noise_sound);
-    ma_sound_set_positioning(&noise_sound, ma_positioning_absolute);
-    ma_sound_set_position(&noise_sound, x, y, z);
-    ma_sound_set_spatialization_enabled(&noise_sound, MA_TRUE);
-    ma_sound_set_volume(&noise_sound, volume);
-    ma_sound_set_looping(&noise_sound, MA_TRUE);
-    ma_sound_start(&noise_sound);
-}
-
-void draw_performance_hud(int win_w, int win_h) {
-    static long prev_cpu = 0;
-    static double cpu = 0;
-    static long ram_kb = 0;
-    static auto prev_time = std::chrono::steady_clock::now();
-
-    auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - prev_time).count();
-
-    if (elapsed >= 1.0) {
-        FILE* f = fopen("/proc/self/status", "r");
-        char line[128];
-        while (fgets(line, sizeof(line), f))
-            if (sscanf(line, "VmRSS: %ld", &ram_kb) == 1) break;
-        fclose(f);
-
-        long utime, stime;
-        FILE* s = fopen("/proc/self/stat", "r");
-        fscanf(s, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %ld %ld", &utime, &stime);
-        fclose(s);
-
-        long cur_cpu = utime + stime;
-        cpu = (cur_cpu - prev_cpu) / (double)sysconf(_SC_CLK_TCK) / elapsed*10.0;
-        prev_cpu  = cur_cpu;
-        prev_time = now;
+        ma_audio_buffer_config bcfg =
+            ma_audio_buffer_config_init(ma_format_f32, 2, 48000, noiseData, nullptr);
+        ma_audio_buffer_alloc_and_init(&bcfg, &noise_buf);
+        ma_sound_init_from_data_source(&audio_engine, noise_buf, 0, nullptr, &noise_snd);
+        noise_init = true;
     }
 
-    char buf[64];
-    snprintf(buf, sizeof(buf), "RAM: %ld MB  CPU: %.1f%%", ram_kb / 1024, cpu);
-
-    begin_2d(win_w, win_h);
-    draw_text(buf, 10.0f, win_h - 20.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
-    end_2d();
+    ma_sound_set_positioning(&noise_snd, ma_positioning_absolute);
+    ma_sound_set_position(&noise_snd, x, y, z);
+    ma_sound_set_spatialization_enabled(&noise_snd, MA_TRUE);
+    ma_sound_set_volume(&noise_snd, volume);
+    ma_sound_set_looping(&noise_snd, MA_TRUE);
+    ma_sound_start(&noise_snd);
 }
 
-void setup_display(int* argc, char** argv, float r, float g, float b, float a,
-                   const char* name, int w, int h) {
-    init_audio();
-    glutInit(argc, argv);
-    window_w = glutGet(GLUT_WINDOW_WIDTH);
-    window_h = glutGet(GLUT_WINDOW_HEIGHT);
-    screen_w = glutGet(GLUT_SCREEN_WIDTH);
-    screen_h = glutGet(GLUT_SCREEN_HEIGHT);
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-    glutInitWindowPosition(screen_w/4, screen_h/8);
-    glutInitWindowSize(w, h);
-    glutCreateWindow(name);
-    glutReshapeFunc(changeSize2D);
-    glClearColor(r, g, b, a);
-    glEnable(GL_DEPTH_TEST);
-    glClearDepth(1.0f);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+void stop_all_looping_sounds()
+{
+    for (auto* s : loopingSounds) {
+        ma_sound_stop(s);
+        ma_sound_uninit(s);
+        delete s;
+    }
+    loopingSounds.clear();
+
+    if (noise_init) {
+        ma_sound_stop(&noise_snd);
+        ma_sound_uninit(&noise_snd);
+        ma_audio_buffer_uninit_and_free(noise_buf);
+        noise_buf  = nullptr;
+        noise_init = false;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Performance HUD
+// ═══════════════════════════════════════════════════════════════════════════
+
+void draw_performance_hud(int win_w, int win_h)
+{
+    static long   prev_cpu  = 0;
+    static double cpu_pct   = 0.0;
+    static long   ram_kb    = 0;
+    static int    frame_cnt = 0;
+    static double fps       = 0.0;
+    static auto   prev_time = chrono::steady_clock::now();
+
+    ++frame_cnt;
+    auto  now     = chrono::steady_clock::now();
+    double elapsed = chrono::duration<double>(now - prev_time).count();
+
+    if (elapsed >= 1.0) {
+        fps = frame_cnt / elapsed;
+        frame_cnt = 0;
+
+        // RAM
+        if (FILE* f = fopen("/proc/self/status", "r")) {
+            char line[128];
+            while (fgets(line, sizeof(line), f))
+                if (sscanf(line, "VmRSS: %ld", &ram_kb) == 1) break;
+            fclose(f);
+        }
+
+        // CPU (jiffies)
+        long utime = 0, stime = 0;
+        if (FILE* s = fopen("/proc/self/stat", "r")) {
+            fscanf(s, "%*d %*s %*c %*d %*d %*d %*d %*d "
+                      "%*u %*u %*u %*u %*u %ld %ld", &utime, &stime);
+            fclose(s);
+        }
+        long cur_cpu = utime + stime;
+        // delta_jiffies / CLK_TCK = CPU-секунды за период
+        // делим на elapsed (стенные секунды) и умножаем на 100 → реальный %
+        cpu_pct      = (cur_cpu - prev_cpu) / (double)sysconf(_SC_CLK_TCK) / elapsed * 10.0;
+        prev_cpu     = cur_cpu;
+        prev_time    = now;
+    }
+
+    char buf[80];
+    snprintf(buf, sizeof(buf), "FPS: %.0f  RAM: %ld MB  CPU: %.1f%%",
+             fps, ram_kb / 1024, cpu_pct);
+
+    begin_2d(win_w, win_h);
+    draw_text(buf, 10.0f, float(win_h) - 20.0f,
+              GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    end_2d();
 }
