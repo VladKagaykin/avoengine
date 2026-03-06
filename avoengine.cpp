@@ -1,85 +1,99 @@
+//              звук
+// указываем что здесь реализация библиотеки, т.к. miniaudio это только заголовочный файл и даём понять что
+// это главная программа
 #define MINIAUDIO_IMPLEMENTATION
+// указываем что пользуемся только указанным api для воспроизведения звука(pulseaudio и прочая шняга), если они не указаны,
+// то программа компилируется для всех api
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
+// указываем что api некий alsa(встроенный в линукс)
 #define MA_ENABLE_ALSA
+// импортируем сам miniaudio
 #include "miniaudio.h"
+
+//              движок
+// указываем заголовочный файл движка
 #include "avoengine.h"
 
+//              графика
+// вспомогательные утилиты для opengl(матрицы, проекции и прочие нежности для немощей)
 #include <GL/glu.h>
+// основная библиотека opengl
 #include <GL/glut.h>
+// библиотека для импорта текстур
 #include <SOIL/SOIL.h>
 
+//              утилиты
+// библиотека для работы со временем для замеров производительности
 #include <chrono>
+// математика(п, синусы, косинусы)
 #include <cmath>
+// удобная запись в переменные через printf и прочую хрень
 #include <cstdio>
+// взаимодействия с консолью
 #include <iostream>
-#include <unordered_map>   // ← O(1) вместо O(log n) у std::map
+// таблица номер-значение, поможет для текстур
+#include <unordered_map>
+// нелоховские массивы
 #include <vector>
 
+//              объявления
+// использование пространства имён std 😲
 using namespace std;
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  Глобальные переменные
-// ═══════════════════════════════════════════════════════════════════════════
+// переменные для хранения в них размеров окна и экрана
 int window_w = 0, window_h = 0, screen_w = 0, screen_h = 0;
-
-// ── Текстурный кэш ──────────────────────────────────────────────────────────
+// создание таблицы текстур и их id 
+//       имя файла текстуры  его id        
 static unordered_map<string, GLuint> textureCache;
-static GLuint boundTextureID = 0;   // отслеживаем текущую привязку
+// храним id последней загруженной текстуры
+static GLuint boundTextureID = 0;
 
-// ── Аудио ───────────────────────────────────────────────────────────────────
+// инициализация звукового движка(ma_engine тип данных, а audio_engine название)
 static ma_engine audio_engine;
-static vector<ma_sound*> loopingSounds;   // для корректного освобождения
+// вектор в котором хранятся звуки, которые играют на постоянке
+static vector<ma_sound*> loopingSounds;
 
-// ── Параметры камеры ─────────────────────────────────────────────────────────
+// структура для зранения параметров камеры
 struct CameraParams {
     float fov   = 60.0f;
     float znear = 0.1f;
     float zfar  = 1000.0f;
     float eye_x = 0, eye_y = 0, eye_z = 0;
-    float ctr_x = 0, ctr_y = 0, ctr_z = 1;   // look-at point
+    float ctr_x = 0, ctr_y = 0, ctr_z = 1;
     float up_x  = 0, up_y  = 1, up_z  = 0;
 };
+// инициализация камеры
 static CameraParams camera;
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Вспомогательные функции
-// ═══════════════════════════════════════════════════════════════════════════
-
-// setup_camera: смотрит В направлении (pitch,yaw) — используется при инициализации.
-static inline void lookAtForward(float eye_x, float eye_y, float eye_z,
-                                  float pitch_deg, float yaw_deg,
-                                  float& cx, float& cy, float& cz)
-{
-    const float p = pitch_deg * float(M_PI) / 180.0f;
-    const float y = yaw_deg   * float(M_PI) / 180.0f;
+//              утилиты для камеры
+// вычисляем то, куда смотрит центр камеры
+static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz){
+    // радианы наклона по вертикали
+    const float p=pitch_deg*float(M_PI)/180.0f;
+    // радианы наклона по горизонтали
+    const float y=yaw_deg*float(M_PI)/180.0f;
+    // считаем проекцию почти по теореме пифагора
     cx = eye_x + cosf(p) * sinf(y);
     cy = eye_y + sinf(p);
     cz = eye_z + cosf(p) * cosf(y);
 }
-
-// move_camera: смотрит ПРОТИВ направления (pitch,yaw) — оригинальная конвенция.
-// display() передаёт -cam_pitch и cam_angle, управление WASD рассчитано под это.
-static inline void lookAtBackward(float eye_x, float eye_y, float eye_z,
-                                   float pitch_deg, float yaw_deg,
-                                   float& cx, float& cy, float& cz,
-                                   float& dx, float& dy, float& dz)
-{
-    const float p = pitch_deg * float(M_PI) / 180.0f;
-    const float y = yaw_deg   * float(M_PI) / 180.0f;
-    dx = -cosf(p) * sinf(y);
-    dy = -sinf(p);
-    dz = -cosf(p) * cosf(y);
-    cx = eye_x + dx;
-    cy = eye_y + dy;
-    cz = eye_z + dz;
+// вычисляем тоже самое, только не то куда смотрит камера, а то, куда она не смотрит(не знаю как объяснить, короче,
+// куда смотрела бы камера если бы её развернуло на 180)
+static inline void lookAtBackward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
+    const float p=pitch_deg*float(M_PI)/180.0f;
+    const float y=yaw_deg*float(M_PI)/180.0f;
+    dx=-cosf(p)*sinf(y);
+    dy=-sinf(p);
+    dz=-cosf(p)*cosf(y);
+    cx=eye_x+dx;
+    cy=eye_y+dy;
+    cz=eye_z+dz;
 }
 
-// Безопасная привязка текстуры: пропускает вызов, если уже привязана нужная.
-static inline void bindTexture(GLuint id)
-{
-    if (id != boundTextureID) {
-        glBindTexture(GL_TEXTURE_2D, id);
-        boundTextureID = id;
+// проверка на то, привязана ли эта текстура или нет
+static inline void bindTexture(GLuint id){
+    if (id!=boundTextureID){
+        glBindTexture(GL_TEXTURE_2D,id);
+        boundTextureID=id;
     }
 }
 
@@ -462,10 +476,6 @@ void setup_display(int* argc, char** argv,
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  Камера
-// ═══════════════════════════════════════════════════════════════════════════
 
 void setup_camera(float fov,
                   float eye_x, float eye_y, float eye_z,
