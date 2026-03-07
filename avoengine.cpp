@@ -97,157 +97,154 @@ static inline void bindTexture(GLuint id){
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Текстуры
-// ═══════════════════════════════════════════════════════════════════════════
-
-GLuint loadTextureFromFile(const char* filename)
-{
-    auto it = textureCache.find(filename);
-    if (it != textureCache.end())
-        return it->second;
-
-    int w, h;
-    unsigned char* img = SOIL_load_image(filename, &w, &h, nullptr, SOIL_LOAD_RGBA);
-    if (!img) {
-        cerr << "Cannot load texture: " << filename
-             << " (" << SOIL_last_result() << ")\n";
-        return textureCache[filename] = 0;
+//              текстуры
+// функция для загрузки текстуры
+GLuint loadTextureFromFile(const char* filename){
+    // проверяем загружена ли текстура
+    auto it=textureCache.find(filename);
+    if(it!=textureCache.end()) return it->second;
+    // загружаем изображение и записываем ей ширину и высоту в w и h
+    int w,h;
+    // название текстуры / w / h / сюда можно записать сколько каналов у изображения / принудительно указываем что 4 канала, чтобы была прозрачность
+    unsigned char* img=SOIL_load_image(filename,&w,&h,nullptr,SOIL_LOAD_RGBA);
+    if(!img){
+        cerr<<"Cannot load texture: "<<filename<<" ("<<SOIL_last_result()<<")"<<endl;
+        return textureCache[filename]=0;
     }
-
+    // создаём новый id для текстуры
     GLuint id;
-    glGenTextures(1, &id);
+    // размер / записываем id
+    glGenTextures(1,&id);
+    // биндим эту текстуру как 2д
     glBindTexture(GL_TEXTURE_2D, id);
-    boundTextureID = id;
+    boundTextureID=id;
+    // параметры текстуры
+    //      указываем цель / параметр который надо изменить/ его значение
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, img);
-
+    // передаём текстуру в видеопамять
+    // формат / детализация(хз что это значит) / формат хранения / ширина / высота / граница(также хз) / входной формат / тип данных / изображение
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,img);
+    // освобождаем текстуру из памяти
     SOIL_free_image_data(img);
-    return textureCache[filename] = id;
+    // возвращаем id текстуры
+    return textureCache[filename]=id;
 }
-
-void clearTextureCache()
-{
-    for (auto& [name, id] : textureCache)
-        if (id) glDeleteTextures(1, &id);
+// удаляем все текстуры из памяти
+void clearTextureCache(){
+    // перебираем все имена и id и удаляем их
+    for(auto& [name,id] : textureCache)
+        if(id) glDeleteTextures(1, &id);
     textureCache.clear();
-    boundTextureID = 0;
+    boundTextureID=0;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  2-D утилиты
-// ═══════════════════════════════════════════════════════════════════════════
-
-void rotatePoint(float& x, float& y, float cx, float cy, float angle_rad)
-{
-    const float tx = x - cx, ty = y - cy;
-    const float c  = cosf(angle_rad), s = sinf(angle_rad);
-    x = cx + tx * c - ty * s;
-    y = cy + tx * s + ty * c;
+//              хз как это назвать
+// поворачиваем текстуру вокруг точки
+void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad){
+    // перенос в 0 для удобного рассчёта
+    const float tx=x-cx,ty=y-cy;
+    // рассчёт поворота и возвращаем как было
+    const float c=cosf(angle_rad),s=sinf(angle_rad);
+    x=cx+tx*c-ty*s;
+    y=cy+tx*s+ty*c;
 }
 
-// ── Общая логика enable/bind для текстурных примитивов ──────────────────────
-static void enableTex(const char* file)
-{
-    if (!file) { glDisable(GL_TEXTURE_2D); return; }
-    GLuint id = loadTextureFromFile(file);
-    if (id) { glEnable(GL_TEXTURE_2D); bindTexture(id); }
-    else      glDisable(GL_TEXTURE_2D);
+// функция для 2д фигур: указываем название текстуры и если она существует, то биндим её, если нет, то указываем что фигура не использует текстуру
+static void enableTex(const char* file){
+    if(!file){
+        glDisable(GL_TEXTURE_2D);
+        return;
+    }
+    GLuint id=loadTextureFromFile(file);
+    if(id){
+        glEnable(GL_TEXTURE_2D);
+        bindTexture(id);
+    }else{
+        glDisable(GL_TEXTURE_2D);
+    }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Примитивы
-// ═══════════════════════════════════════════════════════════════════════════
-
-void triangle(float scale, float cx, float cy,
-              double r, double g, double b,
-              float rotate, const float* vertices, const char* tex)
-{
+//              простые 2д фигуры
+// треугольник
+void triangle(float scale,float cx,float cy,double r,double g,double b,float rotate,const float* vertices,const char* tex){
+    // задаём цвет
     glColor3f(float(r), float(g), float(b));
+    // задаём/не задаём текстуру
     enableTex(tex);
-
-    const float ar  = rotate * float(M_PI) / -180.0f;
-    const float tc[6] = {0,1, 1,1, 0,0};
-
+    // преобразуем поворот в радианы
+    const float ar=rotate*float(M_PI)/-180.0f;
+    // задаём координаты текстуры
+    const float tc[6]={0,1, 1,1, 0,0};
+    // задаём что фигура-треугольник
     glBegin(GL_TRIANGLES);
     for (int i = 0; i < 3; ++i) {
-        float px = vertices[i*2], py = vertices[i*2+1];
-        rotatePoint(px, py, 0, 0, ar);
-        if (tex) glTexCoord2f(tc[i*2], tc[i*2+1]);
-        glVertex2f(cx + px * scale, cy + py * scale);
+        // берём координаты вершины и рассчитываем их поворот
+        float px=vertices[i*2], py=vertices[i*2+1];
+        rotatePoint(px,py,0,0,ar);
+        // отправляем координату текстуры
+        if(tex)glTexCoord2f(tc[i*2],tc[i*2+1]);
+        // отправляем вершину в opengl
+        glVertex2f(cx+px*scale,cy+py*scale);
     }
+    // объявляем что рисовка фигуры завершена
     glEnd();
-
-    if (tex) glDisable(GL_TEXTURE_2D);
+    // выключаем текстуру
+    if(tex)glDisable(GL_TEXTURE_2D);
 }
-
-void square(float local_size, float x, float y,
-            double r, double g, double b,
-            float rotate, const float* vertices, const char* tex)
-{
-    glColor3f(float(r), float(g), float(b));
+// всё тоже самое, только квадрат
+void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex){
+    glColor3f(float(r),float(g),float(b));
     enableTex(tex);
-
-    const float ar  = rotate * float(M_PI) / -180.0f;
-    const float tc[8] = {0,1, 1,1, 1,0, 0,0};
-
+    const float ar=rotate*float(M_PI)/-180.0f;
+    const float tc[8]={0,1, 1,1, 1,0, 0,0};
     glBegin(GL_QUADS);
-    for (int i = 0; i < 4; ++i) {
-        float px = vertices[i*2], py = vertices[i*2+1];
-        rotatePoint(px, py, 0, 0, ar);
-        if (tex) glTexCoord2f(tc[i*2], tc[i*2+1]);
-        glVertex2f(x + px * local_size, y + py * local_size);
+    for (int i=0;i<4;++i){
+        float px=vertices[i*2],py=vertices[i*2+1];
+        rotatePoint(px,py,0,0,ar);
+        if(tex)glTexCoord2f(tc[i*2],tc[i*2+1]);
+        glVertex2f(x+px*local_size,y+py*local_size);
     }
     glEnd();
-
-    if (tex) glDisable(GL_TEXTURE_2D);
+    if(tex)glDisable(GL_TEXTURE_2D);
 }
-
-void circle(float scale, float cx, float cy,
-            double r, double g, double b,
-            float radius, float in_radius,
-            float rotate, int slices, int loops, const char* tex)
-{
-    glColor3f(float(r), float(g), float(b));
+// круг
+void circle(float scale,float cx,float cy,double r,double g,double b,float radius,float in_radius,float rotate,int slices,int loops,const char* tex){
+    // уже было
+    glColor3f(float(r),float(g),float(b));
     enableTex(tex);
-
+    // как я понял мы делаем круг в отдельной матрице(квадрика), а потом прибавляем к основной
     glPushMatrix();
-    glTranslatef(cx, cy, 0);
-    glRotatef(-rotate, 0, 0, 1);
-    glScalef(scale, scale, 1);
-
-    // Один quadric на весь lifetime программы — не аллоцируем/удаляем каждый вызов
-    static GLUquadric* q = nullptr;
-    if (!q) {
-        q = gluNewQuadric();
-        gluQuadricTexture(q, GL_TRUE);
-        gluQuadricDrawStyle(q, GLU_FILL);
+    glTranslatef(cx,cy,0);
+    glRotatef(-rotate,0,0,1);
+    glScalef(scale,scale,1);
+    static GLUquadric* q=nullptr;
+    if (!q){
+        q=gluNewQuadric();
+        gluQuadricTexture(q,GL_TRUE);
+        gluQuadricDrawStyle(q,GLU_FILL);
     }
-
     glMatrixMode(GL_TEXTURE);
     glPushMatrix();
-    glScalef(1, -1, 1);
-    gluDisk(q, in_radius, radius, slices, loops);
+    glScalef(1,-1,1);
+    gluDisk(q,in_radius,radius,slices,loops);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
-
     glPopMatrix();
-
-    if (tex) glDisable(GL_TEXTURE_2D);
+    if(tex)glDisable(GL_TEXTURE_2D);
 }
-
-void draw_text(const char* text, float x, float y,
-               void* font, float r, float g, float b)
-{
-    glColor3f(r, g, b);
-    glRasterPos2f(x, y);
-    for (const char* c = text; *c; ++c)
-        glutBitmapCharacter(font, *c);
+// рисовка текста
+void draw_text(const char* text,float x,float y,void* font,float r,float g,float b){
+    // задаём цвет
+    glColor3f(r,g,b);
+    // задаём позицию
+    glRasterPos2f(x,y);
+    // рисуем текст по символам
+    for(const char* c=text;*c;++c)
+        glutBitmapCharacter(font,*c);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -419,90 +416,103 @@ void pseudo_3d_entity::draw(float cam_h, float cam_x, float cam_y, float cam_z) 
     glPopMatrix();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  OpenGL / окно
-// ═══════════════════════════════════════════════════════════════════════════
-
-void changeSize3D(int w, int h)
-{
-    if (h == 0) h = 1;
-    glViewport(0, 0, w, h);
+//              opengl
+// настройка изменения размеров в 3д режиме
+void changeSize3D(int w,int h){
+    // проверка чтобы избежать деления на 0
+    if(h==0)h=1;
+    // задаём область вывода от координат 0,0 до координат w,h 
+    glViewport(0,0,w,h);
+    // переключение матрицы в проекцию(хз что это значит)
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(camera.fov, float(w) / float(h), camera.znear, camera.zfar);
+    // настройка перспективы
+    // fov | соотношение сторон / ближняя плоскость где не отображаем / дальняя плоскость где не отображаем 
+    gluPerspective(camera.fov,float(w)/float(h),camera.znear,camera.zfar);
+    // переключение матрицы обратно в модельно-видовую(хз что это значит) 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    gluLookAt(camera.eye_x, camera.eye_y, camera.eye_z,
-              camera.ctr_x, camera.ctr_y, camera.ctr_z,
-              camera.up_x,  camera.up_y,  camera.up_z);
+    // настройка камеры
+    gluLookAt(camera.eye_x,camera.eye_y,camera.eye_z,
+              camera.ctr_x,camera.ctr_y,camera.ctr_z,
+              camera.up_x,camera.up_y,camera.up_z);
 }
-
-void changeSize2D(int w, int h)
-{
-    if (h == 0) h = 1;
-    glViewport(0, 0, w, h);
+// настройка изменения размеров в 2д режиме
+void changeSize2D(int w,int h){
+    // уже было
+    if(h==0)h=1;
+    glViewport(0,0,w,h);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    const float ratio = float(w) / float(h);
-    if (w <= h) glOrtho(-1, 1, -1/ratio, 1/ratio, 1, -1);
-    else        glOrtho(-ratio, ratio, -1, 1, 1, -1);
+    // соотношение сторон
+    const float ratio=float(w)/float(h);
+    // установка 2д проекции чтобы всегда была одна и таже система координат
+    if(w<=h)glOrtho(-1,1,-1/ratio,1/ratio,1,-1);
+    else glOrtho(-ratio,ratio,-1,1,1,-1);
+    // уже было
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    window_w = w;
-    window_h = h;
+    // выводим размеры окна в переменные, чтобы разработчик игры их мог использовать
+    window_w=w;
+    window_h=h;
 }
 
-void setup_display(int* argc, char** argv,
-                   float r, float g, float b, float a,
-                   const char* name, int w, int h)
-{
+void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h){
+    // инициализация аудио(будет потом)
     init_audio();
-
-    glutInit(argc, argv);
-    screen_w = glutGet(GLUT_SCREEN_WIDTH);
-    screen_h = glutGet(GLUT_SCREEN_HEIGHT);
-    window_w = w;
-    window_h = h;
-
+    // инициализация glut
+    glutInit(argc,argv);
+    // записываем в переменные размеры окна и монитора
+    screen_w=glutGet(GLUT_SCREEN_WIDTH);
+    screen_h=glutGet(GLUT_SCREEN_HEIGHT);
+    window_w=w;
+    window_h=h;
+    // параметры буфера кадра
+    // двойная буферизация / 4 канала / буфер глубины(хз что значит)
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-    glutInitWindowPosition(screen_w / 4, screen_h / 8);
-    glutInitWindowSize(w, h);
+    // позиция окна
+    glutInitWindowPosition(screen_w/4,screen_h/8);
+    // размеры окна
+    glutInitWindowSize(w,h);
+    // имя окна
     glutCreateWindow(name);
+    // функция для изменения размеров по умолчанию
     glutReshapeFunc(changeSize2D);
-
-    glClearColor(r, g, b, a);
+    // цвет заднего фона
+    glClearColor(r,g,b,a);
+    // настройка глубины(хз что это)
     glEnable(GL_DEPTH_TEST);
     glClearDepth(1.0f);
+    // возможность прозрачности
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
 }
-
-void setup_camera(float fov,
-                  float eye_x, float eye_y, float eye_z,
-                  float pitch, float yaw)
-{
-    camera.fov   = fov;
-    camera.znear = 0.1f;
-    camera.zfar  = 1000.0f;
-    camera.eye_x = eye_x; camera.eye_y = eye_y; camera.eye_z = eye_z;
-    camera.up_x  = 0; camera.up_y = 1; camera.up_z = 0;
-
-    lookAtForward(eye_x, eye_y, eye_z, pitch, yaw,
-                  camera.ctr_x, camera.ctr_y, camera.ctr_z);
-
-    // Проекция с корректным aspect (используем текущий размер окна)
+// настройка камеры
+void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw){
+    // задаём параметры камеры
+    camera.fov=fov;
+    camera.znear=0.1f;
+    camera.zfar=1000.0f;
+    camera.eye_x=eye_x; 
+    camera.eye_y=eye_y;
+    camera.eye_z=eye_z;
+    camera.up_x=0;
+    camera.up_y=1;
+    camera.up_z=0;
+    // вычисляем точку взгляда
+    lookAtForward(eye_x,eye_y,eye_z,pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z);
+    // настройка матрицы на проекцию
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    const float aspect = (window_h > 0) ? float(window_w) / float(window_h) : 1.0f;
-    gluPerspective(fov, aspect, camera.znear, camera.zfar);
-
+    // устанавливаем перспективу
+    const float aspect=(window_h>0)? float(window_w)/float(window_h):1.0f;
+    gluPerspective(fov,aspect,camera.znear,camera.zfar);
+    // переключаемся на модельно-видовую матрицу и устанавливаем камеру
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    gluLookAt(eye_x, eye_y, eye_z,
-              camera.ctr_x, camera.ctr_y, camera.ctr_z,
-              0, 1, 0);
-
-    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
+    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z,0,1,0);
+    // устанавливаем позицию где мы слышим звуки
+    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
 }
 
 void move_camera(float eye_x, float eye_y, float eye_z,
