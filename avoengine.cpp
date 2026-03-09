@@ -708,5 +708,7 @@ void draw_performance_hud(int win_w,int win_h){
     snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%",fps,ram_kb / 1024,cpu_pct);
     begin_2d(win_w,win_h);
     draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
+    snprintf(buf,sizeof(buf),"X: %.10f  Y: %.10f  Z: %.10f",camera.eye_x,camera.eye_y,camera.eye_z);
+    draw_text(buf,10.0f,float(win_h)-32.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     end_2d();
 }
