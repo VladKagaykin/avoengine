@@ -1,5 +1,5 @@
-#include "avoengine.h"
-#include <GL/freeglut.h>
+#include "../avoengine.h"
+#include <GL/glut.h>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -68,8 +68,8 @@ void display() {
 void keyboard(unsigned char key, int, int) {
     float rad = cam_angle * M_PI / 180.0f;
     switch (key) {
-        case 'a': cam_angle += 5.0f; break;  // было -= 
-        case 'd': cam_angle -= 5.0f; break;  // было +=
+        case 'a': cam_angle += 5.0f; break;
+        case 'd': cam_angle -= 5.0f; break;
         case 'w':
             cam_x -= sin(rad) * MOVE_SPEED;
             cam_z -= cos(rad) * MOVE_SPEED;
@@ -170,7 +170,7 @@ int main(int argc, char** argv) {
     setup_camera(60.0f, cam_x, CAM_HEIGHT, cam_z, -cam_pitch, cam_angle);
 
     play_sound_3d_loop("src/radio/radio.wav", 10, 0.5f, 10, 1.5f);
-    play_white_noise_3d(-10, 0.5f, -10);
+    play_white_noise_3d(-10, 0.5f, -10, 1.0f);
 
     glutDisplayFunc(display);
     glutKeyboardFunc(keyboard);

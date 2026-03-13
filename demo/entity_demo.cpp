@@ -1,5 +1,5 @@
-#include "avoengine.h"
-#include <GL/freeglut.h>
+#include "../avoengine.h"
+#include <GL/glut.h>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -27,17 +27,14 @@ void display() {
     float dy = camY() - entity->getY();
     float dz = camZ() - entity->getZ();
     float pitch_to_entity = atan2(dy, sqrt(dx*dx + dz*dz)) * 180.0f / M_PI;
-    const char* cur_tex = entity->getCurrentTexture(cam_angle, pitch_to_entity);
 
-    char buf_h[64], buf_v[64], buf_t[256];
+    char buf_h[64], buf_v[64];
     snprintf(buf_h, sizeof(buf_h), "H angle: %.1f", cam_angle);
     snprintf(buf_v, sizeof(buf_v), "V angle: %.1f", cam_pitch);
-    snprintf(buf_t, sizeof(buf_t), "Texture: %s", cur_tex ? cur_tex : "none");
 
     begin_2d(win_w, win_h);
-    draw_text(buf_h, 10, win_h - 20,  GLUT_BITMAP_HELVETICA_12, 1, 1, 1);
-    draw_text(buf_v, 10, win_h - 40,  GLUT_BITMAP_HELVETICA_12, 1, 1, 1);
-    draw_text(buf_t, 10, win_h - 60,  GLUT_BITMAP_HELVETICA_12, 1, 1, 0);
+    draw_text(buf_h, 10, win_h - 20, GLUT_BITMAP_HELVETICA_12, 1, 1, 1);
+    draw_text(buf_v, 10, win_h - 40, GLUT_BITMAP_HELVETICA_12, 1, 1, 1);
     end_2d();
 
     glutSwapBuffers();
@@ -131,7 +128,6 @@ int main(int argc, char** argv) {
         "src/radio/render_063_ring07_az315.png"
     };
 
-    // Вершины billboard-quad в локальных координатах (x, y) — 4 точки
     static float verts[] = {
         -0.5f, -0.5f,
          0.5f, -0.5f,

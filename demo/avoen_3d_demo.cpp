@@ -1,5 +1,5 @@
-#include "avoengine.h"
-#include <GL/freeglut.h>
+#include "../avoengine.h"
+#include <GL/glut.h>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -21,17 +21,14 @@ static pseudo_3d_entity* radio_vol = nullptr;
 static pseudo_3d_entity* radio_mus = nullptr;
 
 // ── Статическая геометрия пола ───────────────────────────────────────────────
-// Никаких heap-аллокаций: всё в стеке/BSS-сегменте.
 static const int   FLOOR_TILES  = 20;
 static const float FLOOR_OFFSET = FLOOR_TILES * C / 2.0f;
 
-// Два цвета тайлов
 static const float FLOOR_COL[2][3] = {
     {0.91f, 0.84f, 0.72f},
     {0.72f, 0.63f, 0.50f}
 };
 
-// Предпосчитанные центры тайлов и индексы цветов (400 записей, POD-массив в BSS)
 struct TileData { float wx, wz; int ci; };
 static TileData floor_tiles[FLOOR_TILES * FLOOR_TILES];
 
@@ -46,7 +43,6 @@ static void buildFloor() {
 }
 
 void draw_floor() {
-    // Display List строится один раз — весь пол рисуется одним вызовом GL
     static GLuint floorList = 0;
     if (floorList == 0) {
         static const float hw = C * 0.5f;
@@ -74,9 +70,8 @@ void display() {
     radio_vol->draw(cam_angle, cam_x, CAM_HEIGHT, cam_z);
     radio_mus->draw(cam_angle, cam_x, CAM_HEIGHT, cam_z);
 
-    begin_2d(win_w, win_h);
+    // draw_performance_hud сам вызывает begin_2d/end_2d внутри
     draw_performance_hud(win_w, win_h);
-    end_2d();
 
     glutSwapBuffers();
 }
@@ -189,18 +184,17 @@ int main(int argc, char** argv) {
     radio_mus = new pseudo_3d_entity( 10, 0.5f,  10, 0, 0, textures, 8, verts);
 
     play_sound_3d_loop("src/radio/radio.wav", 10, 0.5f, 10, 1.5f);
-    play_white_noise_3d(-10, 0.5f, -10);
+    play_white_noise_3d(-10, 0.5f, -10, 1.0f);
 
-    buildFloor();   // строим таблицу тайлов один раз
+    buildFloor();
 
     glutDisplayFunc(display);
-    glutIdleFunc(display);      // непрерывная отрисовка без ожидания событий
+    glutIdleFunc(display);
     glutKeyboardFunc(keyboard);
     glutReshapeFunc(reshape);
 
     glutMainLoop();
 
-    // Корректная очистка после выхода из главного цикла
     stop_all_looping_sounds();
     clearTextureCache();
     delete radio_mus;
