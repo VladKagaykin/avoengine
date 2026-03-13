@@ -579,6 +579,8 @@ void play_sound(const char* filename,float volume){
         delete sound;
         return;
     }
+    // указываем что звук вне пространства
+    ma_sound_set_spatialization_enabled(sound, MA_FALSE);
     // звук
     ma_sound_set_volume(sound, volume);
     // проигрывание
@@ -588,6 +590,24 @@ void play_sound(const char* filename,float volume){
         ma_sound_uninit(s);
         delete s;
     },nullptr);
+}
+void play_sound_loop(const char* filename,float volume){
+    auto* sound=new ma_sound;
+    if(ma_sound_init_from_file(&audio_engine,filename,0,nullptr,nullptr,sound)!=MA_SUCCESS){
+        cerr<<"Cannot load looping sound: "<<filename<<endl;
+        delete sound;
+        return;
+    }
+    // отключаем пространственную обработку
+    ma_sound_set_spatialization_enabled(sound,MA_FALSE);
+    // устанавливаем громкость
+    ma_sound_set_volume(sound,volume);
+    // включаем зацикливание
+    ma_sound_set_looping(sound,MA_TRUE);
+    // проигрываем звук
+    ma_sound_start(sound);
+    // добавляем в вектор для последующей очистки
+    loopingSounds.push_back(sound);
 }
 // проигрываем звук в 3д(сложно)
 void play_sound_3d(const char* filename,float x,float y,float z,float volume){
@@ -708,5 +728,7 @@ void draw_performance_hud(int win_w,int win_h){
     snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%",fps,ram_kb / 1024,cpu_pct);
     begin_2d(win_w,win_h);
     draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
+    snprintf(buf,sizeof(buf),"X: %.10f  Y: %.10f  Z: %.10f",camera.eye_x,camera.eye_y,camera.eye_z);
+    draw_text(buf,10.0f,float(win_h)-32.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     end_2d();
 }
