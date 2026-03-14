@@ -12,9 +12,17 @@ extern int window_h;
 extern int screen_w;
 extern int screen_h;
 
+// название процессора, видеокарты и объём оперативки
+// заполняются автоматически при вызове setup_display
+extern std::string cpu_name;
+extern std::string gpu_name;
+extern std::string ram_v;
+
 // ── Текстуры ────────────────────────────────────────────────────────────────
 GLuint loadTextureFromFile(const char* filename);
 void   clearTextureCache();
+// загружаем много текстур параллельно, вызывай при старте уровня
+void   preloadTextures(const std::vector<std::string>& filenames);
 
 extern ma_engine audio_engine;
 
@@ -51,7 +59,7 @@ public:
 
     void draw(float cam_h, float cam_x, float cam_y, float cam_z) const;
 
-    // Радиус используется для frustum culling. По умолчанию 1.0 (единица сцены).
+    // радиус используется для frustum culling. по умолчанию 1.0 (единица сцены)
     void  setRadius(float r)       { radius = r; }
     float getRadius()        const { return radius; }
 
@@ -64,7 +72,7 @@ public:
     float getZ()             const { return z; }
 
 private:
-    // Возвращает -1 если entity за фрустумом.
+    // возвращает -1 если entity за фрустумом
     int  getTextureIndex(float cam_h, float cam_v) const;
     bool isVisible(float cam_x, float cam_y, float cam_z) const;
 
@@ -74,11 +82,17 @@ private:
     int    v_angles;
     float* vertices;
 
-    // Кэш индекса текстуры: не пересчитываем если угол не изменился.
+    // кэш индекса текстуры: не пересчитываем если угол не изменился
     mutable int   cachedTexIdx = -1;
     mutable float cachedCamH   = 1e9f;
     mutable float cachedCamV   = 1e9f;
 };
+
+// параллельно считаем видимость сущностей, потом рисуем в одном потоке
+// используй вместо ручного перебора когда сущностей много(100+)
+void drawEntities(std::vector<pseudo_3d_entity>& entities,
+                  float cam_h,
+                  float cam_x, float cam_y, float cam_z);
 
 // ── OpenGL / окно ───────────────────────────────────────────────────────────
 void setup_display(int* argc, char** argv,

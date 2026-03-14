@@ -13,6 +13,9 @@
 //              движок
 // указываем заголовочный файл движка
 #include "avoengine.h"
+// библиотеки для многопоточности
+#include <omp.h>
+#include <mutex>
 
 //              графика
 // вспомогательные утилиты для opengl(матрицы, проекции и прочие нежности для немощей)
@@ -51,6 +54,8 @@ string gpu_name;
 // создание таблицы текстур и их id 
 //       имя файла текстуры  его id        
 static unordered_map<string, GLuint> textureCache;
+// переменная для хранения того, обрабатывает ли текстуры какой-то поток или нет(вроде бы, не знаю как точно)
+static mutex textureCacheMutex;
 // храним id последней загруженной текстуры
 static GLuint boundTextureID = 0;
 
@@ -107,15 +112,20 @@ static inline void bindTexture(GLuint id){
 //              текстуры
 // функция для загрузки текстуры
 GLuint loadTextureFromFile(const char* filename){
-    // проверяем загружена ли текстура
-    auto it=textureCache.find(filename);
-    if(it!=textureCache.end()) return it->second;
+    // проверяем загружена ли текстура, закрываем замок чтобы другой поток не лез одновременно
+    {
+        lock_guard<mutex> lock(textureCacheMutex);
+        auto it=textureCache.find(filename);
+        if(it!=textureCache.end()) return it->second;
+    }
     // загружаем изображение и записываем ей ширину и высоту в w и h
     int w,h;
     // название текстуры / w / h / сюда можно записать сколько каналов у изображения / принудительно указываем что 4 канала, чтобы была прозрачность
     unsigned char* img=SOIL_load_image(filename,&w,&h,nullptr,SOIL_LOAD_RGBA);
     if(!img){
         cerr<<"Cannot load texture: "<<filename<<" ("<<SOIL_last_result()<<")"<<endl;
+        // закрываем замок и записываем что текстуры нет
+        lock_guard<mutex> lock(textureCacheMutex);
         return textureCache[filename]=0;
     }
     // создаём новый id для текстуры
@@ -131,14 +141,54 @@ GLuint loadTextureFromFile(const char* filename){
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-
     // передаём текстуру в видеопамять
     // формат / детализация(хз что это значит) / формат хранения / ширина / высота / граница(также хз) / входной формат / тип данных / изображение
     glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,img);
     // освобождаем текстуру из памяти
     SOIL_free_image_data(img);
-    // возвращаем id текстуры
+    // закрываем замок и возвращаем id текстуры
+    lock_guard<mutex> lock(textureCacheMutex);
     return textureCache[filename]=id;
+}
+// загружаем много текстур параллельно
+void preloadTextures(const vector<string>& filenames){
+    // структура для хранения загруженных с диска данных до передачи в видеопамять
+    struct RawTex{string name;unsigned char* data;int w,h;};
+    vector<RawTex> loaded(filenames.size());
+    // параллельно грузим файлы с диска
+    // schedule(dynamic) значит что потоки берут задачи по одной по мере освобождения, а не поровну сразу
+    // это нужно т.к. текстуры разного размера и некоторые грузятся дольше
+    #pragma omp parallel for schedule(dynamic)
+    for(int i=0;i<(int)filenames.size();++i){
+        // пропускаем если текстура уже загружена, закрываем замок чтобы проверить безопасно
+        {
+            lock_guard<mutex> lock(textureCacheMutex);
+            if(textureCache.count(filenames[i])){
+                loaded[i]={filenames[i],nullptr,0,0};
+                continue;
+            }
+        }
+        int w,h;
+        unsigned char* img=SOIL_load_image(filenames[i].c_str(),&w,&h,nullptr,SOIL_LOAD_RGBA);
+        loaded[i]={filenames[i],img,w,h};
+    }
+    // передаём в видеопамять строго из одного потока т.к. opengl однопоточный
+    for(auto& t:loaded){
+        if(!t.data) continue;
+        GLuint id;
+        glGenTextures(1,&id);
+        glBindTexture(GL_TEXTURE_2D,id);
+        boundTextureID=id;
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,t.w,t.h,0,GL_RGBA,GL_UNSIGNED_BYTE,t.data);
+        SOIL_free_image_data(t.data);
+        // закрываем замок и записываем текстуру в таблицу
+        lock_guard<mutex> lock(textureCacheMutex);
+        textureCache[t.name]=id;
+    }
 }
 // удаляем все текстуры из памяти
 void clearTextureCache(){
@@ -393,6 +443,35 @@ void pseudo_3d_entity::draw(float cam_h,float cam_x,float cam_y,float cam_z)cons
     glPopMatrix();
 }
 
+// вызывай вместо ручного перебора сущностей
+void drawEntities(vector<pseudo_3d_entity>& entities,float cam_h,float cam_x,float cam_y,float cam_z){
+    const int n=int(entities.size());
+    // массив для хранения результатов параллельного просчёта видимости
+    vector<bool> visible(n);
+
+    // параллельно считаем видимость каждой сущности через публичные геттеры
+    // цифра 4 значит что потоки берут задачи по 4 штуки, а не по одной - так меньше накладных расходов
+    #pragma omp parallel for schedule(dynamic,4)
+    for(int i=0;i<n;++i){
+        // используем геттеры т.к. поля x,y,z приватные
+        const float ex=entities[i].getX();
+        const float ey=entities[i].getY();
+        const float ez=entities[i].getZ();
+        const float dx=ex-cam_x,dy=ey-cam_y,dz=ez-cam_z;
+        const float fx=camera.ctr_x-camera.eye_x;
+        const float fy=camera.ctr_y-camera.eye_y;
+        const float fz=camera.ctr_z-camera.eye_z;
+        const float depth=dx*fx+dy*fy+dz*fz;
+        const float dist=sqrtf(dx*dx+dy*dy+dz*dz);
+        // простая проверка по глубине и расстоянию без радиуса т.к. это прикидка
+        visible[i]=(depth>camera.znear-1.0f)&&(dist<camera.zfar);
+    }
+
+    // рисуем в главном потоке т.к. opengl однопоточный
+    // draw внутри сам проверяет isVisible точнее, нам нужна параллельная прикидка только чтобы отсечь явно невидимых
+    for(int i=0;i<n;++i)
+        if(visible[i]) entities[i].draw(cam_h,cam_x,cam_y,cam_z);
+}
 //              opengl
 // настройка изменения размеров в 3д режиме
 void changeSize3D(int w,int h){
@@ -686,18 +765,35 @@ void draw_performance_hud(int win_w,int win_h){
     if(elapsed>=1.0){
         fps=frame_cnt/elapsed;
         frame_cnt=0;
-        if(FILE* f=fopen("/proc/self/status","r")){
-            char line[128];
-            while(fgets(line,sizeof(line),f))
-                if(sscanf(line,"VmRSS: %ld",&ram_kb)==1)break;
-            fclose(f);
-        }
+
+        // объявляем до параллельного блока т.к. внутри они должны быть видны обоим потокам
+        long local_ram=0;
         long utime=0,stime=0;
-        if(FILE* s=fopen("/proc/self/stat","r")){
-            fscanf(s,"%*d %*s %*c %*d %*d %*d %*d %*d "
-                      "%*u %*u %*u %*u %*u %ld %ld",&utime,&stime);
-            fclose(s);
+
+        // параллельно читаем оба файла /proc т.к. это два независимых чтения с диска
+        // sections значит что каждый кусок кода помеченный как section выполняется в отдельном потоке
+        #pragma omp parallel sections
+        {
+            #pragma omp section
+            {
+                if(FILE* f=fopen("/proc/self/status","r")){
+                    char line[128];
+                    while(fgets(line,sizeof(line),f))
+                        if(sscanf(line,"VmRSS: %ld",&local_ram)==1)break;
+                    fclose(f);
+                }
+            }
+            #pragma omp section
+            {
+                if(FILE* s=fopen("/proc/self/stat","r")){
+                    fscanf(s,"%*d %*s %*c %*d %*d %*d %*d %*d "
+                              "%*u %*u %*u %*u %*u %ld %ld",&utime,&stime);
+                    fclose(s);
+                }
+            }
         }
+
+        ram_kb=local_ram;
         long cur_cpu=utime+stime;
         cpu_pct=(cur_cpu-prev_cpu)/(double)sysconf(_SC_CLK_TCK)/elapsed*10.0;
         prev_cpu=cur_cpu;
