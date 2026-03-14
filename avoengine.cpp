@@ -25,6 +25,8 @@
 //              утилиты
 // библиотека для работы со временем для замеров производительности
 #include <chrono>
+// библиотека для того чтобы определить названия компонентов
+#include <hwinfo/hwinfo.h>
 // математика(п, синусы, косинусы)
 #include <cmath>
 // удобная запись в переменные через printf и прочую хрень
@@ -35,12 +37,17 @@
 #include <unordered_map>
 // нелоховские массивы
 #include <vector>
+// лоховской текст
+#include <string>
 
 //              объявления
 // использование пространства имён std 😲
 using namespace std;
 // переменные для хранения в них размеров окна и экрана
 int window_w = 0, window_h = 0, screen_w = 0, screen_h = 0;
+string cpu_name;
+string ram_v;
+string gpu_name;
 // создание таблицы текстур и их id 
 //       имя файла текстуры  его id        
 static unordered_map<string, GLuint> textureCache;
@@ -48,7 +55,7 @@ static unordered_map<string, GLuint> textureCache;
 static GLuint boundTextureID = 0;
 
 // инициализация звукового движка(ma_engine тип данных, а audio_engine название)
-static ma_engine audio_engine;
+ma_engine audio_engine;
 // вектор в котором хранятся звуки, которые играют на постоянке
 static vector<ma_sound*> loopingSounds;
 
@@ -437,6 +444,12 @@ void setup_display(int* argc,char** argv,float r,float g,float b,float a,const c
     screen_h=glutGet(GLUT_SCREEN_HEIGHT);
     window_w=w;
     window_h=h;
+    auto cpus=hwinfo::getAllCPUs();
+    cpu_name=cpus.empty() ? "Unknown" : cpus[0].modelName();
+    hwinfo::Memory mem=hwinfo::Memory();
+    ram_v=std::to_string(mem.total_Bytes()/(1024*1024))+" MB";
+    auto gpus=hwinfo::getAllGPUs();
+    gpu_name=gpus.empty()?"Unknown":gpus[0].name();
     // параметры буфера кадра
     // двойная буферизация / 4 канала / буфер глубины(хз что значит)
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
@@ -646,31 +659,6 @@ void play_sound_3d_loop(const char* filename,float x,float y,float z,float volum
     ma_sound_start(sound);
     loopingSounds.push_back(sound);
 }
-
-// переменные для белого шума(потом перенести в подбиблиотеку с готовыми штуками для неденок)
-static ma_noise noise_src;
-static ma_audio_buffer* noise_buf=nullptr;
-static ma_sound noise_snd;
-static bool noise_init=false;
-static float noiseData[48000*2];
-// белый шум(потом тоже перенести)(тут уже всё знакомое)
-void play_white_noise_3d(float x,float y,float z,float volume){
-    if(!noise_init){
-        ma_noise_config cfg=ma_noise_config_init(ma_format_f32,2,ma_noise_type_white,0,0.3f);
-        ma_noise_init(&cfg,nullptr,&noise_src);
-        ma_noise_read_pcm_frames(&noise_src,noiseData,48000,nullptr);
-        ma_audio_buffer_config bcfg=ma_audio_buffer_config_init(ma_format_f32,2,48000,noiseData,nullptr);
-        ma_audio_buffer_alloc_and_init(&bcfg,&noise_buf);
-        ma_sound_init_from_data_source(&audio_engine,noise_buf,0,nullptr,&noise_snd);
-        noise_init=true;
-    }
-    ma_sound_set_positioning(&noise_snd,ma_positioning_absolute);
-    ma_sound_set_position(&noise_snd,x,y,z);
-    ma_sound_set_spatialization_enabled(&noise_snd,MA_TRUE);
-    ma_sound_set_volume(&noise_snd,volume);
-    ma_sound_set_looping(&noise_snd,MA_TRUE);
-    ma_sound_start(&noise_snd);
-}
 // останавливаем все бесконечные звуки(тут из названий всё понятно)
 void stop_all_looping_sounds(){
     for(auto* s:loopingSounds){
@@ -679,15 +667,7 @@ void stop_all_looping_sounds(){
         delete s;
     }
     loopingSounds.clear();
-    if(noise_init){
-        ma_sound_stop(&noise_snd);
-        ma_sound_uninit(&noise_snd);
-        ma_audio_buffer_uninit_and_free(noise_buf);
-        noise_buf=nullptr;
-        noise_init=false;
-    }
 }
-
 //              оверлей
 // сколько заполнено оперативки/процессора
 void draw_performance_hud(int win_w,int win_h){
@@ -724,11 +704,13 @@ void draw_performance_hud(int win_w,int win_h){
         prev_time=now;
     }
     // вывод статистики в левом верхнем углу
-    char buf[80];
+    char buf[100];
     snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%",fps,ram_kb / 1024,cpu_pct);
     begin_2d(win_w,win_h);
     draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     snprintf(buf,sizeof(buf),"X: %.10f  Y: %.10f  Z: %.10f",camera.eye_x,camera.eye_y,camera.eye_z);
     draw_text(buf,10.0f,float(win_h)-32.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
+    snprintf(buf,sizeof(buf),"CPU: %s  RAM: %s  GPU: %s",cpu_name.c_str(),ram_v.c_str(),gpu_name.c_str());
+    draw_text(buf,10.0f,float(win_h)-44.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     end_2d();
 }

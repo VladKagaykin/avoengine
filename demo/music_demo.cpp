@@ -1,4 +1,5 @@
 #include "../avoengine.h"
+#include "../avoextension.h"
 #include <GL/glut.h>
 #include <cmath>
 #include <cstdio>

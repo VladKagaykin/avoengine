@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include "miniaudio.h"
 
 extern int window_w;
 extern int window_h;
@@ -14,6 +15,8 @@ extern int screen_h;
 // ── Текстуры ────────────────────────────────────────────────────────────────
 GLuint loadTextureFromFile(const char* filename);
 void   clearTextureCache();
+
+extern ma_engine audio_engine;
 
 // ── Утилиты ─────────────────────────────────────────────────────────────────
 void rotatePoint(float& x, float& y, float cx, float cy, float angle_rad);
@@ -115,8 +118,6 @@ void play_sound_3d(const char* filename,
 void play_sound_3d_loop(const char* filename,
                         float x, float y, float z,
                         float volume = 1.0f);
-void play_white_noise_3d(float x, float y, float z,
-                         float volume = 1.0f);
 void stop_all_looping_sounds();
 
 // ── HUD ──────────────────────────────────────────────────────────────────────
