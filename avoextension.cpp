@@ -1,12 +1,41 @@
 #include "avoextension.h"
-// miniaudio уже реализован в avoengine.cpp — только заголовок
 #include "miniaudio.h"
 // движок
 #include "avoengine.h"
-// audio_engine живёт в avoengine.cpp
+//              утилиты
+// нелоховской вектор
+#include <vector>
+// строки полукрутые
+#include <string>
+using namespace std;
+//          простые 3д примитивы
+// плоскость
+void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const vector<float>& vertices) {
+    if(vertices.size()<12)return;
+    vector<int> indices={
+        0,1,2,
+        0,2,3};
+    vector<float> texcoords={
+        0.0f,0.0f,
+        1.0f,0.0f,
+        1.0f,1.0f,
+        0.0f,1.0f};
+    draw3DObject(cx,cy,cz,r,g,b,tex,vertices,indices,texcoords);
+}
+//              hud
+// текст который появляется со временем
+void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,int time){
+    size_t length=strlen(text);
+    char buff[length];
+    for(int i=0;i<=length;i++){
+        buff[i]=text[i];
+        draw_text(buff,x,y,font,r,g,b);
+    }
+}
+//              звук
+// audio_engine уже есть в avoengine.cpp
 extern ma_engine audio_engine;
-
-//              белый шум
+// белый шум
 static ma_noise noise_src;
 static ma_audio_buffer* noise_buf=nullptr;
 static ma_sound noise_snd;
