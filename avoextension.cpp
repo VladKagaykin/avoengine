@@ -10,7 +10,7 @@
 using namespace std;
 //          простые 3д примитивы
 // плоскость
-void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const vector<float>& vertices) {
+void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const vector<float>& vertices){
     if(vertices.size()<12)return;
     vector<int> indices={
         0,1,2,
@@ -23,15 +23,7 @@ void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex
     draw3DObject(cx,cy,cz,r,g,b,tex,vertices,indices,texcoords);
 }
 //              hud
-// текст который появляется со временем
-void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,int time){
-    size_t length=strlen(text);
-    char buff[length];
-    for(int i=0;i<=length;i++){
-        buff[i]=text[i];
-        draw_text(buff,x,y,font,r,g,b);
-    }
-}
+
 //              звук
 // audio_engine уже есть в avoengine.cpp
 extern ma_engine audio_engine;

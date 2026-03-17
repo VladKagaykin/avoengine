@@ -294,14 +294,16 @@ void circle(float scale,float cx,float cy,double r,double g,double b,float radiu
     if(tex)glDisable(GL_TEXTURE_2D);
 }
 // рисовка текста
-void draw_text(const char* text,float x,float y,void* font,float r,float g,float b){
+void draw_text(const char* text,float x,float y,void* font,float r,float g,float b,float a){
+    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
     // задаём цвет
-    glColor3f(r,g,b);
+    glColor4f(r,g,b,a);
     // задаём позицию
     glRasterPos2f(x,y);
     // рисуем текст по символам
-    for(const char* c=text;*c;++c)
+    for(const char* c=text;*c;++c){
         glutBitmapCharacter(font,*c);
+    }
 }
 
 //              класс для рисовки псевдо 3д существ(как в думе например)
