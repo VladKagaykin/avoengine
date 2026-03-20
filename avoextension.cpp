@@ -7,7 +7,22 @@
 #include <vector>
 // строки полукрутые
 #include <string>
+
 using namespace std;
+
+int tick=0;
+const int max_tick=64;
+
+//              утилиты
+// система тиков
+void timer(){
+    glutTimerFunc(16,[](int){timer();},0);
+    tick++;
+    if(tick>max_tick)tick=0;
+}
+void init_tick_system(){
+    timer();
+}
 //          простые 3д примитивы
 // плоскость
 void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const vector<float>& vertices){
