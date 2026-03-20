@@ -5,6 +5,7 @@
 //              утилиты
 // нелоховской вектор
 #include <vector>
+#include <cstring>
 // строки полукрутые
 #include <string>
 
@@ -15,22 +16,29 @@ const int max_tick=64;
 
 //              утилиты
 // система тиков
-void timer(){
-    glutTimerFunc(16,[](int){timer();},0);
+int absolute_tick = 0;
+
+void timer() {
+    glutTimerFunc(16, [](int){ timer(); }, 0);
     tick++;
-    if(tick>max_tick)tick=0;
+    if (tick > max_tick) tick = 0;
+    absolute_tick++;
 }
 void init_tick_system(){
     timer();
 }
+void render_loop(int) {
+    glutPostRedisplay();
+    glutTimerFunc(16, render_loop, 0);
+}
 //          простые 3д примитивы
 // плоскость
-void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const vector<float>& vertices){
+void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices){
     if(vertices.size()<12)return;
-    vector<int> indices={
+    std::vector<int> indices={
         0,1,2,
         0,2,3};
-    vector<float> texcoords={
+    std::vector<float> texcoords={
         0.0f,0.0f,
         1.0f,0.0f,
         1.0f,1.0f,
@@ -38,7 +46,29 @@ void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex
     draw3DObject(cx,cy,cz,r,g,b,tex,vertices,indices,texcoords);
 }
 //              hud
+void delay_text(const char* text, float x, float y, void* font,
+                float r, float g, float b, float a, int ticks, bool loop) {
+    int length = strlen(text);
+    int current = loop ? absolute_tick % ticks : absolute_tick;
+    float one_char_timing = (float)ticks / length;
+    int visible = (int)(current / one_char_timing);
+    if (visible > length) visible = length;
 
+    char buff[length + 1];
+    memset(buff, 0, length + 1);
+    for (int c = 0; c < visible; c++)
+        buff[c] = text[c];
+
+    draw_text(buff, x, y, font, r, g, b, a);
+}
+
+void disappearing_text(const char* text, float x, float y, void* font,
+                       float r, float g, float b, float a, int ticks, bool loop) {
+    int current = loop ? absolute_tick % ticks : absolute_tick;
+    float current_alpha = a - (a / ticks) * current;
+    if (current_alpha < 0) current_alpha = 0;
+    draw_text(text, x, y, font, r, g, b, current_alpha);
+}
 //              звук
 // audio_engine уже есть в avoengine.cpp
 extern ma_engine audio_engine;
