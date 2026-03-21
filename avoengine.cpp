@@ -707,7 +707,7 @@ void play_sound_loop(const char* filename,float volume){
 void play_sound_3d(const char* filename,float x,float y,float z,float volume){
     // проверка
     auto* sound=new ma_sound;
-    if(ma_sound_init_from_file(&audio_engine,filename,MA_SOUND_FLAG_ASYNC,nullptr,nullptr,sound)!=MA_SUCCESS){
+    if(ma_sound_init_from_file(&audio_engine,filename,0,nullptr,nullptr,sound)!=MA_SUCCESS){
         delete sound;
         return;
     }
