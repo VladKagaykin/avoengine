@@ -46,28 +46,24 @@ void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex
     draw3DObject(cx,cy,cz,r,g,b,tex,vertices,indices,texcoords);
 }
 //              hud
-void delay_text(const char* text, float x, float y, void* font,
-                float r, float g, float b, float a, int ticks, bool loop) {
-    int length = strlen(text);
-    int current = loop ? absolute_tick % ticks : absolute_tick;
-    float one_char_timing = (float)ticks / length;
-    int visible = (int)(current / one_char_timing);
-    if (visible > length) visible = length;
-
-    char buff[length + 1];
-    memset(buff, 0, length + 1);
-    for (int c = 0; c < visible; c++)
-        buff[c] = text[c];
-
-    draw_text(buff, x, y, font, r, g, b, a);
+void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop){
+    int length=strlen(text);
+    int current=loop?absolute_tick%ticks:absolute_tick;
+    float one_char_timing=(float)ticks/length;
+    int visible=int(current/one_char_timing);
+    if(visible>length)visible=length;
+    char buff[length+1];
+    memset(buff,0,length+1);
+    for (int c=0;c<visible;c++){
+        buff[c]=text[c];
+        draw_text(buff,x,y,font,r,g,b,a);
+    }
 }
-
-void disappearing_text(const char* text, float x, float y, void* font,
-                       float r, float g, float b, float a, int ticks, bool loop) {
-    int current = loop ? absolute_tick % ticks : absolute_tick;
-    float current_alpha = a - (a / ticks) * current;
-    if (current_alpha < 0) current_alpha = 0;
-    draw_text(text, x, y, font, r, g, b, current_alpha);
+void disappearing_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop){
+    int current=loop?absolute_tick%ticks:absolute_tick;
+    float current_alpha=a-(a/ticks)*current;
+    if(current_alpha<0)current_alpha=0;
+    draw_text(text,x,y,font,r,g,b,current_alpha);
 }
 //              звук
 // audio_engine уже есть в avoengine.cpp
