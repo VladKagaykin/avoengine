@@ -45,6 +45,63 @@ void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex
         0.0f,1.0f};
     draw3DObject(cx,cy,cz,r,g,b,tex,vertices,indices,texcoords);
 }
+// туман
+struct fog_params{
+    bool enabled=false;
+    float density=0.05f;
+    float color[3]={0.7f,0.8f,0.9f};
+    float start=5.0f;
+    float end=30.0f;
+};
+static fog_params fog;
+void enable_fog(float density,float r,float g,float b,float start,float end) {
+    fog.enabled=true;
+    fog.density=density;
+    fog.color[0]=r;
+    fog.color[1]=g;
+    fog.color[2]=b;
+    fog.start=start;
+    fog.end=end;
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_FOG);
+    glFogi(GL_FOG_MODE,GL_LINEAR);  
+    glFogf(GL_FOG_START,fog.start);     
+    glFogf(GL_FOG_END,fog.end);    
+    glFogfv(GL_FOG_COLOR,fog.color);
+    glEnable(GL_ALPHA_TEST);
+    glAlphaFunc(GL_GREATER,0.1f);
+}
+void disable_fog(){
+    fog.enabled=false;
+    glDisable(GL_FOG);
+    glDisable(GL_ALPHA_TEST);
+}
+void set_fog_density(float density){
+    fog.density=density;
+    if (fog.enabled) {
+        fog.start=2.0f/density;
+        fog.end=15.0f/density;
+        glFogf(GL_FOG_START,fog.start);
+        glFogf(GL_FOG_END,fog.end);
+    }
+}
+void set_fog_range(float start,float end){
+    fog.start=start;
+    fog.end=end;
+    if (fog.enabled) {
+        glFogf(GL_FOG_START,fog.start);
+        glFogf(GL_FOG_END,fog.end);
+    }
+}
+void set_fog_color(float r,float g,float b){
+    fog.color[0]=r;
+    fog.color[1]=g;
+    fog.color[2]=b;
+    if (fog.enabled){
+        glFogfv(GL_FOG_COLOR,fog.color);
+    }
+}
 //              hud
 void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop){
     int length=strlen(text);
