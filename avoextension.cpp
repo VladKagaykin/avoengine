@@ -1,15 +1,29 @@
-#include "avoextension.h"
+#define GL_GLEXT_PROTOTYPES
+#include <GL/glew.h>
 #include "miniaudio.h"
-// движок
 #include "avoengine.h"
-//              утилиты
-// нелоховской вектор
 #include <vector>
 #include <cstring>
-// строки полукрутые
+#include <mutex>
+#include <iostream>
+#include <unordered_map>
+#include <GL/glut.h>
+#include "avoextension.h"
+#include <SOIL/SOIL.h>
 #include <string>
+#include <map>
+#define TINYGLTF_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "tiny_gltf.h"
 
 using namespace std;
+
+// Хранилище всех загруженных моделей
+static std::vector<GLBModel> loaded_models;
+
+// Кэш текстур: ключ — "путь_к_файлу_индекс_текстуры", значение — OpenGL ID
+static std::map<std::string, GLuint> glb_tex_cache;
 
 int tick=0;
 const int max_tick=64;
@@ -147,4 +161,189 @@ void play_white_noise_3d(float x,float y,float z,float volume){
     ma_sound_set_volume(&noise_snd,volume);
     ma_sound_set_looping(&noise_snd,MA_TRUE);
     ma_sound_start(&noise_snd);
+}
+
+// импорт glb моделей
+// Загружает .glb файл, создает VAO/VBO/EBO и загружает текстуры в GPU
+int load_glb_model(const char* filename) {
+    tinygltf::Model gltf_model;
+    tinygltf::TinyGLTF loader;
+    std::string err, warn;
+
+    if (!loader.LoadBinaryFromFile(&gltf_model, &err, &warn, filename)) return -1;
+    
+    GLBModel model;
+    model.name = filename;
+    std::vector<GLuint> textures;
+
+    // 1. ЗАГРУЗКА ТЕКСТУР (как в том коде)
+    for (size_t i = 0; i < gltf_model.images.size(); i++) {
+        tinygltf::Image &image = gltf_model.images[i];
+        GLuint tid;
+        glGenTextures(1, &tid);
+        glBindTexture(GL_TEXTURE_2D, tid);
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        
+        // В GLB текстуры часто в RGBA, но если 3 компонента — ставим GL_RGB
+        GLenum format = GL_RGBA;
+        if (image.component == 3) format = GL_RGB;
+        
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width, image.height, 0, format, GL_UNSIGNED_BYTE, &image.image[0]);
+        
+        // Настройки из "того самого" примера для стабильной картинки
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+        textures.push_back(tid);
+        glb_tex_cache[std::string(filename) + "_" + std::to_string(i)] = tid;
+    }
+
+    // 2. РАЗБОР МЕШЕЙ С УЧЕТОМ МАТЕРИАЛОВ
+    for (auto& mesh : gltf_model.meshes) {
+        for (auto& primitive : mesh.primitives) {
+            GLBPrimitive prim;
+            glGenVertexArrays(1, &prim.vao);
+            glBindVertexArray(prim.vao);
+
+            // Позиции (Attribute 0)
+            const tinygltf::Accessor& posAcc = gltf_model.accessors[primitive.attributes["POSITION"]];
+            const tinygltf::BufferView& posView = gltf_model.bufferViews[posAcc.bufferView];
+            glBindBuffer(GL_ARRAY_BUFFER, (glGenBuffers(1, &prim.vbo), prim.vbo));
+            glBufferData(GL_ARRAY_BUFFER, posView.byteLength, &gltf_model.buffers[posView.buffer].data[posView.byteOffset], GL_STATIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
+            glEnableVertexAttribArray(0);
+
+            // UV (Attribute 1) - Берем TEXCOORD_0
+            if (primitive.attributes.count("NORMAL")) {
+                const tinygltf::Accessor& normAcc = gltf_model.accessors[primitive.attributes["NORMAL"]];
+                const tinygltf::BufferView& normView = gltf_model.bufferViews[normAcc.bufferView];
+                glGenBuffers(1, &prim.normVbo);
+                glBindBuffer(GL_ARRAY_BUFFER, prim.normVbo);
+                glBufferData(GL_ARRAY_BUFFER, normView.byteLength, 
+                             &gltf_model.buffers[normView.buffer].data[normView.byteOffset], GL_STATIC_DRAW);
+            }
+
+            // 2. ЗАГРУЗКА UV-КООРДИНАТ (Чтобы была текстура)
+            if (primitive.attributes.count("TEXCOORD_0")) {
+                const tinygltf::Accessor& texAcc = gltf_model.accessors[primitive.attributes["TEXCOORD_0"]];
+                const tinygltf::BufferView& texView = gltf_model.bufferViews[texAcc.bufferView];
+                glGenBuffers(1, &prim.texVbo);
+                glBindBuffer(GL_ARRAY_BUFFER, prim.texVbo);
+                glBufferData(GL_ARRAY_BUFFER, texView.byteLength, 
+                             &gltf_model.buffers[texView.buffer].data[texView.byteOffset], GL_STATIC_DRAW);
+            }
+
+            // Индексы
+            const tinygltf::Accessor& indAcc = gltf_model.accessors[primitive.indices];
+            const tinygltf::BufferView& indView = gltf_model.bufferViews[indAcc.bufferView];
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (glGenBuffers(1, &prim.ebo), prim.ebo));
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, indView.byteLength, &gltf_model.buffers[indView.buffer].data[indView.byteOffset], GL_STATIC_DRAW);
+            
+            prim.indexCount = (int)indAcc.count;
+            prim.indexType = indAcc.componentType;
+            // СВЯЗКА ТЕКСТУРЫ (подход из примера)
+            prim.textureId = 0;
+            if (primitive.material >= 0) {
+                const auto& mat = gltf_model.materials[primitive.material];
+                int texIdx = mat.pbrMetallicRoughness.baseColorTexture.index;
+                if (texIdx >= 0) {
+                    // В GLTF индекс текстуры ссылается на объект Texture, который ссылается на Image
+                    int imageIdx = gltf_model.textures[texIdx].source;
+                    prim.textureId = textures[imageIdx];
+                }
+            }
+            model.primitives.push_back(prim);
+        }
+    }
+    glBindVertexArray(0);
+    loaded_models.push_back(model);
+    return (int)loaded_models.size() - 1;
+}
+
+void draw_glb_model(int model_id, float x, float y, float z, float scale, float rx, float ry, float rz) {
+    if (model_id < 0 || model_id >= (int)loaded_models.size()) return;
+    GLBModel& m = loaded_models[model_id];
+
+    glPushMatrix();
+    glTranslatef(x, y, z);
+    glRotatef(rx, 1, 0, 0);
+    glRotatef(ry, 0, 1, 0);
+    glRotatef(rz, 0, 0, 1);
+    glScalef(scale, scale, scale);
+
+    glEnable(GL_LIGHTING);
+    glEnable(GL_COLOR_MATERIAL); 
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f); // Белый цвет-фильтр для текстуры
+
+    for (const auto& p : m.primitives) {
+        // 1. ТЕКСТУРА
+        if (p.textureId != 0) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, p.textureId);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE); 
+        } else {
+            glDisable(GL_TEXTURE_2D);
+        }
+
+        // 2. СВЯЗКА БУФЕРОВ (Compatibility Profile)
+        // ВАЖНО: Мы не используем glVertexAttribPointer(0,1,2), так как нет шейдеров.
+        // Используем стандартные указатели OpenGL 1.1 для работы с VBO.
+        
+        glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
+        glVertexPointer(3, GL_FLOAT, 0, 0);
+        glEnableClientState(GL_VERTEX_ARRAY);
+
+        if (p.texVbo) {
+            glBindBuffer(GL_ARRAY_BUFFER, p.texVbo);
+            glTexCoordPointer(2, GL_FLOAT, 0, 0);
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        }
+
+        // ВОТ ТУТ РЕШАЕТСЯ ПРОБЛЕМА ЧЕРНОТЫ:
+        // Нужно найти VBO с нормалями. Если его нет в структуре p, 
+        // освещение работать не будет.
+        // Допустим, мы добавили p.normVbo в загрузчик (см. ниже)
+        if (p.normVbo) {
+            glBindBuffer(GL_ARRAY_BUFFER, p.normVbo);
+            glNormalPointer(GL_FLOAT, 0, 0);
+            glEnableClientState(GL_NORMAL_ARRAY);
+        }
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, p.ebo);
+        
+        // 3. ОТРИСОВКА
+        // Проверь в загрузчике: если типы индексов в GLB — 5123, это GL_UNSIGNED_SHORT
+        glDrawElements(GL_TRIANGLES, p.indexCount, p.indexType, 0);
+
+        // Чистим состояния
+        glDisableClientState(GL_VERTEX_ARRAY);
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glDisableClientState(GL_NORMAL_ARRAY);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
+    
+    glPopMatrix();
+}
+
+// Очистка конкретной модели (GPU буферы)
+void unload_glb_model(int id) {
+    if (id < 0 || id >= (int)loaded_models.size()) return;
+    for (auto& p : loaded_models[id].primitives) {
+        glDeleteVertexArrays(1, &p.vao);
+        glDeleteBuffers(1, &p.vbo);
+        glDeleteBuffers(1, &p.ebo);
+        if (p.texVbo) glDeleteBuffers(1, &p.texVbo);
+    }
+    loaded_models[id].primitives.clear();
+}
+
+// Полная очистка всех текстур из памяти видеокарты
+void clear_embedded_texture_cache() {
+    for (auto const& [name, id] : glb_tex_cache) {
+        if (id != 0) glDeleteTextures(1, &id);
+    }
+    glb_tex_cache.clear();
 }

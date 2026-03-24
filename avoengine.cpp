@@ -636,19 +636,39 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const ch
 
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
-void begin_2d(int w,int h){
+void begin_2d(int w, int h) {
+    // 1. Сохраняем и настраиваем матрицы (твой код)
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
-    glOrtho(0,w,0,h,-1,1);
+    glOrtho(0, w, 0, h, -1, 1);
+    
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
-    glDisable(GL_DEPTH_TEST);
+
+    // 2. ОТКЛЮЧАЕМ ВСЁ, ЧТО ВЛИЯЕТ НА ЦВЕТ ТЕКСТА
+    glDisable(GL_DEPTH_TEST);   // Чтобы текст не перекрывался 3D объектами
+    glDisable(GL_LIGHTING);    // Чтобы текст не был черным/синим
+    glDisable(GL_FOG);         // Чтобы текст не тонул в тумане
+    glDisable(GL_TEXTURE_2D);  // Чтобы буквы не красились текстурой модели
+    
+    // 3. СБРОС ЦВЕТА
+    // Если последняя модель была синей, текст тоже будет синим. 
+    // Возвращаем чистый белый (или любой дефолтный) цвет.
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f); 
+
+    // Включаем альфа-смешивание (критично для шрифтов с прозрачностью)
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 // переключаем матрицу на 3д(невероятно)
-void end_2d(){
+void end_2d() {
     glEnable(GL_DEPTH_TEST);
+    
+    // Возвращаем освещение (если сцена его требует)
+    glEnable(GL_LIGHTING);
+
     glMatrixMode(GL_MODELVIEW);
     glPopMatrix();
     glMatrixMode(GL_PROJECTION);
