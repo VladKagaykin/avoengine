@@ -679,11 +679,6 @@ void play_sound(const char* filename,float volume){
     ma_sound_set_volume(sound, volume);
     // проигрывание
     ma_sound_start(sound);
-    // когда проигралось удаляем из памяти
-    ma_sound_set_end_callback(sound,[](void*,ma_sound* s){
-        ma_sound_uninit(s);
-        delete s;
-    },nullptr);
 }
 void play_sound_loop(const char* filename,float volume){
     auto* sound=new ma_sound;
@@ -718,11 +713,6 @@ void play_sound_3d(const char* filename,float x,float y,float z,float volume){
     ma_sound_set_volume(sound,volume);
     // проигрываем звук
     ma_sound_start(sound);
-    // когда проигралось удаляем из памяти
-    ma_sound_set_end_callback(sound,[](void*,ma_sound* s){
-        ma_sound_uninit(s);
-        delete s;
-    },nullptr);
 }
 // проигрываем звук в 3д бесконечно(всё то же самое, только бесконечно)
 void play_sound_3d_loop(const char* filename,float x,float y,float z,float volume){
