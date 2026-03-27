@@ -550,6 +550,10 @@ void setup_display(int* argc,char** argv,float r,float g,float b,float a,const c
     // возможность прозрачности
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    glewExperimental = GL_TRUE;
+    if (glewInit() != GLEW_OK) {
+        fprintf(stderr, "Failed to initialize GLEW\n");
+    }
 }
 // настройка камеры
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw){
@@ -665,9 +669,8 @@ void begin_2d(int w, int h) {
 // переключаем матрицу на 3д(невероятно)
 void end_2d() {
     glEnable(GL_DEPTH_TEST);
-    
-    // Возвращаем освещение (если сцена его требует)
-    glEnable(GL_LIGHTING);
+    glEnable(GL_TEXTURE_2D); // Возвращаем текстуры для 3D
+    glEnable(GL_LIGHTING);   // Возвращаем свет
 
     glMatrixMode(GL_MODELVIEW);
     glPopMatrix();
