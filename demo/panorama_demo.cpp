@@ -153,18 +153,25 @@ static void toggleFullscreen(){
 
 //              колбэки glut
 static void onDisplay(){
-    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-    // обновляем вектор взгляда для отсечения
-    const float yr=cam_yaw*float(M_PI)/180.0f;
-    fwd_x=sinf(yr); fwd_z=cosf(yr);
-    // ставим камеру
-    setup_camera(60.0f,cam_x,cam_y,cam_z,cam_pitch,cam_yaw);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    
+    // 1. Обновляем вектор взгляда
+    const float yr = cam_yaw * float(M_PI) / 180.0f;
+    fwd_x = sinf(yr); fwd_z = cosf(yr);
+
+    // 2. Устанавливаем камеру (обновляет матрицы проекции и вида)
+    setup_camera(60.0f, cam_x, cam_y, cam_z, cam_pitch, cam_yaw);
+
+    // 3. Рисуем небо/панораму (в avoextension она обычно сбрасывает позицию, оставляя поворот)
     draw_panorama(cam_x, cam_y, cam_z);
-    // рисуем мир
+
+    // 4. Мир
     drawFloor();
     drawSpheres();
-    // поверх рисуем hud
-    draw_performance_hud(window_w,window_h);
+
+    // 5. Интерфейс (движок сам переключит матрицы в 2D и обратно)
+    draw_performance_hud(window_w, window_h);
+
     glutSwapBuffers();
 }
 
@@ -207,22 +214,24 @@ static void onIdle(){
 }
 
 //              точка входа
-int main(int argc,char** argv){
-    // строим display list сферы (6 стеков, 7 сегментов — угловатая)
-    // display list создаётся после инициализации opengl
-    setup_display(&argc,argv,0.02f,0.02f,0.12f,1.0f,"fog_demo",1280,720);
+int main(int argc, char** argv) {
+    // СНАЧАЛА инициализация контекста
+    setup_display(&argc, argv, 0.02f, 0.02f, 0.12f, 1.0f, "fog_demo", 1280, 720);
+    
+    // ТЕПЕРЬ можно работать с ресурсами OpenGL
     set_panorama("demo/src/stargazer.png");
-    enable_fog(0.005,0.02f,0.02f,0.12f);
-    buildSphereList(0.45f,6,7);
-    // регистрируем колбэки
-    glutDisplayFunc   (onDisplay);
-    glutReshapeFunc   (onReshape);
-    glutKeyboardFunc  (onKeyDown);
+    enable_fog(0.005, 0.02f, 0.02f, 0.12f);
+    buildSphereList(0.45f, 6, 7); 
+
+    // Регистрация колбэков
+    glutDisplayFunc(onDisplay);
+    glutReshapeFunc(onReshape);
+    glutKeyboardFunc(onKeyDown);
     glutKeyboardUpFunc(onKeyUp);
-    glutSpecialFunc   (onSpecialDown);
-    glutSpecialUpFunc (onSpecialUp);
-    glutIdleFunc      (onIdle);
-    // запускаем главный цикл
+    glutSpecialFunc(onSpecialDown);
+    glutSpecialUpFunc(onSpecialUp);
+    glutIdleFunc(onIdle);
+
     glutMainLoop();
     return 0;
 }
