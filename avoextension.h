@@ -7,7 +7,10 @@
 #include <vector>
 #include <GL/gl.h>
 #include "avoengine.h"
-#include "tiny_gltf.h"
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#include <map>
 
 extern int tick;
 extern const int max_tick;
@@ -33,23 +36,27 @@ void disappearing_text(const char* text, float x, float y, void* font,
 
 void play_white_noise_3d(float x, float y, float z, float volume);
 class glb_model {
-private:
-    // Компилятор теперь точно знает, что это за типы
-    tinygltf::Model model;
-    tinygltf::TinyGLTF loader; 
-    bool loaded = false;
-    float x, y, z, rx, ry, rz, scale;
-
-    // ВАЖНО: Проверь, чтобы сигнатуры здесь и в .cpp совпадали ТОЧЬ-В-ТОЧЬ
-    void drawNode(const tinygltf::Node& node); 
-    void drawMesh(const tinygltf::Mesh& mesh);
-
 public:
-    glb_model(float x = 0, float y = 0, float z = 0);
+    float x, y, z;
+    float rx, ry, rz; // Вращение по 3 осям
+    float scale;
+    bool loaded;
+
+    glb_model(float _x = 0, float _y = 0, float _z = 0);
     bool load(const std::string& filename);
-    void setPos(float px, float py, float pz) { x = px; y = py; z = pz; }
-    void setRot(float dx, float dy, float dz) { rx = dx; ry = dy; rz = dz; }
-    void setScale(float s) { scale = s; }
+    void updateAnimation(float time, int animIndex = 0);
     void draw();
+    
+    void setRotation(float _rx, float _ry, float _rz) { rx = _rx; ry = _ry; rz = _rz; }
+    void setScale(float s) { scale = s; }
+
+private:
+    Assimp::Importer importer;
+    const aiScene* scene;
+    std::map<int, GLuint> embedded_textures; 
+    std::vector<std::vector<aiVector3D>> base_vertices; // "Сейф" для оригинальных вершин
+
+    void loadTextures();
+    void readNodeHierarchy(float time, aiAnimation* anim, aiNode* node, const aiMatrix4x4& parent, std::map<std::string, aiMatrix4x4>& out);
 };
 #endif
