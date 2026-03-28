@@ -50,61 +50,156 @@ void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex
     draw3DObject(cx,cy,cz,r,g,b,tex,vertices,indices,texcoords);
 }
 // туман
-struct fog_params{
-    bool enabled=false;
-    float density=0.05f;
-    float color[3]={0.7f,0.8f,0.9f};
-    float start=5.0f;
-    float end=30.0f;
+struct fog_params {
+    bool enabled = false;
+    float density = 0.05f;
+    float color[3] = {0.7f, 0.8f, 0.9f};
+    float start = 5.0f;
+    float end = 30.0f;
 };
 static fog_params fog;
-void enable_fog(float density,float r,float g,float b,float start,float end) {
-    fog.enabled=true;
-    fog.density=density;
-    fog.color[0]=r;
-    fog.color[1]=g;
-    fog.color[2]=b;
-    fog.start=start;
-    fog.end=end;
+
+void enable_fog(float density, float r, float g, float b, float start, float end) {
+    fog.enabled = true;
+    fog.density = density;
+    fog.color[0] = r;
+    fog.color[1] = g;
+    fog.color[2] = b;
+    fog.start = start;
+    fog.end = end;
+    
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_FOG);
-    glFogi(GL_FOG_MODE,GL_LINEAR);  
-    glFogf(GL_FOG_START,fog.start);     
-    glFogf(GL_FOG_END,fog.end);    
-    glFogfv(GL_FOG_COLOR,fog.color);
+    glFogi(GL_FOG_MODE, GL_LINEAR);
+    glFogf(GL_FOG_START, fog.start);
+    glFogf(GL_FOG_END, fog.end);
+    glFogfv(GL_FOG_COLOR, fog.color);
     glEnable(GL_ALPHA_TEST);
-    glAlphaFunc(GL_GREATER,0.1f);
+    glAlphaFunc(GL_GREATER, 0.1f);
 }
-void disable_fog(){
-    fog.enabled=false;
+
+void disable_fog() {
+    fog.enabled = false;
     glDisable(GL_FOG);
     glDisable(GL_ALPHA_TEST);
+    // GL_BLEND не отключаем, т.к. он может быть нужен для других эффектов
 }
-void set_fog_density(float density){
-    fog.density=density;
+
+void set_fog_density(float density) {
+    fog.density = density;
     if (fog.enabled) {
-        fog.start=2.0f/density;
-        fog.end=15.0f/density;
-        glFogf(GL_FOG_START,fog.start);
-        glFogf(GL_FOG_END,fog.end);
+        fog.start = 2.0f / density;
+        fog.end = 15.0f / density;
+        glFogf(GL_FOG_START, fog.start);
+        glFogf(GL_FOG_END, fog.end);
     }
 }
-void set_fog_range(float start,float end){
-    fog.start=start;
-    fog.end=end;
+
+void set_fog_color(float r, float g, float b) {
+    fog.color[0] = r;
+    fog.color[1] = g;
+    fog.color[2] = b;
     if (fog.enabled) {
-        glFogf(GL_FOG_START,fog.start);
-        glFogf(GL_FOG_END,fog.end);
+        glFogfv(GL_FOG_COLOR, fog.color);
     }
 }
-void set_fog_color(float r,float g,float b){
-    fog.color[0]=r;
-    fog.color[1]=g;
-    fog.color[2]=b;
-    if (fog.enabled){
-        glFogfv(GL_FOG_COLOR,fog.color);
+
+void set_fog_range(float start, float end) {
+    fog.start = start;
+    fog.end = end;
+    if (fog.enabled) {
+        glFogf(GL_FOG_START, fog.start);
+        glFogf(GL_FOG_END, fog.end);
     }
+}
+// панорама
+struct sphere_panorama {
+    bool enabled = false;
+    GLuint texture = 0;
+};
+sphere_panorama sphere_sky;
+static GLuint skybox_list = 0; // "Запись" геометрии сферы
+void set_panorama(const char* path) {
+    if (sphere_sky.enabled) remove_panorama();
+
+    // Загружаем текстуру. 
+    // ВАЖНО: Используем флаги SOIL, а не чистый OpenGL здесь
+    sphere_sky.texture = SOIL_load_OGL_texture(
+        path,
+        SOIL_LOAD_AUTO,
+        SOIL_CREATE_NEW_ID,
+        SOIL_FLAG_MIPMAPS | SOIL_FLAG_INVERT_Y | SOIL_FLAG_COMPRESS_TO_DXT
+    );
+
+    if (sphere_sky.texture == 0) {
+        printf("ERROR: Could not load texture from %s. Reason: %s\n", path, SOIL_last_result());
+        // Выведи текущую директорию, чтобы понять, где ищет программа
+        system("pwd"); 
+        return;
+    }
+
+    // Убираем шов на стыке сферы
+    glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); // GL_CLAMP_TO_EDGE
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
+
+    skybox_list = glGenLists(1);
+    glNewList(skybox_list, GL_COMPILE);
+        float radius = 180.0f; // Чуть меньше MAX_DIST (200), чтобы не обрезалось
+        int stacks = 32, slices = 32;
+        for (int i = 0; i < stacks; i++) {
+            float lat0 = M_PI * (-0.5f + (float)i / stacks);
+            float z0 = sin(lat0), zr0 = cos(lat0);
+            float lat1 = M_PI * (-0.5f + (float)(i + 1) / stacks);
+            float z1 = sin(lat1), zr1 = cos(lat1);
+            glBegin(GL_QUAD_STRIP);
+            for (int j = 0; j <= slices; j++) {
+                float lng = 2 * M_PI * (float)j / slices;
+                float x = cos(lng), y = sin(lng);
+                glTexCoord2f((float)j / slices, (float)i / stacks);
+                glVertex3f(x * zr0 * radius, y * zr0 * radius, z0 * radius);
+                glTexCoord2f((float)j / slices, (float)(i + 1) / stacks);
+                glVertex3f(x * zr1 * radius, y * zr1 * radius, z1 * radius);
+            }
+            glEnd();
+        }
+    glEndList();
+
+    sphere_sky.enabled = true;
+    printf("Panorama loaded successfully: %s\n", path);
+}
+void remove_panorama() {
+    if (sphere_sky.enabled) {
+        glDeleteTextures(1, &sphere_sky.texture);
+        glDeleteLists(skybox_list, 1);
+        sphere_sky.enabled = false;
+    }
+}
+void draw_panorama(float camX, float camY, float camZ) {
+    if (!sphere_sky.enabled || sphere_sky.texture == 0) return;
+
+    glPushAttrib(GL_ALL_ATTRIB_BITS); // Сохраняем все настройки (туман, свет, текстуры)
+    
+    glDisable(GL_LIGHTING);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_FOG);          // ВЫКЛЮЧАЕМ ТУМАН ДЛЯ НЕБА
+    glDepthMask(GL_FALSE);
+    
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
+    glColor4f(1, 1, 1, 1);      // Сброс цвета в белый, чтобы текстура была яркой
+
+    glPushMatrix();
+    glTranslatef(camX, camY, camZ);
+    glRotatef(90, 1, 0, 0); 
+    
+    // Используй именно тот ID, который создается в set_panorama
+    glCallList(skybox_list); 
+
+    glPopMatrix();
+    
+    glPopAttrib(); // ВОЗВРАЩАЕМ настройки (туман включится обратно сам)
 }
 //              hud
 void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop){

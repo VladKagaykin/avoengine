@@ -670,7 +670,8 @@ void begin_2d(int w, int h) {
 void end_2d() {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D); // Возвращаем текстуры для 3D
-    glEnable(GL_LIGHTING);   // Возвращаем свет
+    // glEnable(GL_LIGHTING);   // Возвращаем свет
+    glEnable(GL_FOG);
 
     glMatrixMode(GL_MODELVIEW);
     glPopMatrix();

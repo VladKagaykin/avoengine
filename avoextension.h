@@ -28,7 +28,9 @@ void disable_fog();
 void set_fog_range(float start, float end);
 void set_fog_color(float r, float g, float b);
 void set_fog_density(float density);
-
+void set_panorama(const char* path);
+void remove_panorama();
+void draw_panorama(float camX, float camY, float camZ);
 void delay_text(const char* text, float x, float y, void* font,
                 float r, float g, float b, float a, int ticks, bool loop = false);
 void disappearing_text(const char* text, float x, float y, void* font,

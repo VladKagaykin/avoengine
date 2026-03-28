@@ -78,6 +78,7 @@ static inline bool inFront(float px,float pz,float margin){
 
 //              рисуем весь пол за один glBegin/glEnd — ноль лишних draw calls
 static void drawFloor(){
+    glDisable(GL_TEXTURE_2D);
     const int tcx=(int)floorf(cam_x*0.5f);
     const int tcz=(int)floorf(cam_z*0.5f);
     // светлые и тёмные плитки в двух отдельных батчах чтобы не менять цвет внутри
@@ -115,6 +116,7 @@ static void drawFloor(){
 
 //              рисуем сферы через display list — геометрия уже на видеокарте
 static void drawSpheres(){
+    glDisable(GL_TEXTURE_2D);
     const int cx=(int)floorf(cam_x/CELL);
     const int cz=(int)floorf(cam_z/CELL);
     // цвет один для всех сфер — задаём один раз
@@ -157,6 +159,7 @@ static void onDisplay(){
     fwd_x=sinf(yr); fwd_z=cosf(yr);
     // ставим камеру
     setup_camera(60.0f,cam_x,cam_y,cam_z,cam_pitch,cam_yaw);
+    draw_panorama(cam_x, cam_y, cam_z);
     // рисуем мир
     drawFloor();
     drawSpheres();
@@ -208,7 +211,8 @@ int main(int argc,char** argv){
     // строим display list сферы (6 стеков, 7 сегментов — угловатая)
     // display list создаётся после инициализации opengl
     setup_display(&argc,argv,0.02f,0.02f,0.12f,1.0f,"fog_demo",1280,720);
-    enable_fog(0.005, 0.02f, 0.02f, 0.12f, 10.0f, 30.0f);
+    set_panorama("demo/src/stargazer.png");
+    enable_fog(0.005,0.02f,0.02f,0.12f);
     buildSphereList(0.45f,6,7);
     // регистрируем колбэки
     glutDisplayFunc   (onDisplay);
