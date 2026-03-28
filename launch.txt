@@ -14,7 +14,7 @@ cd /your/path
 
 compile game:
 
-g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp(if it neded) -I/usr/include/stb -lGLEW -lglut -lGLU -lGL -lSOIL
- -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram -fopenmp -lassimp
+g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp(if it neded) -I/usr/include/stb -lGLEW -lglut -lGLU -lGL
+ -lSOIL -lX11 -lGLX -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram -fopenmp -lassimp 
 
 ./output
