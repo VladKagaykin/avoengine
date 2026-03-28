@@ -19,6 +19,7 @@ extern int absolute_tick;
 void timer();
 void render_loop(int);
 void init_tick_system();
+void set_icon(const char* path);
 
 void plane(float cx, float cy, float cz, double r, double g, double b,
           const char* tex, const std::vector<float>& vertices);

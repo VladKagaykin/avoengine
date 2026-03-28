@@ -35,6 +35,71 @@ void render_loop(int) {
     glutPostRedisplay();
     glutTimerFunc(16, render_loop, 0);
 }
+// поставить иконку
+#include <GL/freeglut_ext.h>
+#ifdef _WIN32
+    #include <windows.h>
+#else
+    #include <X11/Xlib.h>
+    #include <X11/Xutil.h>
+    // Если используешь glX
+    #include <GL/glx.h>
+#endif
+
+void set_icon(const char* path) {
+    int width, height, channels;
+    // Загружаем иконку
+    unsigned char* image = SOIL_load_image(path, &width, &height, &channels, SOIL_LOAD_RGBA);
+    
+    if (!image) {
+        return; // Тихий выход, если файла нет
+    }
+
+#ifdef _WIN32
+    // Получаем HWND текущего окна GLUT без поиска по имени
+    HWND hwnd = (HWND)glutGetWindowData(); 
+    // Если glutGetWindowData не настроен, используем GetActiveWindow() 
+    // так как функция вызывается сразу после создания окна
+    if (!hwnd) hwnd = GetActiveWindow();
+
+    if (hwnd) {
+        // Создаем иконку из RGBA буфера
+        HICON hIcon = CreateIcon(GetModuleHandle(NULL), width, height, 1, 32, NULL, image);
+        SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+        SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+    }
+#else
+    // Для X11 (Linux)
+    Display* display = glXGetCurrentDisplay();
+    Window win = glXGetCurrentDrawable();
+
+    if (display && win) {
+        // Формат _NET_WM_ICON требует: [width, height, argb_pixels...]
+        std::vector<unsigned long> icon_data;
+        icon_data.push_back(width);
+        icon_data.push_back(height);
+
+        for (int i = 0; i < width * height; i++) {
+            unsigned char r = image[i * 4];
+            unsigned char g = image[i * 4 + 1];
+            unsigned char b = image[i * 4 + 2];
+            unsigned char a = image[i * 4 + 3];
+            // Конвертируем RGBA в ARGB
+            icon_data.push_back((a << 24) | (r << 16) | (g << 8) | b);
+        }
+
+        Atom net_wm_icon = XInternAtom(display, "_NET_WM_ICON", False);
+        Atom cardinal = XInternAtom(display, "CARDINAL", False);
+        
+        XChangeProperty(display, win, net_wm_icon, cardinal, 32, 
+                        PropModeReplace, (unsigned char*)icon_data.data(), icon_data.size());
+        
+        XFlush(display);
+    }
+#endif
+
+    SOIL_free_image_data(image);
+}
 //          простые 3д примитивы
 // плоскость
 void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices){
