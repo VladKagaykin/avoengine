@@ -35,6 +35,7 @@ void render_loop(int) {
     glutPostRedisplay();
     glutTimerFunc(16, render_loop, 0);
 }
+
 // поставить иконку
 #include <GL/freeglut_ext.h>
 #ifdef _WIN32
@@ -279,6 +280,7 @@ void delay_text(const char* text,float x,float y,void* font,float r,float g,floa
         buff[c]=text[c];
         draw_text(buff,x,y,font,r,g,b,a);
     }
+    draw_text("",x,y,font,r,g,b,a);
 }
 void disappearing_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop){
     int current=loop?absolute_tick%ticks:absolute_tick;

@@ -641,7 +641,8 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const ch
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
 void begin_2d(int w, int h) {
-    // 1. Сохраняем и настраиваем матрицы (твой код)
+    // 1. Сохраняем и настраиваем матрицы 
+    glutReshapeFunc(changeSize2D);
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
@@ -668,6 +669,7 @@ void begin_2d(int w, int h) {
 }
 // переключаем матрицу на 3д(невероятно)
 void end_2d() {
+    glutReshapeFunc(changeSize3D);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D); // Возвращаем текстуры для 3D
     // glEnable(GL_LIGHTING);   // Возвращаем свет
