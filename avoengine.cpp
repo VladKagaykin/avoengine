@@ -93,9 +93,9 @@ static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch
 static inline void lookAtBackward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
     const float p=pitch_deg*float(M_PI)/180.0f;
     const float y=yaw_deg*float(M_PI)/180.0f;
-    dx=-cosf(p)*sinf(y);
-    dy=-sinf(p);
-    dz=-cosf(p)*cosf(y);
+    dx=cosf(p)*sinf(y);
+    dy=sinf(p);
+    dz=cosf(p)*cosf(y);
     cx=eye_x+dx;
     cy=eye_y+dy;
     cz=eye_z+dz;
