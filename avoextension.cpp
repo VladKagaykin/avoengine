@@ -101,13 +101,19 @@ void set_icon(const char* path) {
 
     SOIL_free_image_data(image);
 }
+// считывание клавиш клавиатуры
+bool keys[256]={},skeys[512]={};
+void keyboard_down(unsigned char key,int,int){keys[key]=true;}
+void keyboard_up(unsigned char key,int,int){keys[key]=false;}
+void special_up(int key,int,int){skeys[key]=false;}
+void special_down(int key,int,int){skeys[key]=true;}
 //          простые 3д примитивы
 // плоскость
 void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices){
     if(vertices.size()<12)return;
     std::vector<int> indices={
         0,1,2,
-        0,2,3};
+        3,0,2};
     std::vector<float> texcoords={
         0.0f,0.0f,
         1.0f,0.0f,

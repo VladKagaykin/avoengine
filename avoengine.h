@@ -22,6 +22,17 @@ void preloadTextures(const std::vector<std::string>& filenames);
 
 extern ma_engine audio_engine;
 
+struct CameraParams{
+    float fov=58.0f;
+    float znear=0.1f;
+    float zfar=1000.0f;
+    float eye_x=0,eye_y=0,eye_z=0;
+    float ctr_x=0,ctr_y=0,ctr_z=1;
+    float up_x=0,up_y=1,up_z=0;
+};
+
+extern CameraParams camera;
+
 void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
 
 void triangle(float scale,float cx,float cy,double r,double g,double b,float rotate,const float* vertices,const char* texture_file=nullptr);

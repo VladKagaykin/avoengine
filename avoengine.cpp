@@ -65,16 +65,16 @@ ma_engine audio_engine;
 static vector<ma_sound*> loopingSounds;
 
 // структура для зранения параметров камеры
-struct CameraParams{
-    float fov=60.0f;
-    float znear=0.1f;
-    float zfar=1000.0f;
-    float eye_x=0,eye_y=0,eye_z=0;
-    float ctr_x=0,ctr_y=0,ctr_z=1;
-    float up_x=0,up_y=1,up_z=0;
-};
+// struct CameraParams{
+//     float fov=58.0f;
+//     float znear=0.1f;
+//     float zfar=1000.0f;
+//     float eye_x=0,eye_y=0,eye_z=0;
+//     float ctr_x=0,ctr_y=0,ctr_z=1;
+//     float up_x=0,up_y=1,up_z=0;
+// };
 // инициализация камеры
-static CameraParams camera;
+CameraParams camera;
 
 //              утилиты для камеры
 // вычисляем то, куда смотрит центр камеры
@@ -818,7 +818,7 @@ void draw_performance_hud(int win_w,int win_h){
         prev_time=now;
     }
     // вывод статистики в левом верхнем углу
-    char buf[100];
+    char buf[1000];
     snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%",fps,ram_kb / 1024,cpu_pct);
     begin_2d(win_w,win_h);
     draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);

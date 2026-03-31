@@ -1,6 +1,6 @@
 #pragma once
-#ifndef AVO_GLB_MODEL_H
-#define AVO_GLB_MODEL_H
+#ifndef AVOEXTENSION_H
+#define AVOEXTENSION_H
 #include <vector>
 #include <string>
 #include <GL/glew.h>
@@ -20,6 +20,12 @@ void timer();
 void render_loop(int);
 void init_tick_system();
 void set_icon(const char* path);
+extern bool keys[256];
+extern bool skeys[512];
+void keyboard_down(unsigned char key,int,int);
+void keyboard_up(unsigned char key,int,int);
+void special_up(int key,int,int);
+void special_down(int key,int,int);
 
 void plane(float cx, float cy, float cz, double r, double g, double b,
           const char* tex, const std::vector<float>& vertices);

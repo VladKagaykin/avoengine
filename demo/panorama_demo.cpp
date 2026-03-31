@@ -186,9 +186,9 @@ static void onKeyDown(unsigned char key,int,int){
     if(key=='f'||key=='F') toggleFullscreen();
 }
 
-static void onKeyUp     (unsigned char key,int,int){ keys[key] =false; }
-static void onSpecialDown(int key,int,int)          { skeys[key]=true;  }
-static void onSpecialUp  (int key,int,int)          { skeys[key]=false; }
+static void onKeyUp(unsigned char key,int,int){ keys[key] =false;}
+static void onSpecialDown(int key,int,int){skeys[key]=true;}
+static void onSpecialUp(int key,int,int){skeys[key]=false;}
 
 static void onIdle(){
     static float prev_t=0;
