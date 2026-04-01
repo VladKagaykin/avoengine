@@ -2,6 +2,7 @@
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image.h>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
@@ -321,135 +322,411 @@ void play_white_noise_3d(float x,float y,float z,float volume){
     ma_sound_start(&noise_snd);
 }
 //              glb
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
-glb_model::glb_model(float _x, float _y, float _z) 
-    : x(_x), y(_y), z(_z), rx(0), ry(0), rz(0), scale(1.0f), loaded(false), scene(nullptr) {}
+// ============================================================
+//  Вставить ВМЕСТО блока "// glb" в конце avoextension.cpp
+//  Убедись что STB_IMAGE_IMPLEMENTATION объявлен ОДИН РАЗ в файле
+//  (в оригинале он стоял дважды — это UB)
+// ============================================================
 
-bool glb_model::load(const std::string& filename) {
-    scene = importer.ReadFile(filename, aiProcess_Triangulate | aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights | aiProcess_FlipUVs);
-    if (!scene) return false;
+// В самом начале avoextension.cpp должно быть (один раз!):
+//   #define STB_IMAGE_IMPLEMENTATION
+//   #include <stb_image.h>
+
+#include <unordered_map>   // нужно добавить в includes файла
+
+// ============================================================
+//  Конструктор / деструктор
+// ============================================================
+
+glb_model::glb_model(float _x,float _y,float _z)
+    : x(_x),y(_y),z(_z) {}
+
+glb_model::~glb_model() {
+    // освобождаем GPU-буферы, которых в оригинале не было вообще
+    for (auto& m : meshes) {
+        if (m.pos_vbo) glDeleteBuffers(1, &m.pos_vbo);
+        if (m.uv_vbo)  glDeleteBuffers(1, &m.uv_vbo);
+        if (m.ibo)     glDeleteBuffers(1, &m.ibo);
+    }
+    for (auto& [i, t] : emb_tex)
+        glDeleteTextures(1, &t);
+}
+
+// ============================================================
+//  load()
+// ============================================================
+
+bool glb_model::load(const std::string& path) {
+    scene = importer.ReadFile(path,
+        aiProcess_Triangulate        |  // только треугольники
+        aiProcess_JoinIdenticalVertices|// убираем дубли
+        aiProcess_LimitBoneWeights   |  // не больше 4 костей на вершину
+        aiProcess_FlipUVs            |  // UV как в OpenGL
+        aiProcess_GenSmoothNormals);    // нормали если нет
+
+    if (!scene) {
+        fprintf(stderr, "glb_model::load — %s\n", importer.GetErrorString());
+        return false;
+    }
 
     loadTextures();
-    base_vertices.assign(scene->mNumMeshes, std::vector<aiVector3D>());
-    for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
-        for (unsigned int v = 0; v < scene->mMeshes[i]->mNumVertices; v++)
-            base_vertices[i].push_back(scene->mMeshes[i]->mVertices[v]);
-    }
-    loaded = true; return true;
+    buildMeshes();
+    buildChanCache();
+    loaded = true;
+    return true;
 }
 
-void glb_model::readNodeHierarchy(float time, aiAnimation* anim, aiNode* node, const aiMatrix4x4& parent, std::map<std::string, aiMatrix4x4>& out) {
-    aiMatrix4x4 nodeT = node->mTransformation;
-    aiNodeAnim* channel = nullptr;
-    for (unsigned int i = 0; i < anim->mNumChannels; i++) {
-        if (std::string(anim->mChannels[i]->mNodeName.data) == node->mName.data) { channel = anim->mChannels[i]; break; }
-    }
+// ============================================================
+//  loadTextures() — текстуры, встроенные в файл
+// ============================================================
 
-    if (channel) {
-        // Позиция (Lerp)
-        aiVector3D pos = channel->mPositionKeys[0].mValue;
-        if (channel->mNumPositionKeys > 1) {
-            unsigned int f = 0;
-            for (unsigned int i = 0; i < channel->mNumPositionKeys - 1; i++) if (time < channel->mPositionKeys[i+1].mTime) { f = i; break; }
-            float factor = (time - (float)channel->mPositionKeys[f].mTime) / (float)(channel->mPositionKeys[f+1].mTime - channel->mPositionKeys[f].mTime);
-            pos = channel->mPositionKeys[f].mValue + (channel->mPositionKeys[f+1].mValue - channel->mPositionKeys[f].mValue) * factor;
-        }
-        // Вращение (Slerp)
-        aiQuaternion rot = channel->mRotationKeys[0].mValue;
-        if (channel->mNumRotationKeys > 1) {
-            unsigned int f = 0;
-            for (unsigned int i = 0; i < channel->mNumRotationKeys - 1; i++) if (time < channel->mRotationKeys[i+1].mTime) { f = i; break; }
-            float factor = (time - (float)channel->mRotationKeys[f].mTime) / (float)(channel->mRotationKeys[f+1].mTime - channel->mRotationKeys[f].mTime);
-            aiQuaternion::Interpolate(rot, channel->mRotationKeys[f].mValue, channel->mRotationKeys[f+1].mValue, factor);
-        }
-        nodeT = aiMatrix4x4(aiVector3D(1,1,1), rot, pos);
-    }
+void glb_model::loadTextures() {
+    for (unsigned i = 0; i < scene->mNumTextures; ++i) {
+        const aiTexture* src = scene->mTextures[i];
+        int w, h, c;
+        unsigned char* d = stbi_load_from_memory(
+            reinterpret_cast<unsigned char*>(src->pcData),
+            (int)src->mWidth, &w, &h, &c, 4);
+        if (!d) continue;
 
-    aiMatrix4x4 global = parent * nodeT;
-    out[node->mName.data] = global;
-    for (unsigned int i = 0; i < node->mNumChildren; i++) readNodeHierarchy(time, anim, node->mChildren[i], global, out);
+        GLuint t;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, d);
+        // mipmaps — лучше качество на расстоянии
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        emb_tex[i] = t;
+        stbi_image_free(d);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
+
+// ============================================================
+//  buildMeshes() — строим VBO один раз при загрузке
+// ============================================================
+
+void glb_model::buildMeshes() {
+    meshes.resize(scene->mNumMeshes);
+
+    for (unsigned mi = 0; mi < scene->mNumMeshes; ++mi) {
+        aiMesh*  am = scene->mMeshes[mi];
+        GPUMesh& m  = meshes[mi];
+
+        m.vert_count = (int)am->mNumVertices;
+        m.skinned    = am->HasBones();
+        m.has_uv     = am->HasTextureCoords(0);
+
+        // --- позиции (rest-поза) ---
+        m.rest.resize(m.vert_count * 3);
+        for (int v = 0; v < m.vert_count; ++v) {
+            m.rest[v*3+0] = am->mVertices[v].x;
+            m.rest[v*3+1] = am->mVertices[v].y;
+            m.rest[v*3+2] = am->mVertices[v].z;
+        }
+        m.skin = m.rest; // стартовое значение = rest
+
+        // --- UV (плоский буфер) ---
+        std::vector<float> uvs;
+        if (m.has_uv) {
+            uvs.resize(m.vert_count * 2);
+            for (int v = 0; v < m.vert_count; ++v) {
+                uvs[v*2+0] = am->mTextureCoords[0][v].x;
+                uvs[v*2+1] = am->mTextureCoords[0][v].y;
+            }
+        }
+
+        // --- индексы ---
+        std::vector<unsigned int> idx;
+        idx.reserve(am->mNumFaces * 3);
+        for (unsigned f = 0; f < am->mNumFaces; ++f)
+            for (unsigned k = 0; k < 3; ++k)
+                idx.push_back(am->mFaces[f].mIndices[k]);
+        m.idx_count = (int)idx.size();
+
+        // --- данные костей ---
+        if (m.skinned) {
+            m.slots.resize(m.vert_count);  // BoneSlot на каждую вершину
+            m.offset.resize(am->mNumBones);
+            m.bname.resize(am->mNumBones);
+
+            for (unsigned b = 0; b < am->mNumBones; ++b) {
+                aiBone* bone  = am->mBones[b];
+                m.offset[b]  = bone->mOffsetMatrix;
+                m.bname[b]   = bone->mName.data;
+                for (unsigned w = 0; w < bone->mNumWeights; ++w)
+                    m.slots[bone->mWeights[w].mVertexId]
+                        .push((int)b, bone->mWeights[w].mWeight);
+            }
+        }
+
+        // --- текстура меша ---
+        aiMaterial* mat = scene->mMaterials[am->mMaterialIndex];
+        aiString p;
+        if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &p) == AI_SUCCESS
+                && p.data[0] == '*') {
+            int ti = atoi(&p.data[1]);
+            if (emb_tex.count(ti)) m.tex = emb_tex[ti];
+        }
+
+        // === Заливаем данные в GPU ===
+
+        // pos_vbo: DYNAMIC если меш скинованный (каждый кадр update)
+        //          STATIC  если статичный
+        glGenBuffers(1, &m.pos_vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
+        glBufferData(GL_ARRAY_BUFFER,
+                     (GLsizeiptr)(m.skin.size() * sizeof(float)),
+                     m.skin.data(),
+                     m.skinned ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
+
+        // uv_vbo: всегда STATIC
+        if (m.has_uv) {
+            glGenBuffers(1, &m.uv_vbo);
+            glBindBuffer(GL_ARRAY_BUFFER, m.uv_vbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                         (GLsizeiptr)(uvs.size() * sizeof(float)),
+                         uvs.data(), GL_STATIC_DRAW);
+        }
+
+        // ibo: STATIC
+        glGenBuffers(1, &m.ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     (GLsizeiptr)(idx.size() * sizeof(unsigned int)),
+                     idx.data(), GL_STATIC_DRAW);
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+}
+
+// ============================================================
+//  buildChanCache() — O(1) поиск канала по имени ноды
+// ============================================================
+
+void glb_model::buildChanCache() {
+    chan_cache.resize(scene->mNumAnimations);
+    for (unsigned a = 0; a < scene->mNumAnimations; ++a) {
+        aiAnimation* anim = scene->mAnimations[a];
+        chan_cache[a].reserve(anim->mNumChannels);
+        for (unsigned c = 0; c < anim->mNumChannels; ++c)
+            chan_cache[a][anim->mChannels[c]->mNodeName.data] = anim->mChannels[c];
+    }
+}
+
+// ============================================================
+//  interpPos() — бинарный поиск + lerp позиции
+// ============================================================
+
+aiVector3D glb_model::interpPos(float t, const aiNodeAnim* ch) {
+    if (ch->mNumPositionKeys == 1)
+        return ch->mPositionKeys[0].mValue;
+
+    // бинарный поиск нижней границы
+    unsigned lo = 0, hi = ch->mNumPositionKeys - 2;
+    while (lo < hi) {
+        unsigned mid = (lo + hi) / 2;
+        if ((float)ch->mPositionKeys[mid+1].mTime <= t) lo = mid+1;
+        else                                             hi = mid;
+    }
+
+    float dt = (float)(ch->mPositionKeys[lo+1].mTime
+                     - ch->mPositionKeys[lo].mTime);
+    float f  = dt > 1e-6f
+             ? (t - (float)ch->mPositionKeys[lo].mTime) / dt
+             : 0.f;
+    f = f < 0.f ? 0.f : (f > 1.f ? 1.f : f); // clamp
+
+    const aiVector3D& a = ch->mPositionKeys[lo].mValue;
+    const aiVector3D& b = ch->mPositionKeys[lo+1].mValue;
+    return a + (b - a) * f;
+}
+
+// ============================================================
+//  interpRot() — бинарный поиск + slerp вращения
+// ============================================================
+
+aiQuaternion glb_model::interpRot(float t, const aiNodeAnim* ch) {
+    if (ch->mNumRotationKeys == 1)
+        return ch->mRotationKeys[0].mValue;
+
+    unsigned lo = 0, hi = ch->mNumRotationKeys - 2;
+    while (lo < hi) {
+        unsigned mid = (lo + hi) / 2;
+        if ((float)ch->mRotationKeys[mid+1].mTime <= t) lo = mid+1;
+        else                                             hi = mid;
+    }
+
+    float dt = (float)(ch->mRotationKeys[lo+1].mTime
+                     - ch->mRotationKeys[lo].mTime);
+    float f  = dt > 1e-6f
+             ? (t - (float)ch->mRotationKeys[lo].mTime) / dt
+             : 0.f;
+    f = f < 0.f ? 0.f : (f > 1.f ? 1.f : f);
+
+    aiQuaternion result;
+    aiQuaternion::Interpolate(result,
+        ch->mRotationKeys[lo].mValue,
+        ch->mRotationKeys[lo+1].mValue, f);
+    return result.Normalize();
+}
+
+// ============================================================
+//  traverseNode() — рекурсивный обход дерева нод
+// ============================================================
+
+void glb_model::traverseNode(float ticks, int animIdx,
+                              const aiNode* node, const aiMatrix4x4& parent,
+                              std::unordered_map<std::string,aiMatrix4x4>& globals)
+{
+    aiMatrix4x4 local = node->mTransformation;
+
+    // O(1) поиск канала для этой ноды
+    auto it = chan_cache[animIdx].find(node->mName.data);
+    if (it != chan_cache[animIdx].end()) {
+        const aiNodeAnim* ch = it->second;
+        aiVector3D   pos = interpPos(ticks, ch);
+        aiQuaternion rot = interpRot(ticks, ch);
+        // scale-канал не используем для простоты (можно добавить аналогично)
+        local = aiMatrix4x4(aiVector3D(1,1,1), rot, pos);
+    }
+
+    globals[node->mName.data] = parent * local;
+
+    for (unsigned i = 0; i < node->mNumChildren; ++i)
+        traverseNode(ticks, animIdx, node->mChildren[i],
+                     globals[node->mName.data], globals);
+}
+
+// ============================================================
+//  applySkinning() — CPU скиннинг + glBufferSubData
+// ============================================================
+
+void glb_model::applySkinning(GPUMesh& m,
+                               const std::unordered_map<std::string,aiMatrix4x4>& globals,
+                               const aiMatrix4x4& rootInv)
+{
+    const int B = (int)m.offset.size();
+
+    // финальная матрица для каждой кости меша
+    std::vector<aiMatrix4x4> final_mat(B);
+    for (int b = 0; b < B; ++b) {
+        auto it = globals.find(m.bname[b]);
+        final_mat[b] = (it != globals.end())
+                     ? rootInv * it->second * m.offset[b]
+                     : aiMatrix4x4(); // identity если нода не найдена
+    }
+
+    // применяем к каждой вершине
+    const int N = m.vert_count;
+    const float* src = m.rest.data();
+    float*       dst = m.skin.data();
+
+    for (int v = 0; v < N; ++v) {
+        aiVector3D p(src[v*3], src[v*3+1], src[v*3+2]);
+        aiVector3D o(0.f, 0.f, 0.f);
+        const BoneSlot& s = m.slots[v];
+        for (int i = 0; i < 4; ++i)
+            if (s.w[i] > 0.f)
+                o += final_mat[s.id[i]] * p * s.w[i];
+        dst[v*3+0] = o.x;
+        dst[v*3+1] = o.y;
+        dst[v*3+2] = o.z;
+    }
+
+    // заливаем только изменившиеся позиции — не весь VBO
+    glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                    (GLsizeiptr)(m.skin.size() * sizeof(float)),
+                    dst);
+}
+
+// ============================================================
+//  updateAnimation() — главная точка обновления анимации
+// ============================================================
 
 void glb_model::updateAnimation(float time, int animIndex) {
     if (!loaded || !scene || animIndex >= (int)scene->mNumAnimations) return;
+
     aiAnimation* anim = scene->mAnimations[animIndex];
-    float ticks = fmod(time * (float)(anim->mTicksPerSecond != 0 ? anim->mTicksPerSecond : 25.0f), (float)anim->mDuration);
+    double tps   = anim->mTicksPerSecond > 0 ? anim->mTicksPerSecond : 25.0;
+    float  ticks = fmodf(time * (float)tps, (float)anim->mDuration);
 
-    std::map<std::string, aiMatrix4x4> transforms;
-    readNodeHierarchy(ticks, anim, scene->mRootNode, aiMatrix4x4(), transforms);
-    aiMatrix4x4 rootInv = scene->mRootNode->mTransformation; rootInv.Inverse();
+    // обход дерева нод — заполняем глобальные трансформы всех нод
+    std::unordered_map<std::string, aiMatrix4x4> globals;
+    globals.reserve(128); // pre-alloc чтобы не реаллоцироваться
+    traverseNode(ticks, animIndex, scene->mRootNode, aiMatrix4x4(), globals);
 
-    for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
-        aiMesh* mesh = scene->mMeshes[i];
-        if (!mesh->HasBones()) continue;
+    // root_inv нужен для перевода в пространство меша
+    aiMatrix4x4 rootInv = scene->mRootNode->mTransformation;
+    rootInv.Inverse();
 
-        // Обнуляем вершины перед расчетом
-        std::vector<aiVector3D> next_pos(mesh->mNumVertices, aiVector3D(0,0,0));
-        std::vector<float> weight_check(mesh->mNumVertices, 0.0f);
+    // скиним только скинованные меши
+    for (auto& m : meshes)
+        if (m.skinned)
+            applySkinning(m, globals, rootInv);
 
-        for (unsigned int b = 0; b < mesh->mNumBones; b++) {
-            aiBone* bone = mesh->mBones[b];
-            if (transforms.count(bone->mName.data)) {
-                aiMatrix4x4 m = rootInv * transforms[bone->mName.data] * bone->mOffsetMatrix;
-                for (unsigned int w = 0; w < bone->mNumWeights; w++) {
-                    unsigned int vId = bone->mWeights[w].mVertexId;
-                    next_pos[vId] += (m * base_vertices[i][vId]) * bone->mWeights[w].mWeight;
-                    weight_check[vId] += bone->mWeights[w].mWeight;
-                }
-            }
-        }
-        // Если вершина не привязана к костям, возвращаем оригинал, чтобы она не исчезала
-        for (unsigned int v = 0; v < mesh->mNumVertices; v++) {
-            mesh->mVertices[v] = (weight_check[v] > 0.001f) ? next_pos[v] : base_vertices[i][v];
-        }
-    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
+
+// ============================================================
+//  draw() — VBO-рендеринг вместо glBegin/glEnd
+// ============================================================
 
 void glb_model::draw() {
     if (!loaded) return;
+
     glPushAttrib(GL_ALL_ATTRIB_BITS);
-    glDisable(GL_LIGHTING); // Чтобы модель была видна без настройки ламп
-    glColor4f(1, 1, 1, 1);   // Сброс цвета
+    glDisable(GL_LIGHTING);
+    glColor4f(1.f, 1.f, 1.f, 1.f);
 
     glPushMatrix();
     glTranslatef(x, y, z);
-    glRotatef(rx, 1, 0, 0); // Вращение X
-    glRotatef(ry, 0, 1, 0); // Вращение Y
-    glRotatef(rz, 0, 0, 1); // Вращение Z
-    glRotatef(-90, 1, 0, 0); // Поворот "стоя"
+    glRotatef(rx,  1, 0, 0);
+    glRotatef(ry,  0, 1, 0);
+    glRotatef(rz,  0, 0, 1);
+    glRotatef(-90, 1, 0, 0); // "стоя"
     glScalef(scale, scale, scale);
 
-    for (unsigned int i = 0; i < scene->mNumMeshes; i++) {
-        aiMesh* mesh = scene->mMeshes[i];
-        aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
-        aiString p;
-        if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &p) == AI_SUCCESS && p.data[0] == '*') {
-            glEnable(GL_TEXTURE_2D); glBindTexture(GL_TEXTURE_2D, embedded_textures[atoi(&p.data[1])]);
+    glEnableClientState(GL_VERTEX_ARRAY);
+
+    for (const auto& m : meshes) {
+        // текстура
+        if (m.tex) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, m.tex);
+        } else {
+            glDisable(GL_TEXTURE_2D);
         }
-        glBegin(GL_TRIANGLES);
-        for (unsigned int f = 0; f < mesh->mNumFaces; f++) {
-            for (unsigned int v = 0; v < 3; v++) {
-                unsigned int idx = mesh->mFaces[f].mIndices[v];
-                if (mesh->HasTextureCoords(0)) glTexCoord2f(mesh->mTextureCoords[0][idx].x, mesh->mTextureCoords[0][idx].y);
-                glVertex3fv(&mesh->mVertices[idx].x);
-            }
+
+        // позиции из VBO
+        glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
+        glVertexPointer(3, GL_FLOAT, 0, nullptr);
+
+        // UV из VBO
+        if (m.has_uv && m.tex) {
+            glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            glBindBuffer(GL_ARRAY_BUFFER, m.uv_vbo);
+            glTexCoordPointer(2, GL_FLOAT, 0, nullptr);
         }
-        glEnd(); glDisable(GL_TEXTURE_2D);
+
+        // рисуем через индексный буфер — один вызов драйвера на весь меш
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
+        glDrawElements(GL_TRIANGLES, m.idx_count, GL_UNSIGNED_INT, nullptr);
+
+        if (m.has_uv && m.tex)
+            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glDisable(GL_TEXTURE_2D);
     }
+
+    glDisableClientState(GL_VERTEX_ARRAY);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
     glPopMatrix();
     glPopAttrib();
-}
-
-void glb_model::loadTextures() {
-    for (unsigned int i = 0; i < scene->mNumTextures; i++) {
-        int w, h, c;
-        unsigned char* d = stbi_load_from_memory((unsigned char*)scene->mTextures[i]->pcData, scene->mTextures[i]->mWidth, &w, &h, &c, 4);
-        if (d) {
-            GLuint t; glGenTextures(1, &t); glBindTexture(GL_TEXTURE_2D, t);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, d);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            embedded_textures[i] = t; stbi_image_free(d);
-        }
-    }
 }

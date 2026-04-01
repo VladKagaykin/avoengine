@@ -11,6 +11,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <map>
+#include <unordered_map>
 
 extern int tick;
 extern const int max_tick;
@@ -46,26 +47,80 @@ void disappearing_text(const char* text, float x, float y, void* font,
 void play_white_noise_3d(float x, float y, float z, float volume);
 class glb_model {
 public:
-    float x, y, z;
-    float rx, ry, rz; // Вращение по 3 осям
-    float scale;
-    bool loaded;
-
-    glb_model(float _x = 0, float _y = 0, float _z = 0);
-    bool load(const std::string& filename);
-    void updateAnimation(float time, int animIndex = 0);
+    float x=0,y=0,z=0;
+    float rx=0,ry=0,rz=0;
+    float scale=1.0f;
+    bool  loaded=false;
+ 
+    glb_model(float _x=0,float _y=0,float _z=0);
+    ~glb_model();
+ 
+    bool load(const std::string& path);
+    void updateAnimation(float time,int animIndex=0);
     void draw();
-    
-    void setRotation(float _rx, float _ry, float _rz) { rx = _rx; ry = _ry; rz = _rz; }
-    void setScale(float s) { scale = s; }
-
+ 
+    void setRotation(float _rx,float _ry,float _rz){rx=_rx;ry=_ry;rz=_rz;}
+    void setScale(float s){scale=s;}
+ 
 private:
+    // ---- влияние костей на вершину (максимум 4, как в aiProcess_LimitBoneWeights) ----
+    struct BoneSlot {
+        int   id[4]={0,0,0,0};
+        float w[4] ={0.f,0.f,0.f,0.f};
+        void push(int bone,float weight){
+            for(int i=0;i<4;++i)
+                if(w[i]==0.f){id[i]=bone;w[i]=weight;return;}
+        }
+    };
+ 
+    // ---- данные одного меша на GPU и CPU ----
+    struct GPUMesh {
+        // GPU
+        GLuint pos_vbo=0;   // xyz-позиции (DYNAMIC для скинованных, STATIC иначе)
+        GLuint uv_vbo =0;   // UV-координаты (STATIC)
+        GLuint ibo    =0;   // индексы треугольников (STATIC)
+        GLuint tex    =0;   // id текстуры
+ 
+        int idx_count =0;
+        int vert_count=0;
+        bool skinned  =false;
+        bool has_uv   =false;
+ 
+        // CPU-скиннинг (только для скинованных мешей)
+        std::vector<float>      rest;   // оригинальные xyz (3 на вершину)
+        std::vector<float>      skin;   // текущие xyz после скиннинга
+        std::vector<BoneSlot>   slots;  // влияние костей на каждую вершину
+        std::vector<aiMatrix4x4>offset; // offset-матрица каждой кости
+        std::vector<std::string>bname;  // имя ноды для каждой кости
+    };
+ 
     Assimp::Importer importer;
-    const aiScene* scene;
-    std::map<int, GLuint> embedded_textures; 
-    std::vector<std::vector<aiVector3D>> base_vertices; // "Сейф" для оригинальных вершин
-
+    const aiScene*   scene=nullptr;
+ 
+    std::vector<GPUMesh>        meshes;
+    std::map<int,GLuint>        emb_tex;
+ 
+    // chan_cache[anim_idx][node_name] = указатель на aiNodeAnim*
+    // строится один раз при load(), избавляет от O(n)-поиска на каждом кадре
+    std::vector<std::unordered_map<std::string,const aiNodeAnim*>> chan_cache;
+ 
+    // ---- внутренние методы ----
     void loadTextures();
-    void readNodeHierarchy(float time, aiAnimation* anim, aiNode* node, const aiMatrix4x4& parent, std::map<std::string, aiMatrix4x4>& out);
+    void buildMeshes();
+    void buildChanCache();
+ 
+    // рекурсивный обход дерева нод, заполняет глобальные трансформации
+    void traverseNode(float ticks,int animIdx,
+                      const aiNode* node,const aiMatrix4x4& parent,
+                      std::unordered_map<std::string,aiMatrix4x4>& globals);
+ 
+    // применяет скиннинг к одному мешу и заливает pos_vbo через glBufferSubData
+    void applySkinning(GPUMesh& m,
+                       const std::unordered_map<std::string,aiMatrix4x4>& globals,
+                       const aiMatrix4x4& rootInv);
+ 
+    // бинарный поиск ключевых кадров + линейная/сферическая интерполяция
+    static aiVector3D   interpPos(float t,const aiNodeAnim* ch);
+    static aiQuaternion interpRot(float t,const aiNodeAnim* ch);
 };
 #endif
