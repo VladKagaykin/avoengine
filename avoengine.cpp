@@ -564,42 +564,89 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     camera.eye_x=eye_x; 
     camera.eye_y=eye_y;
     camera.eye_z=eye_z;
-    camera.up_x=0;
-    camera.up_y=1;
-    camera.up_z=0;
-    // вычисляем точку взгляда
-    lookAtForward(eye_x,eye_y,eye_z,pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z);
+
+    // --- добавленная часть: обработка переворота камеры с нормализацией угла ---
+    float norm_pitch = fmod(pitch, 360.0f);
+    if (norm_pitch < 0) norm_pitch += 360.0f;
+
+    float adj_pitch = norm_pitch;
+    float up_x = 0, up_y = 1, up_z = 0;
+
+    if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
+        adj_pitch = 180.0f - norm_pitch;   // отображаем в диапазон [-90, 90]
+        up_y = -1.0f;                      // переворачиваем камеру
+        yaw += 180.0f;                     // корректируем горизонтальный угол
+    } else {
+        // угол в [0,90] или [270,360) -> приводим к [-90,90]
+        if (norm_pitch > 270.0f)
+            adj_pitch = norm_pitch - 360.0f;
+        // иначе adj_pitch = norm_pitch (уже в [0,90])
+        up_y = 1.0f;
+    }
+    // --- конец добавленной части ---
+
+    camera.up_x = up_x;
+    camera.up_y = up_y;
+    camera.up_z = up_z;
+
+    // вычисляем точку взгляда (используем скорректированный pitch)
+    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z);
+
     // настройка матрицы на проекцию
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    // устанавливаем перспективу
     const float aspect=(window_h>0)? float(window_w)/float(window_h):1.0f;
     gluPerspective(fov,aspect,camera.znear,camera.zfar);
-    // переключаемся на модельно-видовую матрицу и устанавливаем камеру
+
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z,0,1,0);
-    // устанавливаем позицию где мы слышим звуки
+    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
+
     ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
 }
+
 // перемещение камеры
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
     // обновляем параметры камеры
     camera.eye_x=eye_x;
     camera.eye_y=eye_y;
     camera.eye_z=eye_z;
-    // считаем то, куда смотрит и не смотрит
+
+    // --- добавленная часть: обработка переворота камеры с нормализацией угла ---
+    float norm_pitch = fmod(pitch, 360.0f);
+    if (norm_pitch < 0) norm_pitch += 360.0f;
+
+    float adj_pitch = norm_pitch;
+    float up_x = 0, up_y = 1, up_z = 0;
+
+    if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
+        adj_pitch = 180.0f - norm_pitch;
+        up_y = -1.0f;
+        yaw += 180.0f;
+    } else {
+        if (norm_pitch > 270.0f)
+            adj_pitch = norm_pitch - 360.0f;
+        up_y = 1.0f;
+    }
+
+    camera.up_x = up_x;
+    camera.up_y = up_y;
+    camera.up_z = up_z;
+    // --- конец добавленной части ---
+
+    // считаем направление взгляда
     float dx, dy, dz;
-    lookAtBackward(eye_x,eye_y,eye_z,pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z,dx,dy,dz);
-    // обновляем всё на экране
+    lookAtBackward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z,dx,dy,dz);
+
+    // обновляем матрицу
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z,0,1,0);
+    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
+
     // обновляем звук
-    ma_engine_listener_set_position (&audio_engine,0,eye_x, eye_y,eye_z);
+    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
     ma_engine_listener_set_direction(&audio_engine,0,dx,dy,dz);
 }
-
 //              3д(может быть потом ещё что-то будет)
 // рисуем 3д объект, указывая вершины треугольников
 void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const vector<float>& vertices,const vector<int>& indices,const vector<float>& texcoords){
