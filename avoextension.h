@@ -26,7 +26,12 @@ void keyboard_down(unsigned char key,int,int);
 void keyboard_up(unsigned char key,int,int);
 void special_up(int key,int,int);
 void special_down(int key,int,int);
-
+extern std::map<std::string, bool> mouse;
+extern int mouse_x,mouse_y;
+extern bool mouse_captured;
+void init_mouse();
+void set_mouse_capture(bool capture);
+void update_mouse();
 void plane(float cx, float cy, float cz, double r, double g, double b,
           const char* tex, const std::vector<float>& vertices);
 

@@ -14,6 +14,8 @@
 #include <SOIL/SOIL.h>
 #include <string>
 #include <iostream>
+#include <map>
+#include <unordered_map>
 using namespace std;
 
 int tick=0;
@@ -103,6 +105,79 @@ void keyboard_down(unsigned char key,int,int){keys[key]=true;}
 void keyboard_up(unsigned char key,int,int){keys[key]=false;}
 void special_up(int key,int,int){skeys[key]=false;}
 void special_down(int key,int,int){skeys[key]=true;}
+// считывание мыши
+std::map<std::string, bool> mouse;
+int mouse_x = 0, mouse_y = 0;
+bool mouse_captured = false;
+static int capture_center_x = 400, capture_center_y = 300;
+
+// Функция 1: Инициализация
+void init_mouse(){
+    // Инициализация состояний
+    mouse["left"] = false;
+    mouse["right"] = false;
+    mouse["middle"] = false;
+    mouse["left_click"] = false;
+    mouse["right_click"] = false;
+    mouse["middle_click"] = false;
+    mouse["wheel_up"] = false;
+    mouse["wheel_down"] = false;
+    
+    glutMouseFunc([](int button, int state, int x, int y) {
+        std::string btn = (button == GLUT_LEFT_BUTTON) ? "left" : 
+                          (button == GLUT_MIDDLE_BUTTON) ? "middle" : "right";
+        mouse[btn] = (state == GLUT_DOWN);
+        mouse[btn + "_click"] = (state == GLUT_DOWN);
+        mouse_x = x; mouse_y = y;
+    });
+    
+    #ifdef __FREEGLUT_EXT_H__
+    glutMouseWheelFunc([](int wheel, int dir, int x, int y) {
+        if (dir > 0) mouse["wheel_up"] = true;
+        else if (dir < 0) mouse["wheel_down"] = true;
+    });
+    #endif
+    
+    glutMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
+    glutPassiveMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
+}
+
+// Функция 2: Захват/освобождение мыши
+void set_mouse_capture(bool capture){
+    if (capture && !mouse_captured) {
+        mouse_captured = true;
+        capture_center_x = glutGet(GLUT_WINDOW_WIDTH) / 2;
+        capture_center_y = glutGet(GLUT_WINDOW_HEIGHT) / 2;
+        glutSetCursor(GLUT_CURSOR_NONE);
+        glutWarpPointer(capture_center_x, capture_center_y);
+        glutMotionFunc([](int x, int y) {
+            mouse_x += x - capture_center_x;
+            mouse_y += y - capture_center_y;
+            glutWarpPointer(capture_center_x, capture_center_y);
+        });
+        glutPassiveMotionFunc([](int x, int y) {
+            mouse_x += x - capture_center_x;
+            mouse_y += y - capture_center_y;
+            glutWarpPointer(capture_center_x, capture_center_y);
+        });
+    } 
+    else if (!capture && mouse_captured) {
+        mouse_captured = false;
+        glutSetCursor(GLUT_CURSOR_INHERIT);
+        glutMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
+        glutPassiveMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
+    }
+}
+
+// Функция 3: Обновление состояний (вызывать каждый кадр)
+void update_mouse(){
+    // Сброс временных состояний
+    mouse["left_click"] = false;
+    mouse["right_click"] = false;
+    mouse["middle_click"] = false;
+    mouse["wheel_up"] = false;
+    mouse["wheel_down"] = false;
+}
 //          простые 3д примитивы
 // плоскость
 void plane(float cx, float cy, float cz,
@@ -342,18 +417,6 @@ void play_white_noise_3d(float x,float y,float z,float volume){
     ma_sound_start(&noise_snd);
 }
 //              glb
-// ============================================================
-//  Вставить ВМЕСТО блока "// glb" в конце avoextension.cpp
-//  Убедись что STB_IMAGE_IMPLEMENTATION объявлен ОДИН РАЗ в файле
-//  (в оригинале он стоял дважды — это UB)
-// ============================================================
-
-// В самом начале avoextension.cpp должно быть (один раз!):
-//   #define STB_IMAGE_IMPLEMENTATION
-//   #include <stb_image.h>
-
-#include <unordered_map>   // нужно добавить в includes файла
-
 // ============================================================
 //  Конструктор / деструктор
 // ============================================================
