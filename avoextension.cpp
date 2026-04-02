@@ -32,11 +32,6 @@ void timer() {
 void init_tick_system(){
     timer();
 }
-void render_loop(int) {
-    glutPostRedisplay();
-    glutTimerFunc(16, render_loop, 0);
-}
-
 // поставить иконку
 #include <GL/freeglut_ext.h>
 #ifdef _WIN32
@@ -110,17 +105,26 @@ void special_up(int key,int,int){skeys[key]=false;}
 void special_down(int key,int,int){skeys[key]=true;}
 //          простые 3д примитивы
 // плоскость
-void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices){
-    if(vertices.size()<12)return;
-    std::vector<int> indices={
-        0,1,2,
-        3,0,2};
-    std::vector<float> texcoords={
-        0.0f,0.0f,
-        1.0f,0.0f,
-        1.0f,1.0f,
-        0.0f,1.0f};
-    draw3DObject(cx,cy,cz,r,g,b,tex,vertices,indices,texcoords);
+void plane(float cx, float cy, float cz,
+           double r, double g, double b,
+           const char* tex,
+           const std::vector<float>& vertices) {
+    if (vertices.size() < 12) return;
+    
+    std::vector<int> indices = { 0,1,2, 3,0,2 };
+    std::vector<float> texcoords = { 0,0, 1,0, 1,1, 0,1 };
+    
+    // Нормали для плоскости: все вершины имеют нормаль (0,1,0)
+    // Предполагаем, что вершины заданы в порядке: v0, v1, v2, v3 (квадрат)
+    std::vector<float> normals;
+    for (int i = 0; i < 4; ++i) {
+        normals.push_back(0.0f);  // nx
+        normals.push_back(1.0f);  // ny
+        normals.push_back(0.0f);  // nz
+    }
+    
+    draw3DObject(cx, cy, cz, r, g, b, tex,
+                 vertices, indices, texcoords, normals);
 }
 // туман
 struct fog_params {
@@ -342,11 +346,11 @@ glb_model::glb_model(float _x,float _y,float _z)
     : x(_x),y(_y),z(_z) {}
 
 glb_model::~glb_model() {
-    // освобождаем GPU-буферы, которых в оригинале не было вообще
     for (auto& m : meshes) {
         if (m.pos_vbo) glDeleteBuffers(1, &m.pos_vbo);
         if (m.uv_vbo)  glDeleteBuffers(1, &m.uv_vbo);
         if (m.ibo)     glDeleteBuffers(1, &m.ibo);
+        if (m.norm_vbo) glDeleteBuffers(1, &m.norm_vbo);   // <-- ДОБАВИТЬ
     }
     for (auto& [i, t] : emb_tex)
         glDeleteTextures(1, &t);
@@ -437,6 +441,23 @@ void glb_model::buildMeshes() {
                 uvs[v*2+0] = am->mTextureCoords[0][v].x;
                 uvs[v*2+1] = am->mTextureCoords[0][v].y;
             }
+        }
+
+        std::vector<float> norms;
+        if (am->HasNormals()) {
+            norms.resize(m.vert_count * 3);
+            for (int v = 0; v < m.vert_count; ++v) {
+                norms[v*3+0] = am->mNormals[v].x;
+                norms[v*3+1] = am->mNormals[v].y;
+                norms[v*3+2] = am->mNormals[v].z;
+            }
+        }
+        if (!norms.empty()) {
+            glGenBuffers(1, &m.norm_vbo);
+            glBindBuffer(GL_ARRAY_BUFFER, m.norm_vbo);
+            glBufferData(GL_ARRAY_BUFFER,
+                        (GLsizeiptr)(norms.size() * sizeof(float)),
+                        norms.data(), GL_STATIC_DRAW);
         }
 
         // --- индексы ---
@@ -681,7 +702,7 @@ void glb_model::draw() {
     if (!loaded) return;
 
     glPushAttrib(GL_ALL_ATTRIB_BITS);
-    glDisable(GL_LIGHTING);
+    // НЕ отключаем GL_LIGHTING – пусть модель освещается
     glColor4f(1.f, 1.f, 1.f, 1.f);
 
     glPushMatrix();
@@ -689,37 +710,45 @@ void glb_model::draw() {
     glRotatef(rx,  1, 0, 0);
     glRotatef(ry,  0, 1, 0);
     glRotatef(rz,  0, 0, 1);
-    glRotatef(-90, 1, 0, 0); // "стоя"
+    glRotatef(-90, 1, 0, 0);
     glScalef(scale, scale, scale);
 
     glEnableClientState(GL_VERTEX_ARRAY);
 
     for (const auto& m : meshes) {
-        // текстура
         if (m.tex) {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, m.tex);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
         } else {
             glDisable(GL_TEXTURE_2D);
         }
 
-        // позиции из VBO
+        // Позиции
         glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
         glVertexPointer(3, GL_FLOAT, 0, nullptr);
 
-        // UV из VBO
+        // Нормали (если есть)
+        if (m.norm_vbo) {
+            glEnableClientState(GL_NORMAL_ARRAY);
+            glBindBuffer(GL_ARRAY_BUFFER, m.norm_vbo);
+            glNormalPointer(GL_FLOAT, 0, nullptr);
+        }
+
+        // UV
         if (m.has_uv && m.tex) {
             glEnableClientState(GL_TEXTURE_COORD_ARRAY);
             glBindBuffer(GL_ARRAY_BUFFER, m.uv_vbo);
             glTexCoordPointer(2, GL_FLOAT, 0, nullptr);
         }
 
-        // рисуем через индексный буфер — один вызов драйвера на весь меш
+        // Индексы и отрисовка
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
         glDrawElements(GL_TRIANGLES, m.idx_count, GL_UNSIGNED_INT, nullptr);
 
-        if (m.has_uv && m.tex)
-            glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        // Отключение
+        if (m.norm_vbo) glDisableClientState(GL_NORMAL_ARRAY);
+        if (m.has_uv && m.tex) glDisableClientState(GL_TEXTURE_COORD_ARRAY);
         glDisable(GL_TEXTURE_2D);
     }
 

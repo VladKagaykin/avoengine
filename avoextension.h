@@ -18,7 +18,6 @@ extern const int max_tick;
 extern int absolute_tick;
 
 void timer();
-void render_loop(int);
 void init_tick_system();
 void set_icon(const char* path);
 extern bool keys[256];
@@ -80,12 +79,12 @@ private:
         GLuint uv_vbo =0;   // UV-координаты (STATIC)
         GLuint ibo    =0;   // индексы треугольников (STATIC)
         GLuint tex    =0;   // id текстуры
- 
+        GLuint norm_vbo = 0;   // VBO для нормалей
+
         int idx_count =0;
         int vert_count=0;
         bool skinned  =false;
         bool has_uv   =false;
- 
         // CPU-скиннинг (только для скинованных мешей)
         std::vector<float>      rest;   // оригинальные xyz (3 на вершину)
         std::vector<float>      skin;   // текущие xyz после скиннинга

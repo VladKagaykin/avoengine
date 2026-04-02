@@ -74,7 +74,39 @@ void changeSize3D(int w,int h);
 void changeSize2D(int w,int h);
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw);
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw);
-void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* texture_file,const std::vector<float>& vertices,const std::vector<int>& indices,const std::vector<float>& texcoords={});
+void draw3DObject(float cx,float cy,float cz,double r,double g,double b,
+                  const char* tex,
+                  const std::vector<float>& vertices,
+                  const std::vector<int>& indices,
+                  const std::vector<float>& texcoords={},
+                  const std::vector<float>& normals={});
+// ========== Освещение ==========
+void enable_light();
+void disable_light();
+
+class Light {
+public:
+    Light(int index = 0);          // index = GL_LIGHT0..GL_LIGHT7
+    void setPosition(float x, float y, float z);
+    void setDirectionFromPitchYaw(float pitch_deg, float yaw_deg);
+    void setColor(float r, float g, float b);
+    void setIntensity(float intensity);  // множитель яркости
+    void setRadius(float radius_deg);    // 360 = всенаправленный, <360 = прожектор
+    void enable();
+    void disable();
+    void draw(float scale = 0.5f);       // визуализация источника (отладка)
+
+private:
+    int lightId;        // GL_LIGHT0 + index
+    float pos[4];
+    float dir[3];
+    float color[3];
+    float intensity;
+    float cutoff;       // 180.0 = точечный, иначе конус
+};
+
+// Вспомогательная функция для применения освещения в draw3DObject и др.
+void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
 void begin_2d(int w,int h);
 void end_2d();
 void init_audio();

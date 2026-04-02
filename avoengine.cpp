@@ -649,7 +649,12 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
 }
 //              3д(может быть потом ещё что-то будет)
 // рисуем 3д объект, указывая вершины треугольников
-void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const vector<float>& vertices,const vector<int>& indices,const vector<float>& texcoords){
+void draw3DObject(float cx,float cy,float cz,double r,double g,double b,
+                  const char* tex,
+                  const std::vector<float>& vertices,
+                  const std::vector<int>& indices,
+                  const std::vector<float>& texcoords,
+                  const std::vector<float>& normals){
     // цвет
     glColor3f(float(r),float(g),float(b));
     // текстура
@@ -658,6 +663,7 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const ch
         if(id){
             glEnable(GL_TEXTURE_2D);
             bindTexture(id);
+            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
         }else{
             glDisable(GL_TEXTURE_2D);
         }
@@ -677,14 +683,140 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const ch
         glTexCoordPointer(2,GL_FLOAT,0,texcoords.data());
     }
     // рендерим
+    if (!normals.empty()) {
+        glEnableClientState(GL_NORMAL_ARRAY);
+        glNormalPointer(GL_FLOAT, 0, normals.data());
+    }
     glDrawElements(GL_TRIANGLES,int(indices.size()),GL_UNSIGNED_INT,indices.data());
+    if (!normals.empty()) glDisableClientState(GL_NORMAL_ARRAY);
     // очищаем память
     glDisableClientState(GL_VERTEX_ARRAY);
     if(hasTex)glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glPopMatrix();
     if(tex)glDisable(GL_TEXTURE_2D);
 }
+// ========== Освещение ==========
+static bool lighting_global = false;
 
+void enable_light() {
+    if (!lighting_global) {
+        glEnable(GL_LIGHTING);
+        lighting_global = true;
+        // Включаем цвет материала (чтобы цвет фигур влиял на освещение)
+        glEnable(GL_COLOR_MATERIAL);
+        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+        // Небольшая фоновое освещение, чтобы не было полной темноты
+        GLfloat ambient[] = {0.2f, 0.2f, 0.2f, 1.0f};
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
+    }
+}
+
+void disable_light() {
+    if (lighting_global) {
+        glDisable(GL_LIGHTING);
+        lighting_global = false;
+    }
+}
+
+Light::Light(int index) : lightId(GL_LIGHT0 + index), intensity(1.0f), cutoff(180.0f) {
+    pos[0] = 0; pos[1] = 0; pos[2] = 1; pos[3] = 1; // позиционный
+    dir[0] = 0; dir[1] = 0; dir[2] = -1;
+    color[0] = 1; color[1] = 1; color[2] = 1;
+}
+
+void Light::setPosition(float x, float y, float z) {
+    pos[0] = x; pos[1] = y; pos[2] = z; pos[3] = 1.0f;
+    if (lighting_global) glLightfv(lightId, GL_POSITION, pos);
+}
+
+void Light::setDirectionFromPitchYaw(float pitch_deg, float yaw_deg) {
+    float pitch = pitch_deg * M_PI / 180.0f;
+    float yaw   = yaw_deg   * M_PI / 180.0f;
+    dir[0] = cosf(pitch) * sinf(yaw);
+    dir[1] = sinf(pitch);
+    dir[2] = cosf(pitch) * cosf(yaw);
+    if (lighting_global) glLightfv(lightId, GL_SPOT_DIRECTION, dir);
+}
+
+void Light::setColor(float r, float g, float b) {
+    color[0] = r; color[1] = g; color[2] = b;
+    if (lighting_global) {
+        GLfloat diffuse[]  = {r * intensity, g * intensity, b * intensity, 1.0f};
+        GLfloat specular[] = {r * intensity, g * intensity, b * intensity, 1.0f};
+        glLightfv(lightId, GL_DIFFUSE,  diffuse);
+        glLightfv(lightId, GL_SPECULAR, specular);
+    }
+}
+
+void Light::setIntensity(float i) {
+    intensity = i;
+    setColor(color[0], color[1], color[2]); // переприменить цвет
+}
+
+void Light::setRadius(float radius_deg) {
+    cutoff = (radius_deg >= 360.0f) ? 180.0f : radius_deg;
+    if (lighting_global) {
+        glLightf(lightId, GL_SPOT_CUTOFF, cutoff);
+        if (cutoff < 180.0f) {
+            glLightf(lightId, GL_SPOT_EXPONENT, 0.5f); // мягкий край
+        }
+    }
+}
+
+void Light::enable() {
+    glEnable(lightId);
+    setPosition(pos[0], pos[1], pos[2]);
+    setDirectionFromPitchYaw(0,0); // временно, но направление переустановится позже
+    setColor(color[0], color[1], color[2]);
+    setRadius(cutoff == 180.0f ? 360.0f : cutoff);
+    // Направление устанавливаем ещё раз, т.к. setRadius его не трогает
+    glLightfv(lightId, GL_SPOT_DIRECTION, dir);
+}
+
+void Light::disable() {
+    glDisable(lightId);
+}
+
+void Light::draw(float scale) {
+    // Временно отключаем освещение, чтобы источник был виден всегда
+    bool wasLight = lighting_global;
+    if (wasLight) disable_light();
+
+    glPushMatrix();
+    glTranslatef(pos[0], pos[1], pos[2]);
+    glColor3f(color[0], color[1], color[2]);
+
+    if (cutoff >= 180.0f) {
+        // Точечный источник – рисуем сферу
+        glutSolidSphere(scale, 16, 16);
+    } else {
+        // Прожектор – рисуем конус в направлении dir
+        // Вычисляем угол поворота, чтобы конус смотрел в dir
+        float angle = acosf(dir[2]) * 180.0f / M_PI; // угол от оси Z
+        float axisX = -dir[1];
+        float axisY =  dir[0];
+        float len = sqrtf(axisX*axisX + axisY*axisY);
+        if (len > 0.001f) {
+            axisX /= len; axisY /= len;
+            glRotatef(angle, axisX, axisY, 0.0f);
+        }
+        glutSolidCone(scale * 0.5f, scale * 1.5f, 16, 16);
+    }
+
+    glPopMatrix();
+
+    if (wasLight) enable_light();
+}
+
+void apply_material(float r, float g, float b, float alpha, float shininess) {
+    GLfloat mat_ambient[]  = {r*0.3f, g*0.3f, b*0.3f, alpha};
+    GLfloat mat_diffuse[]  = {r,      g,      b,      alpha};
+    GLfloat mat_specular[] = {0.5f, 0.5f, 0.5f, alpha};
+    glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT,   mat_ambient);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE,   mat_diffuse);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR,  mat_specular);
+    glMaterialf (GL_FRONT_AND_BACK, GL_SHININESS, shininess);
+}
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
 void begin_2d(int w, int h) {
@@ -719,7 +851,7 @@ void end_2d() {
     glutReshapeFunc(changeSize3D);
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D); // Возвращаем текстуры для 3D
-    // glEnable(GL_LIGHTING);   // Возвращаем свет
+    glEnable(GL_LIGHTING);   // Возвращаем свет
     glEnable(GL_FOG);
 
     glMatrixMode(GL_MODELVIEW);
