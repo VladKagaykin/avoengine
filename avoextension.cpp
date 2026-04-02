@@ -111,13 +111,29 @@ void plane(float cx, float cy, float cz,
            const std::vector<float>& vertices) {
     if (vertices.size() < 12) return;
     
-    std::vector<int> indices = { 0,1,2, 3,0,2 };
-    std::vector<float> texcoords = { 0,0, 1,0, 1,1, 0,1 };
-    
-    // Нормали для плоскости: все вершины имеют нормаль (0,1,0)
+    // Изменяем индексы для 4 треугольников с общим центром
     // Предполагаем, что вершины заданы в порядке: v0, v1, v2, v3 (квадрат)
+    // Добавляем центральную вершину (v4) в конец вектора vertices
+    std::vector<int> indices = { 
+        0,1,4,  // треугольник 1: v0-v1-центр
+        1,2,4,  // треугольник 2: v1-v2-центр
+        2,3,4,  // треугольник 3: v2-v3-центр
+        3,0,4   // треугольник 4: v3-v0-центр
+    };
+    
+    // Текстурные координаты для 4 угловых вершин + центра
+    // Центр имеет текстурные координаты (0.5, 0.5)
+    std::vector<float> texcoords = { 
+        0,0,  // v0
+        1,0,  // v1
+        1,1,  // v2
+        0,1,  // v3
+        0.5f,0.5f  // центр
+    };
+    
+    // Нормали для всех 5 вершин (все имеют нормаль (0,1,0))
     std::vector<float> normals;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         normals.push_back(0.0f);  // nx
         normals.push_back(1.0f);  // ny
         normals.push_back(0.0f);  // nz
@@ -442,7 +458,7 @@ void glb_model::buildMeshes() {
                 uvs[v*2+1] = am->mTextureCoords[0][v].y;
             }
         }
-
+        // нормали
         std::vector<float> norms;
         if (am->HasNormals()) {
             norms.resize(m.vert_count * 3);
@@ -458,6 +474,16 @@ void glb_model::buildMeshes() {
             glBufferData(GL_ARRAY_BUFFER,
                         (GLsizeiptr)(norms.size() * sizeof(float)),
                         norms.data(), GL_STATIC_DRAW);
+        }
+        if (am->HasNormals()) {
+            norms.resize(m.vert_count * 3);
+            for (int v = 0; v < m.vert_count; ++v) {
+                norms[v*3+0] = am->mNormals[v].x;
+                norms[v*3+1] = am->mNormals[v].y;
+                norms[v*3+2] = am->mNormals[v].z;
+            }
+            m.rest_normals = norms;
+            m.skin_normals = norms;   // начальное значение
         }
 
         // --- индексы ---
@@ -633,37 +659,78 @@ void glb_model::applySkinning(GPUMesh& m,
 {
     const int B = (int)m.offset.size();
 
-    // финальная матрица для каждой кости меша
+    // Финальная матрица для каждой кости меша
     std::vector<aiMatrix4x4> final_mat(B);
     for (int b = 0; b < B; ++b) {
         auto it = globals.find(m.bname[b]);
         final_mat[b] = (it != globals.end())
                      ? rootInv * it->second * m.offset[b]
-                     : aiMatrix4x4(); // identity если нода не найдена
+                     : aiMatrix4x4();
     }
 
-    // применяем к каждой вершине
     const int N = m.vert_count;
-    const float* src = m.rest.data();
-    float*       dst = m.skin.data();
+    const float* src_pos = m.rest.data();
+    float*       dst_pos = m.skin.data();
 
+    // 1. Пересчёт позиций
     for (int v = 0; v < N; ++v) {
-        aiVector3D p(src[v*3], src[v*3+1], src[v*3+2]);
+        aiVector3D p(src_pos[v*3], src_pos[v*3+1], src_pos[v*3+2]);
         aiVector3D o(0.f, 0.f, 0.f);
         const BoneSlot& s = m.slots[v];
-        for (int i = 0; i < 4; ++i)
-            if (s.w[i] > 0.f)
+        for (int i = 0; i < 4; ++i) {
+            if (s.w[i] > 0.f) {
                 o += final_mat[s.id[i]] * p * s.w[i];
-        dst[v*3+0] = o.x;
-        dst[v*3+1] = o.y;
-        dst[v*3+2] = o.z;
+            }
+        }
+        dst_pos[v*3+0] = o.x;
+        dst_pos[v*3+1] = o.y;
+        dst_pos[v*3+2] = o.z;
     }
 
-    // заливаем только изменившиеся позиции — не весь VBO
+    // Загружаем изменённые позиции в VBO
     glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0,
                     (GLsizeiptr)(m.skin.size() * sizeof(float)),
-                    dst);
+                    dst_pos);
+
+    // 2. Пересчёт нормалей (если есть)
+    if (!m.rest_normals.empty()) {
+        // Убедимся, что массив для текущих нормалей имеет правильный размер
+        if (m.skin_normals.size() != m.rest_normals.size())
+            m.skin_normals = m.rest_normals;
+
+        const float* src_nrm = m.rest_normals.data();
+        float*       dst_nrm = m.skin_normals.data();
+
+        for (int v = 0; v < N; ++v) {
+            aiVector3D n(src_nrm[v*3], src_nrm[v*3+1], src_nrm[v*3+2]);
+            aiVector3D on(0.f, 0.f, 0.f);
+            const BoneSlot& s = m.slots[v];
+            for (int i = 0; i < 4; ++i) {
+                if (s.w[i] > 0.f) {
+                    // Берём вращательную часть матрицы (3x3)
+                    const aiMatrix4x4& mat = final_mat[s.id[i]];
+                    aiMatrix3x3 rot3(
+                        mat.a1, mat.a2, mat.a3,
+                        mat.b1, mat.b2, mat.b3,
+                        mat.c1, mat.c2, mat.c3
+                    );
+                    aiVector3D tn = rot3 * n;
+                    on = on + tn * s.w[i];
+                }
+            }
+            on.Normalize();
+            dst_nrm[v*3+0] = on.x;
+            dst_nrm[v*3+1] = on.y;
+            dst_nrm[v*3+2] = on.z;
+        }
+
+        // Обновляем VBO нормалей
+        glBindBuffer(GL_ARRAY_BUFFER, m.norm_vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        (GLsizeiptr)(m.skin_normals.size() * sizeof(float)),
+                        dst_nrm);
+    }
 }
 
 // ============================================================

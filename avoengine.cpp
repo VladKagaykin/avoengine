@@ -257,16 +257,47 @@ void square(float local_size,float x,float y,double r,double g,double b,float ro
     glColor3f(float(r),float(g),float(b));
     enableTex(tex);
     const float ar=rotate*float(M_PI)/-180.0f;
-    const float tc[8]={0,1, 1,1, 1,0, 0,0};
-    glBegin(GL_QUADS);
-    for (int i=0;i<4;++i){
-        float px=vertices[i*2],py=vertices[i*2+1];
-        rotatePoint(px,py,0,0,ar);
-        if(tex)glTexCoord2f(tc[i*2],tc[i*2+1]);
-        glVertex2f(x+px*local_size,y+py*local_size);
+    
+    // Исправленный порядок текстурных координат
+    const float tc[10] = {
+        0,1,  // v0 (левый нижний) - было 0,0
+        1,1,  // v1 (правый нижний) - было 1,0
+        1,0,  // v2 (правый верхний) - было 1,1
+        0,0,  // v3 (левый верхний) - было 0,1
+        0.5f,0.5f  // центр
+    };
+    
+    float center_x = (vertices[0] + vertices[2] + vertices[4] + vertices[6]) / 4.0f;
+    float center_y = (vertices[1] + vertices[3] + vertices[5] + vertices[7]) / 4.0f;
+    
+    float all_vertices[10] = {
+        vertices[0], vertices[1],
+        vertices[2], vertices[3],
+        vertices[4], vertices[5],
+        vertices[6], vertices[7],
+        center_x, center_y
+    };
+    
+    const int triangles[4][3] = {
+        {0, 1, 4},
+        {1, 2, 4},
+        {2, 3, 4},
+        {3, 0, 4}
+    };
+    
+    glBegin(GL_TRIANGLES);
+    for (int tri = 0; tri < 4; ++tri) {
+        for (int i = 0; i < 3; ++i) {
+            int vidx = triangles[tri][i];
+            float px = all_vertices[vidx * 2];
+            float py = all_vertices[vidx * 2 + 1];
+            rotatePoint(px, py, 0, 0, ar);
+            if(tex) glTexCoord2f(tc[vidx * 2], tc[vidx * 2 + 1]);
+            glVertex2f(x + px * local_size, y + py * local_size);
+        }
     }
     glEnd();
-    if(tex)glDisable(GL_TEXTURE_2D);
+    if(tex) glDisable(GL_TEXTURE_2D);
 }
 // круг
 void circle(float scale,float cx,float cy,double r,double g,double b,float radius,float in_radius,float rotate,int slices,int loops,const char* tex){
@@ -806,6 +837,19 @@ void Light::draw(float scale) {
     glPopMatrix();
 
     if (wasLight) enable_light();
+}
+
+void Light::setAttenuation(float constant, float linear, float quadratic) {
+    if (lighting_global) {
+        glLightf(lightId, GL_CONSTANT_ATTENUATION, constant);
+        glLightf(lightId, GL_LINEAR_ATTENUATION, linear);
+        glLightf(lightId, GL_QUADRATIC_ATTENUATION, quadratic);
+    }
+}
+
+void set_ambient_light(float r, float g, float b) {
+    GLfloat ambient[] = {r, g, b, 1.0f};
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
 }
 
 void apply_material(float r, float g, float b, float alpha, float shininess) {

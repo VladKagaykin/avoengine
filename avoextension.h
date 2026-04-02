@@ -79,7 +79,9 @@ private:
         GLuint uv_vbo =0;   // UV-координаты (STATIC)
         GLuint ibo    =0;   // индексы треугольников (STATIC)
         GLuint tex    =0;   // id текстуры
-        GLuint norm_vbo = 0;   // VBO для нормалей
+        std::vector<float> rest_normals;   // исходные нормали из модели
+        std::vector<float> skin_normals;   // текущие нормали после скиннинга
+        GLuint norm_vbo=0;                   // уже есть
 
         int idx_count =0;
         int vert_count=0;

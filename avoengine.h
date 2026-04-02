@@ -95,6 +95,7 @@ public:
     void enable();
     void disable();
     void draw(float scale = 0.5f);       // визуализация источника (отладка)
+    void setAttenuation(float constant, float linear, float quadratic);
 
 private:
     int lightId;        // GL_LIGHT0 + index
@@ -106,6 +107,7 @@ private:
 };
 
 // Вспомогательная функция для применения освещения в draw3DObject и др.
+void set_ambient_light(float r, float g, float b);
 void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
 void begin_2d(int w,int h);
 void end_2d();
