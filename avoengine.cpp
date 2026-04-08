@@ -64,33 +64,12 @@ ma_engine audio_engine;
 // вектор в котором хранятся звуки, которые играют на постоянке
 static vector<ma_sound*> loopingSounds;
 
-// структура для зранения параметров камеры
-// struct CameraParams{
-//     float fov=58.0f;
-//     float znear=0.1f;
-//     float zfar=1000.0f;
-//     float eye_x=0,eye_y=0,eye_z=0;
-//     float ctr_x=0,ctr_y=0,ctr_z=1;
-//     float up_x=0,up_y=1,up_z=0;
-// };
 // инициализация камеры
 CameraParams camera;
 
 //              утилиты для камеры
-// вычисляем то, куда смотрит центр камеры
-static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz){
-    // радианы наклона по вертикали
-    const float p=pitch_deg*float(M_PI)/180.0f;
-    // радианы наклона по горизонтали
-    const float y=yaw_deg*float(M_PI)/180.0f;
-    // считаем проекцию почти по теореме пифагора
-    cx = eye_x + cosf(p) * sinf(y);
-    cy = eye_y + sinf(p);
-    cz = eye_z + cosf(p) * cosf(y);
-}
-// вычисляем тоже самое, только не то куда смотрит камера, а то, куда она не смотрит(не знаю как объяснить, короче,
-// куда смотрела бы камера если бы её развернуло на 180)
-static inline void lookAtBackward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
+// вычисляем то, куда смотрит центр камеры и прочее
+static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
     const float p=pitch_deg*float(M_PI)/180.0f;
     const float y=yaw_deg*float(M_PI)/180.0f;
     dx=cosf(p)*sinf(y);
@@ -257,33 +236,46 @@ void square(float local_size,float x,float y,double r,double g,double b,float ro
     glColor3f(float(r),float(g),float(b));
     enableTex(tex);
     const float ar=rotate*float(M_PI)/-180.0f;
-    
-    // Исправленный порядок текстурных координат
+    const float tc[8]={0,1, 1,1, 1,0, 0,0};
+    glBegin(GL_QUADS);
+    for (int i=0;i<4;++i){
+        float px=vertices[i*2],py=vertices[i*2+1];
+        rotatePoint(px,py,0,0,ar);
+        if(tex)glTexCoord2f(tc[i*2],tc[i*2+1]);
+        glVertex2f(x+px*local_size,y+py*local_size);
+    }
+    glEnd();
+    if(tex)glDisable(GL_TEXTURE_2D);
+}
+void light_square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex){
+    glColor3f(float(r),float(g),float(b));
+    enableTex(tex);
+    const float ar=rotate*float(M_PI)/-180.0f;
     const float tc[10] = {
-        0,1,  // v0 (левый нижний) - было 0,0
-        1,1,  // v1 (правый нижний) - было 1,0
-        1,0,  // v2 (правый верхний) - было 1,1
-        0,0,  // v3 (левый верхний) - было 0,1
-        0.5f,0.5f  // центр
-    };
+                            0,1,
+                            1,1, 
+                            1,0, 
+                            0,0, 
+                            0.5f,0.5f
+                            };
     
     float center_x = (vertices[0] + vertices[2] + vertices[4] + vertices[6]) / 4.0f;
     float center_y = (vertices[1] + vertices[3] + vertices[5] + vertices[7]) / 4.0f;
     
     float all_vertices[10] = {
-        vertices[0], vertices[1],
-        vertices[2], vertices[3],
-        vertices[4], vertices[5],
-        vertices[6], vertices[7],
-        center_x, center_y
-    };
+                                vertices[0], vertices[1],
+                                vertices[2], vertices[3],
+                                vertices[4], vertices[5],
+                                vertices[6], vertices[7],
+                                center_x, center_y
+                            };
     
     const int triangles[4][3] = {
-        {0, 1, 4},
-        {1, 2, 4},
-        {2, 3, 4},
-        {3, 0, 4}
-    };
+                                    {0, 1, 4},
+                                    {1, 2, 4},
+                                    {2, 3, 4},
+                                    {3, 0, 4}
+                                };
     
     glBegin(GL_TRIANGLES);
     for (int tri = 0; tri < 4; ++tri) {
@@ -337,7 +329,7 @@ void draw_text(const char* text,float x,float y,void* font,float r,float g,float
     }
 }
 
-//              класс для рисовки псевдо 3д существ(как в думе например)
+//              класс для рисовки псевдо 3д существ
 // переменные класса
 pseudo_3d_entity::pseudo_3d_entity(float x,float y,float z,float g_angle,float v_angle,vector<const char*> textures,int v_angles,float* vertices)
     :x(x),y(y),z(z),g_angle(g_angle),v_angle(v_angle),textures(std::move(textures)),v_angles(v_angles),vertices(vertices){}
@@ -439,11 +431,11 @@ void pseudo_3d_entity::draw(float cam_h,float cam_x,float cam_y,float cam_z)cons
     const float ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
 
     const float mat[16]={
-        rx, ry, rz, 0,
-        ux, uy, uz, 0,
-        fx, fy, fz, 0,
-         0,  0,  0, 1
-    };
+                            rx, ry, rz, 0,
+                            ux, uy, uz, 0,
+                            fx, fy, fz, 0,
+                            0,  0,  0, 1
+                        };
 
     const float ga=g_angle*float(M_PI)/180.0f;
     const float va=v_angle*float(M_PI)/180.0f;
@@ -472,39 +464,10 @@ void pseudo_3d_entity::draw(float cam_h,float cam_x,float cam_y,float cam_z)cons
     glTranslatef(x,y,z);
     glMultMatrixf(mat);
     glRotatef(roll+180.0f,0,0,1);
-    square(1.0f,0,0,1,1,1,mirror?-180.0f:0.0f,vertices,tex);
+    light_square(1.0f,0,0,1,1,1,mirror?-180.0f:0.0f,vertices,tex);
     glPopMatrix();
 }
 
-// вызывай вместо ручного перебора сущностей
-void drawEntities(vector<pseudo_3d_entity>& entities,float cam_h,float cam_x,float cam_y,float cam_z){
-    const int n=int(entities.size());
-    // массив для хранения результатов параллельного просчёта видимости
-    vector<bool> visible(n);
-
-    // параллельно считаем видимость каждой сущности через публичные геттеры
-    // цифра 4 значит что потоки берут задачи по 4 штуки, а не по одной - так меньше накладных расходов
-    #pragma omp parallel for schedule(dynamic,4)
-    for(int i=0;i<n;++i){
-        // используем геттеры т.к. поля x,y,z приватные
-        const float ex=entities[i].getX();
-        const float ey=entities[i].getY();
-        const float ez=entities[i].getZ();
-        const float dx=ex-cam_x,dy=ey-cam_y,dz=ez-cam_z;
-        const float fx=camera.ctr_x-camera.eye_x;
-        const float fy=camera.ctr_y-camera.eye_y;
-        const float fz=camera.ctr_z-camera.eye_z;
-        const float depth=dx*fx+dy*fy+dz*fz;
-        const float dist=sqrtf(dx*dx+dy*dy+dz*dz);
-        // простая проверка по глубине и расстоянию без радиуса т.к. это прикидка
-        visible[i]=(depth>camera.znear-1.0f)&&(dist<camera.zfar);
-    }
-
-    // рисуем в главном потоке т.к. opengl однопоточный
-    // draw внутри сам проверяет isVisible точнее, нам нужна параллельная прикидка только чтобы отсечь явно невидимых
-    for(int i=0;i<n;++i)
-        if(visible[i]) entities[i].draw(cam_h,cam_x,cam_y,cam_z);
-}
 //              opengl
 // настройка изменения размеров в 3д режиме
 void changeSize3D(int w,int h){
@@ -596,7 +559,6 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     camera.eye_y=eye_y;
     camera.eye_z=eye_z;
 
-    // --- добавленная часть: обработка переворота камеры с нормализацией угла ---
     float norm_pitch = fmod(pitch, 360.0f);
     if (norm_pitch < 0) norm_pitch += 360.0f;
 
@@ -604,24 +566,19 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     float up_x = 0, up_y = 1, up_z = 0;
 
     if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
-        adj_pitch = 180.0f - norm_pitch;   // отображаем в диапазон [-90, 90]
-        up_y = -1.0f;                      // переворачиваем камеру
-        yaw += 180.0f;                     // корректируем горизонтальный угол
+        adj_pitch = 180.0f - norm_pitch; 
+        up_y = -1.0f;                    
+        yaw += 180.0f;                    
     } else {
-        // угол в [0,90] или [270,360) -> приводим к [-90,90]
-        if (norm_pitch > 270.0f)
-            adj_pitch = norm_pitch - 360.0f;
-        // иначе adj_pitch = norm_pitch (уже в [0,90])
+        if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
         up_y = 1.0f;
     }
-    // --- конец добавленной части ---
 
     camera.up_x = up_x;
     camera.up_y = up_y;
     camera.up_z = up_z;
-
-    // вычисляем точку взгляда (используем скорректированный pitch)
-    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z);
+    // вычисляем точку взгляда
+    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z,camera.dir_x, camera.dir_y, camera.dir_z);
 
     // настройка матрицы на проекцию
     glMatrixMode(GL_PROJECTION);
@@ -634,8 +591,8 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
 
     ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
+    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 }
-
 // перемещение камеры
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
     // обновляем параметры камеры
@@ -643,7 +600,6 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
     camera.eye_y=eye_y;
     camera.eye_z=eye_z;
 
-    // --- добавленная часть: обработка переворота камеры с нормализацией угла ---
     float norm_pitch = fmod(pitch, 360.0f);
     if (norm_pitch < 0) norm_pitch += 360.0f;
 
@@ -663,11 +619,9 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
     camera.up_x = up_x;
     camera.up_y = up_y;
     camera.up_z = up_z;
-    // --- конец добавленной части ---
 
     // считаем направление взгляда
-    float dx, dy, dz;
-    lookAtBackward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z,dx,dy,dz);
+    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z, camera.dir_x, camera.dir_y, camera.dir_z);
 
     // обновляем матрицу
     glMatrixMode(GL_MODELVIEW);
@@ -676,16 +630,12 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
 
     // обновляем звук
     ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
-    ma_engine_listener_set_direction(&audio_engine,0,dx,dy,dz);
+    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 }
+
 //              3д(может быть потом ещё что-то будет)
 // рисуем 3д объект, указывая вершины треугольников
-void draw3DObject(float cx,float cy,float cz,double r,double g,double b,
-                  const char* tex,
-                  const std::vector<float>& vertices,
-                  const std::vector<int>& indices,
-                  const std::vector<float>& texcoords,
-                  const std::vector<float>& normals){
+void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices,const std::vector<int>& indices,const std::vector<float>& texcoords,const std::vector<float>& normals){
     // цвет
     glColor3f(float(r),float(g),float(b));
     // текстура
@@ -701,7 +651,7 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,
     }else{
         glDisable(GL_TEXTURE_2D);
     }
-    // позицианирование
+    // позиционирование
     glPushMatrix();
     glTranslatef(cx,cy,cz);
     // делаем объект
@@ -726,41 +676,38 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,
     glPopMatrix();
     if(tex)glDisable(GL_TEXTURE_2D);
 }
-// ========== Освещение ==========
+// свет
 static bool lighting_global = false;
 
-void enable_light() {
-    if (!lighting_global) {
+void enable_light(){
+    if (!lighting_global){
         glEnable(GL_LIGHTING);
         lighting_global = true;
         // Включаем цвет материала (чтобы цвет фигур влиял на освещение)
         glEnable(GL_COLOR_MATERIAL);
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-        // Небольшая фоновое освещение, чтобы не было полной темноты
-        GLfloat ambient[] = {0.2f, 0.2f, 0.2f, 1.0f};
-        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
     }
 }
 
-void disable_light() {
-    if (lighting_global) {
+void disable_light(){
+    if (lighting_global){
         glDisable(GL_LIGHTING);
         lighting_global = false;
     }
 }
 
-Light::Light(int index) : lightId(GL_LIGHT0 + index), intensity(1.0f), cutoff(180.0f) {
-    pos[0] = 0; pos[1] = 0; pos[2] = 1; pos[3] = 1; // позиционный
+Light::Light(int index):lightId(GL_LIGHT0 + index), intensity(1.0f), cutoff(180.0f){
+    pos[0] = 0; pos[1] = 0; pos[2] = 1; pos[3] = 1;
     dir[0] = 0; dir[1] = 0; dir[2] = -1;
     color[0] = 1; color[1] = 1; color[2] = 1;
 }
 
-void Light::setPosition(float x, float y, float z) {
+void Light::setPosition(float x, float y, float z){
     pos[0] = x; pos[1] = y; pos[2] = z; pos[3] = 1.0f;
     if (lighting_global) glLightfv(lightId, GL_POSITION, pos);
 }
 
-void Light::setDirectionFromPitchYaw(float pitch_deg, float yaw_deg) {
+void Light::setDirectionFromPitchYaw(float pitch_deg, float yaw_deg){
     float pitch = pitch_deg * M_PI / 180.0f;
     float yaw   = yaw_deg   * M_PI / 180.0f;
     dir[0] = cosf(pitch) * sinf(yaw);
@@ -769,7 +716,7 @@ void Light::setDirectionFromPitchYaw(float pitch_deg, float yaw_deg) {
     if (lighting_global) glLightfv(lightId, GL_SPOT_DIRECTION, dir);
 }
 
-void Light::setColor(float r, float g, float b) {
+void Light::setColor(float r,float g,float b){
     color[0] = r; color[1] = g; color[2] = b;
     if (lighting_global) {
         GLfloat diffuse[]  = {r * intensity, g * intensity, b * intensity, 1.0f};
@@ -779,67 +726,34 @@ void Light::setColor(float r, float g, float b) {
     }
 }
 
-void Light::setIntensity(float i) {
+void Light::setIntensity(float i){
     intensity = i;
-    setColor(color[0], color[1], color[2]); // переприменить цвет
+    setColor(color[0], color[1], color[2]);
 }
 
-void Light::setRadius(float radius_deg) {
+void Light::setRadius(float radius_deg){
     cutoff = (radius_deg >= 360.0f) ? 180.0f : radius_deg;
     if (lighting_global) {
         glLightf(lightId, GL_SPOT_CUTOFF, cutoff);
         if (cutoff < 180.0f) {
-            glLightf(lightId, GL_SPOT_EXPONENT, 0.5f); // мягкий край
+            glLightf(lightId, GL_SPOT_EXPONENT, 0.5f);
         }
     }
 }
 
-void Light::enable() {
+void Light::enable(){
     glEnable(lightId);
     setPosition(pos[0], pos[1], pos[2]);
-    setDirectionFromPitchYaw(0,0); // временно, но направление переустановится позже
     setColor(color[0], color[1], color[2]);
     setRadius(cutoff == 180.0f ? 360.0f : cutoff);
-    // Направление устанавливаем ещё раз, т.к. setRadius его не трогает
     glLightfv(lightId, GL_SPOT_DIRECTION, dir);
 }
 
-void Light::disable() {
+void Light::disable(){
     glDisable(lightId);
 }
 
-void Light::draw(float scale) {
-    // Временно отключаем освещение, чтобы источник был виден всегда
-    bool wasLight = lighting_global;
-    if (wasLight) disable_light();
-
-    glPushMatrix();
-    glTranslatef(pos[0], pos[1], pos[2]);
-    glColor3f(color[0], color[1], color[2]);
-
-    if (cutoff >= 180.0f) {
-        // Точечный источник – рисуем сферу
-        glutSolidSphere(scale, 16, 16);
-    } else {
-        // Прожектор – рисуем конус в направлении dir
-        // Вычисляем угол поворота, чтобы конус смотрел в dir
-        float angle = acosf(dir[2]) * 180.0f / M_PI; // угол от оси Z
-        float axisX = -dir[1];
-        float axisY =  dir[0];
-        float len = sqrtf(axisX*axisX + axisY*axisY);
-        if (len > 0.001f) {
-            axisX /= len; axisY /= len;
-            glRotatef(angle, axisX, axisY, 0.0f);
-        }
-        glutSolidCone(scale * 0.5f, scale * 1.5f, 16, 16);
-    }
-
-    glPopMatrix();
-
-    if (wasLight) enable_light();
-}
-
-void Light::setAttenuation(float constant, float linear, float quadratic) {
+void Light::setAttenuation(float constant, float linear, float quadratic){
     if (lighting_global) {
         glLightf(lightId, GL_CONSTANT_ATTENUATION, constant);
         glLightf(lightId, GL_LINEAR_ATTENUATION, linear);
@@ -847,12 +761,12 @@ void Light::setAttenuation(float constant, float linear, float quadratic) {
     }
 }
 
-void set_ambient_light(float r, float g, float b) {
+void set_ambient_light(float r, float g, float b){
     GLfloat ambient[] = {r, g, b, 1.0f};
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
 }
 
-void apply_material(float r, float g, float b, float alpha, float shininess) {
+void apply_material(float r, float g, float b, float alpha, float shininess){
     GLfloat mat_ambient[]  = {r*0.3f, g*0.3f, b*0.3f, alpha};
     GLfloat mat_diffuse[]  = {r,      g,      b,      alpha};
     GLfloat mat_specular[] = {0.5f, 0.5f, 0.5f, alpha};
@@ -863,46 +777,35 @@ void apply_material(float r, float g, float b, float alpha, float shininess) {
 }
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
-void begin_2d(int w, int h) {
-    // 1. Сохраняем и настраиваем матрицы 
-    glutReshapeFunc(changeSize2D);
+void begin_2d(int w, int h){
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
     glOrtho(0, w, 0, h, -1, 1);
-    
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
-
-    // 2. ОТКЛЮЧАЕМ ВСЁ, ЧТО ВЛИЯЕТ НА ЦВЕТ ТЕКСТА
-    glDisable(GL_DEPTH_TEST);   // Чтобы текст не перекрывался 3D объектами
-    glDisable(GL_LIGHTING);    // Чтобы текст не был черным/синим
-    glDisable(GL_FOG);         // Чтобы текст не тонул в тумане
-    glDisable(GL_TEXTURE_2D);  // Чтобы буквы не красились текстурой модели
-    
-    // 3. СБРОС ЦВЕТА
-    // Если последняя модель была синей, текст тоже будет синим. 
-    // Возвращаем чистый белый (или любой дефолтный) цвет.
+    glDisable(GL_DEPTH_TEST);   
+    glDisable(GL_LIGHTING);  
+    glDisable(GL_FOG);         
+    glDisable(GL_TEXTURE_2D);  
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f); 
-
-    // Включаем альфа-смешивание (критично для шрифтов с прозрачностью)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glutReshapeFunc(changeSize2D);
 }
 // переключаем матрицу на 3д(невероятно)
-void end_2d() {
-    glutReshapeFunc(changeSize3D);
+void end_2d(){
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_TEXTURE_2D); // Возвращаем текстуры для 3D
-    glEnable(GL_LIGHTING);   // Возвращаем свет
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_LIGHTING);
     glEnable(GL_FOG);
-
     glMatrixMode(GL_MODELVIEW);
     glPopMatrix();
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
+    glutReshapeFunc(changeSize3D);
 }
 
 //              аудио
@@ -1041,7 +944,7 @@ void draw_performance_hud(int win_w,int win_h){
         prev_time=now;
     }
     // вывод статистики в левом верхнем углу
-    char buf[1000];
+    char buf[256];
     snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%",fps,ram_kb / 1024,cpu_pct);
     begin_2d(win_w,win_h);
     draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);

@@ -29,6 +29,7 @@ struct CameraParams{
     float eye_x=0,eye_y=0,eye_z=0;
     float ctr_x=0,ctr_y=0,ctr_z=1;
     float up_x=0,up_y=1,up_z=0;
+    float dir_x=0,dir_y=0,dir_z=1;
 };
 
 extern CameraParams camera;
@@ -37,7 +38,8 @@ void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
 
 void triangle(float scale,float cx,float cy,double r,double g,double b,float rotate,const float* vertices,const char* texture_file=nullptr);
 
-void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* texture_file=nullptr);
+void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex);
+void light_square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* texture_file=nullptr);
 
 void circle(float scale,float cx,float cy,double r,double g,double b,float radius,float in_radius,float rotate,int slices,int loops,const char* texture_file=nullptr);
 
@@ -68,45 +70,34 @@ private:
     mutable float cachedCamH=1e9f;
     mutable float cachedCamV=1e9f;
 };
-void drawEntities(std::vector<pseudo_3d_entity>& entities,float cam_h,float cam_x,float cam_y,float cam_z);
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void changeSize3D(int w,int h);
 void changeSize2D(int w,int h);
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw);
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw);
-void draw3DObject(float cx,float cy,float cz,double r,double g,double b,
-                  const char* tex,
-                  const std::vector<float>& vertices,
-                  const std::vector<int>& indices,
-                  const std::vector<float>& texcoords={},
-                  const std::vector<float>& normals={});
-// ========== Освещение ==========
+void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices,const std::vector<int>& indices,const std::vector<float>& texcoords={},const std::vector<float>& normals={});
 void enable_light();
 void disable_light();
 
-class Light {
+class Light{
 public:
-    Light(int index = 0);          // index = GL_LIGHT0..GL_LIGHT7
+    Light(int index = 0);
     void setPosition(float x, float y, float z);
     void setDirectionFromPitchYaw(float pitch_deg, float yaw_deg);
     void setColor(float r, float g, float b);
-    void setIntensity(float intensity);  // множитель яркости
-    void setRadius(float radius_deg);    // 360 = всенаправленный, <360 = прожектор
+    void setIntensity(float intensity);
+    void setRadius(float radius_deg);
     void enable();
     void disable();
-    void draw(float scale = 0.5f);       // визуализация источника (отладка)
     void setAttenuation(float constant, float linear, float quadratic);
-
 private:
-    int lightId;        // GL_LIGHT0 + index
+    int lightId;
     float pos[4];
     float dir[3];
     float color[3];
     float intensity;
-    float cutoff;       // 180.0 = точечный, иначе конус
+    float cutoff; 
 };
-
-// Вспомогательная функция для применения освещения в draw3DObject и др.
 void set_ambient_light(float r, float g, float b);
 void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
 void begin_2d(int w,int h);

@@ -41,62 +41,43 @@ void init_tick_system(){
 #else
     #include <X11/Xlib.h>
     #include <X11/Xutil.h>
-    // Если используешь glX
     #include <GL/glx.h>
 #endif
 
-void set_icon(const char* path) {
+void set_icon(const char* path){
     int width, height, channels;
-    // Загружаем иконку
-    unsigned char* image = SOIL_load_image(path, &width, &height, &channels, SOIL_LOAD_RGBA);
-    
+    unsigned char* image=SOIL_load_image(path, &width, &height, &channels, SOIL_LOAD_RGBA);
     if (!image) {
-        return; // Тихий выход, если файла нет
+        return;
     }
-
 #ifdef _WIN32
-    // Получаем HWND текущего окна GLUT без поиска по имени
-    HWND hwnd = (HWND)glutGetWindowData(); 
-    // Если glutGetWindowData не настроен, используем GetActiveWindow() 
-    // так как функция вызывается сразу после создания окна
+    HWND hwnd = (HWND)glutGetWindowData();
     if (!hwnd) hwnd = GetActiveWindow();
-
     if (hwnd) {
-        // Создаем иконку из RGBA буфера
         HICON hIcon = CreateIcon(GetModuleHandle(NULL), width, height, 1, 32, NULL, image);
         SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
         SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
     }
 #else
-    // Для X11 (Linux)
     Display* display = glXGetCurrentDisplay();
     Window win = glXGetCurrentDrawable();
-
     if (display && win) {
-        // Формат _NET_WM_ICON требует: [width, height, argb_pixels...]
         std::vector<unsigned long> icon_data;
         icon_data.push_back(width);
         icon_data.push_back(height);
-
         for (int i = 0; i < width * height; i++) {
             unsigned char r = image[i * 4];
             unsigned char g = image[i * 4 + 1];
             unsigned char b = image[i * 4 + 2];
             unsigned char a = image[i * 4 + 3];
-            // Конвертируем RGBA в ARGB
             icon_data.push_back((a << 24) | (r << 16) | (g << 8) | b);
         }
-
         Atom net_wm_icon = XInternAtom(display, "_NET_WM_ICON", False);
         Atom cardinal = XInternAtom(display, "CARDINAL", False);
-        
-        XChangeProperty(display, win, net_wm_icon, cardinal, 32, 
-                        PropModeReplace, (unsigned char*)icon_data.data(), icon_data.size());
-        
+        XChangeProperty(display, win, net_wm_icon, cardinal, 32,PropModeReplace, (unsigned char*)icon_data.data(), icon_data.size());
         XFlush(display);
     }
 #endif
-
     SOIL_free_image_data(image);
 }
 // считывание клавиш клавиатуры
@@ -111,9 +92,7 @@ int mouse_x = 0, mouse_y = 0;
 bool mouse_captured = false;
 static int capture_center_x = 400, capture_center_y = 300;
 
-// Функция 1: Инициализация
 void init_mouse(){
-    // Инициализация состояний
     mouse["left"] = false;
     mouse["right"] = false;
     mouse["middle"] = false;
@@ -122,7 +101,6 @@ void init_mouse(){
     mouse["middle_click"] = false;
     mouse["wheel_up"] = false;
     mouse["wheel_down"] = false;
-    
     glutMouseFunc([](int button, int state, int x, int y) {
         std::string btn = (button == GLUT_LEFT_BUTTON) ? "left" : 
                           (button == GLUT_MIDDLE_BUTTON) ? "middle" : "right";
@@ -137,12 +115,10 @@ void init_mouse(){
         else if (dir < 0) mouse["wheel_down"] = true;
     });
     #endif
-    
     glutMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
     glutPassiveMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
 }
 
-// Функция 2: Захват/освобождение мыши
 void set_mouse_capture(bool capture){
     if (capture && !mouse_captured) {
         mouse_captured = true;
@@ -169,9 +145,7 @@ void set_mouse_capture(bool capture){
     }
 }
 
-// Функция 3: Обновление состояний (вызывать каждый кадр)
 void update_mouse(){
-    // Сброс временных состояний
     mouse["left_click"] = false;
     mouse["right_click"] = false;
     mouse["middle_click"] = false;
@@ -180,42 +154,28 @@ void update_mouse(){
 }
 //          простые 3д примитивы
 // плоскость
-void plane(float cx, float cy, float cz,
-           double r, double g, double b,
-           const char* tex,
-           const std::vector<float>& vertices) {
+void plane(float cx, float cy, float cz,double r, double g, double b,const char* tex,const std::vector<float>& vertices){
     if (vertices.size() < 12) return;
-    
-    // Изменяем индексы для 4 треугольников с общим центром
-    // Предполагаем, что вершины заданы в порядке: v0, v1, v2, v3 (квадрат)
-    // Добавляем центральную вершину (v4) в конец вектора vertices
     std::vector<int> indices = { 
-        0,1,4,  // треугольник 1: v0-v1-центр
-        1,2,4,  // треугольник 2: v1-v2-центр
-        2,3,4,  // треугольник 3: v2-v3-центр
-        3,0,4   // треугольник 4: v3-v0-центр
+        0,1,4, 
+        1,2,4,  
+        2,3,4,  
+        3,0,4  
     };
-    
-    // Текстурные координаты для 4 угловых вершин + центра
-    // Центр имеет текстурные координаты (0.5, 0.5)
     std::vector<float> texcoords = { 
-        0,0,  // v0
-        1,0,  // v1
-        1,1,  // v2
-        0,1,  // v3
-        0.5f,0.5f  // центр
+        0,0, 
+        1,0,  
+        1,1,  
+        0,1,  
+        0.5f,0.5f 
     };
-    
-    // Нормали для всех 5 вершин (все имеют нормаль (0,1,0))
     std::vector<float> normals;
     for (int i = 0; i < 5; ++i) {
-        normals.push_back(0.0f);  // nx
-        normals.push_back(1.0f);  // ny
-        normals.push_back(0.0f);  // nz
+        normals.push_back(0.0f);  
+        normals.push_back(1.0f); 
+        normals.push_back(0.0f); 
     }
-    
-    draw3DObject(cx, cy, cz, r, g, b, tex,
-                 vertices, indices, texcoords, normals);
+    draw3DObject(cx, cy, cz, r, g, b, tex,vertices, indices, texcoords, normals);
 }
 // туман
 struct fog_params {
@@ -227,7 +187,7 @@ struct fog_params {
 };
 static fog_params fog;
 
-void enable_fog(float density, float r, float g, float b, float start, float end) {
+void enable_fog(float density, float r, float g, float b, float start, float end){
     fog.enabled = true;
     fog.density = density;
     fog.color[0] = r;
@@ -247,11 +207,10 @@ void enable_fog(float density, float r, float g, float b, float start, float end
     glAlphaFunc(GL_GREATER, 0.1f);
 }
 
-void disable_fog() {
+void disable_fog(){
     fog.enabled = false;
     glDisable(GL_FOG);
     glDisable(GL_ALPHA_TEST);
-    // GL_BLEND не отключаем, т.к. он может быть нужен для других эффектов
 }
 
 void set_fog_density(float density) {
@@ -282,17 +241,14 @@ void set_fog_range(float start, float end) {
     }
 }
 // панорама
-struct sphere_panorama {
+struct sphere_panorama{
     bool enabled = false;
     GLuint texture = 0;
 };
 sphere_panorama sphere_sky;
-static GLuint skybox_list = 0; // "Запись" геометрии сферы
+static GLuint skybox_list = 0; 
 void set_panorama(const char* path) {
     if (sphere_sky.enabled) remove_panorama();
-
-    // Загружаем текстуру. 
-    // ВАЖНО: Используем флаги SOIL, а не чистый OpenGL здесь
     sphere_sky.texture = SOIL_load_OGL_texture(
         path,
         SOIL_LOAD_AUTO,
@@ -302,19 +258,17 @@ void set_panorama(const char* path) {
 
     if (sphere_sky.texture == 0) {
         printf("ERROR: Could not load texture from %s. Reason: %s\n", path, SOIL_last_result());
-        // Выведи текущую директорию, чтобы понять, где ищет программа
         system("pwd"); 
         return;
     }
 
-    // Убираем шов на стыке сферы
     glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); // GL_CLAMP_TO_EDGE
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
 
     skybox_list = glGenLists(1);
     glNewList(skybox_list, GL_COMPILE);
-        float radius = 180.0f; // Чуть меньше MAX_DIST (200), чтобы не обрезалось
+        float radius = 180.0f;
         int stacks = 32, slices = 32;
         for (int i = 0; i < stacks; i++) {
             float lat0 = M_PI * (-0.5f + (float)i / stacks);
@@ -333,41 +287,33 @@ void set_panorama(const char* path) {
             glEnd();
         }
     glEndList();
-
     sphere_sky.enabled = true;
     printf("Panorama loaded successfully: %s\n", path);
 }
-void remove_panorama() {
+void remove_panorama(){
     if (sphere_sky.enabled) {
         glDeleteTextures(1, &sphere_sky.texture);
         glDeleteLists(skybox_list, 1);
         sphere_sky.enabled = false;
     }
 }
-void draw_panorama(float camX, float camY, float camZ) {
+void draw_panorama(float camX, float camY, float camZ){
     if (!sphere_sky.enabled || sphere_sky.texture == 0) return;
-
-    glPushAttrib(GL_ALL_ATTRIB_BITS); // Сохраняем все настройки (туман, свет, текстуры)
-    
+    glPushAttrib(GL_ALL_ATTRIB_BITS); 
     glDisable(GL_LIGHTING);
     glDisable(GL_DEPTH_TEST);
-    glDisable(GL_FOG);          // ВЫКЛЮЧАЕМ ТУМАН ДЛЯ НЕБА
+    glDisable(GL_FOG);         
     glDepthMask(GL_FALSE);
-    
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
-    glColor4f(1, 1, 1, 1);      // Сброс цвета в белый, чтобы текстура была яркой
-
+    glColor4f(1, 1, 1, 1);     
     glPushMatrix();
     glTranslatef(camX, camY, camZ);
     glRotatef(90, 1, 0, 0); 
-    
-    // Используй именно тот ID, который создается в set_panorama
-    glCallList(skybox_list); 
 
+    glCallList(skybox_list); 
     glPopMatrix();
-    
-    glPopAttrib(); // ВОЗВРАЩАЕМ настройки (туман включится обратно сам)
+    glPopAttrib();
 }
 //              hud
 void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop){
@@ -417,10 +363,6 @@ void play_white_noise_3d(float x,float y,float z,float volume){
     ma_sound_start(&noise_snd);
 }
 //              glb
-// ============================================================
-//  Конструктор / деструктор
-// ============================================================
-
 glb_model::glb_model(float _x,float _y,float _z)
     : x(_x),y(_y),z(_z) {}
 
@@ -429,39 +371,29 @@ glb_model::~glb_model() {
         if (m.pos_vbo) glDeleteBuffers(1, &m.pos_vbo);
         if (m.uv_vbo)  glDeleteBuffers(1, &m.uv_vbo);
         if (m.ibo)     glDeleteBuffers(1, &m.ibo);
-        if (m.norm_vbo) glDeleteBuffers(1, &m.norm_vbo);   // <-- ДОБАВИТЬ
+        if (m.norm_vbo) glDeleteBuffers(1, &m.norm_vbo);
     }
     for (auto& [i, t] : emb_tex)
         glDeleteTextures(1, &t);
 }
-
-// ============================================================
-//  load()
-// ============================================================
-
 bool glb_model::load(const std::string& path) {
     scene = importer.ReadFile(path,
-        aiProcess_Triangulate        |  // только треугольники
-        aiProcess_JoinIdenticalVertices|// убираем дубли
-        aiProcess_LimitBoneWeights   |  // не больше 4 костей на вершину
-        aiProcess_FlipUVs            |  // UV как в OpenGL
-        aiProcess_GenSmoothNormals);    // нормали если нет
+        aiProcess_Triangulate        | 
+        aiProcess_JoinIdenticalVertices|
+        aiProcess_LimitBoneWeights   | 
+        aiProcess_FlipUVs            | 
+        aiProcess_GenSmoothNormals); 
 
     if (!scene) {
         fprintf(stderr, "glb_model::load — %s\n", importer.GetErrorString());
         return false;
     }
-
     loadTextures();
     buildMeshes();
     buildChanCache();
     loaded = true;
     return true;
 }
-
-// ============================================================
-//  loadTextures() — текстуры, встроенные в файл
-// ============================================================
 
 void glb_model::loadTextures() {
     for (unsigned i = 0; i < scene->mNumTextures; ++i) {
@@ -477,7 +409,6 @@ void glb_model::loadTextures() {
         glBindTexture(GL_TEXTURE_2D, t);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, d);
-        // mipmaps — лучше качество на расстоянии
         glGenerateMipmap(GL_TEXTURE_2D);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -488,10 +419,6 @@ void glb_model::loadTextures() {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-// ============================================================
-//  buildMeshes() — строим VBO один раз при загрузке
-// ============================================================
-
 void glb_model::buildMeshes() {
     meshes.resize(scene->mNumMeshes);
 
@@ -500,28 +427,24 @@ void glb_model::buildMeshes() {
         GPUMesh& m  = meshes[mi];
 
         m.vert_count = (int)am->mNumVertices;
-        m.skinned    = am->HasBones();
-        m.has_uv     = am->HasTextureCoords(0);
+        m.skinned = am->HasBones();
+        m.has_uv = am->HasTextureCoords(0);
 
-        // --- позиции (rest-поза) ---
         m.rest.resize(m.vert_count * 3);
         for (int v = 0; v < m.vert_count; ++v) {
             m.rest[v*3+0] = am->mVertices[v].x;
             m.rest[v*3+1] = am->mVertices[v].y;
             m.rest[v*3+2] = am->mVertices[v].z;
         }
-        m.skin = m.rest; // стартовое значение = rest
-
-        // --- UV (плоский буфер) ---
+        m.skin = m.rest;
         std::vector<float> uvs;
-        if (m.has_uv) {
+        if (m.has_uv){
             uvs.resize(m.vert_count * 2);
             for (int v = 0; v < m.vert_count; ++v) {
                 uvs[v*2+0] = am->mTextureCoords[0][v].x;
                 uvs[v*2+1] = am->mTextureCoords[0][v].y;
             }
         }
-        // нормали
         std::vector<float> norms;
         if (am->HasNormals()) {
             norms.resize(m.vert_count * 3);
@@ -546,10 +469,9 @@ void glb_model::buildMeshes() {
                 norms[v*3+2] = am->mNormals[v].z;
             }
             m.rest_normals = norms;
-            m.skin_normals = norms;   // начальное значение
+            m.skin_normals = norms;  
         }
 
-        // --- индексы ---
         std::vector<unsigned int> idx;
         idx.reserve(am->mNumFaces * 3);
         for (unsigned f = 0; f < am->mNumFaces; ++f)
@@ -557,9 +479,8 @@ void glb_model::buildMeshes() {
                 idx.push_back(am->mFaces[f].mIndices[k]);
         m.idx_count = (int)idx.size();
 
-        // --- данные костей ---
         if (m.skinned) {
-            m.slots.resize(m.vert_count);  // BoneSlot на каждую вершину
+            m.slots.resize(m.vert_count);  
             m.offset.resize(am->mNumBones);
             m.bname.resize(am->mNumBones);
 
@@ -573,7 +494,6 @@ void glb_model::buildMeshes() {
             }
         }
 
-        // --- текстура меша ---
         aiMaterial* mat = scene->mMaterials[am->mMaterialIndex];
         aiString p;
         if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &p) == AI_SUCCESS
@@ -581,11 +501,6 @@ void glb_model::buildMeshes() {
             int ti = atoi(&p.data[1]);
             if (emb_tex.count(ti)) m.tex = emb_tex[ti];
         }
-
-        // === Заливаем данные в GPU ===
-
-        // pos_vbo: DYNAMIC если меш скинованный (каждый кадр update)
-        //          STATIC  если статичный
         glGenBuffers(1, &m.pos_vbo);
         glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
         glBufferData(GL_ARRAY_BUFFER,
@@ -593,7 +508,6 @@ void glb_model::buildMeshes() {
                      m.skin.data(),
                      m.skinned ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
 
-        // uv_vbo: всегда STATIC
         if (m.has_uv) {
             glGenBuffers(1, &m.uv_vbo);
             glBindBuffer(GL_ARRAY_BUFFER, m.uv_vbo);
@@ -602,7 +516,6 @@ void glb_model::buildMeshes() {
                          uvs.data(), GL_STATIC_DRAW);
         }
 
-        // ibo: STATIC
         glGenBuffers(1, &m.ibo);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER,
@@ -614,10 +527,6 @@ void glb_model::buildMeshes() {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
-// ============================================================
-//  buildChanCache() — O(1) поиск канала по имени ноды
-// ============================================================
-
 void glb_model::buildChanCache() {
     chan_cache.resize(scene->mNumAnimations);
     for (unsigned a = 0; a < scene->mNumAnimations; ++a) {
@@ -627,38 +536,25 @@ void glb_model::buildChanCache() {
             chan_cache[a][anim->mChannels[c]->mNodeName.data] = anim->mChannels[c];
     }
 }
-
-// ============================================================
-//  interpPos() — бинарный поиск + lerp позиции
-// ============================================================
-
 aiVector3D glb_model::interpPos(float t, const aiNodeAnim* ch) {
     if (ch->mNumPositionKeys == 1)
         return ch->mPositionKeys[0].mValue;
-
-    // бинарный поиск нижней границы
     unsigned lo = 0, hi = ch->mNumPositionKeys - 2;
     while (lo < hi) {
         unsigned mid = (lo + hi) / 2;
         if ((float)ch->mPositionKeys[mid+1].mTime <= t) lo = mid+1;
         else                                             hi = mid;
     }
-
     float dt = (float)(ch->mPositionKeys[lo+1].mTime
                      - ch->mPositionKeys[lo].mTime);
     float f  = dt > 1e-6f
              ? (t - (float)ch->mPositionKeys[lo].mTime) / dt
              : 0.f;
-    f = f < 0.f ? 0.f : (f > 1.f ? 1.f : f); // clamp
-
+    f = f < 0.f ? 0.f : (f > 1.f ? 1.f : f);
     const aiVector3D& a = ch->mPositionKeys[lo].mValue;
     const aiVector3D& b = ch->mPositionKeys[lo+1].mValue;
     return a + (b - a) * f;
 }
-
-// ============================================================
-//  interpRot() — бинарный поиск + slerp вращения
-// ============================================================
 
 aiQuaternion glb_model::interpRot(float t, const aiNodeAnim* ch) {
     if (ch->mNumRotationKeys == 1)
@@ -684,24 +580,14 @@ aiQuaternion glb_model::interpRot(float t, const aiNodeAnim* ch) {
         ch->mRotationKeys[lo+1].mValue, f);
     return result.Normalize();
 }
-
-// ============================================================
-//  traverseNode() — рекурсивный обход дерева нод
-// ============================================================
-
-void glb_model::traverseNode(float ticks, int animIdx,
-                              const aiNode* node, const aiMatrix4x4& parent,
-                              std::unordered_map<std::string,aiMatrix4x4>& globals)
-{
+void glb_model::traverseNode(float ticks, int animIdx,const aiNode* node, const aiMatrix4x4& parent,std::unordered_map<std::string,aiMatrix4x4>& globals){
     aiMatrix4x4 local = node->mTransformation;
 
-    // O(1) поиск канала для этой ноды
     auto it = chan_cache[animIdx].find(node->mName.data);
     if (it != chan_cache[animIdx].end()) {
         const aiNodeAnim* ch = it->second;
         aiVector3D   pos = interpPos(ticks, ch);
         aiQuaternion rot = interpRot(ticks, ch);
-        // scale-канал не используем для простоты (можно добавить аналогично)
         local = aiMatrix4x4(aiVector3D(1,1,1), rot, pos);
     }
 
@@ -711,18 +597,8 @@ void glb_model::traverseNode(float ticks, int animIdx,
         traverseNode(ticks, animIdx, node->mChildren[i],
                      globals[node->mName.data], globals);
 }
-
-// ============================================================
-//  applySkinning() — CPU скиннинг + glBufferSubData
-// ============================================================
-
-void glb_model::applySkinning(GPUMesh& m,
-                               const std::unordered_map<std::string,aiMatrix4x4>& globals,
-                               const aiMatrix4x4& rootInv)
-{
+void glb_model::applySkinning(GPUMesh& m,const std::unordered_map<std::string,aiMatrix4x4>& globals,const aiMatrix4x4& rootInv){
     const int B = (int)m.offset.size();
-
-    // Финальная матрица для каждой кости меша
     std::vector<aiMatrix4x4> final_mat(B);
     for (int b = 0; b < B; ++b) {
         auto it = globals.find(m.bname[b]);
@@ -730,12 +606,10 @@ void glb_model::applySkinning(GPUMesh& m,
                      ? rootInv * it->second * m.offset[b]
                      : aiMatrix4x4();
     }
-
     const int N = m.vert_count;
     const float* src_pos = m.rest.data();
     float*       dst_pos = m.skin.data();
 
-    // 1. Пересчёт позиций
     for (int v = 0; v < N; ++v) {
         aiVector3D p(src_pos[v*3], src_pos[v*3+1], src_pos[v*3+2]);
         aiVector3D o(0.f, 0.f, 0.f);
@@ -750,15 +624,12 @@ void glb_model::applySkinning(GPUMesh& m,
         dst_pos[v*3+2] = o.z;
     }
 
-    // Загружаем изменённые позиции в VBO
     glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0,
                     (GLsizeiptr)(m.skin.size() * sizeof(float)),
                     dst_pos);
 
-    // 2. Пересчёт нормалей (если есть)
     if (!m.rest_normals.empty()) {
-        // Убедимся, что массив для текущих нормалей имеет правильный размер
         if (m.skin_normals.size() != m.rest_normals.size())
             m.skin_normals = m.rest_normals;
 
@@ -771,7 +642,6 @@ void glb_model::applySkinning(GPUMesh& m,
             const BoneSlot& s = m.slots[v];
             for (int i = 0; i < 4; ++i) {
                 if (s.w[i] > 0.f) {
-                    // Берём вращательную часть матрицы (3x3)
                     const aiMatrix4x4& mat = final_mat[s.id[i]];
                     aiMatrix3x3 rot3(
                         mat.a1, mat.a2, mat.a3,
@@ -788,18 +658,12 @@ void glb_model::applySkinning(GPUMesh& m,
             dst_nrm[v*3+2] = on.z;
         }
 
-        // Обновляем VBO нормалей
         glBindBuffer(GL_ARRAY_BUFFER, m.norm_vbo);
         glBufferSubData(GL_ARRAY_BUFFER, 0,
                         (GLsizeiptr)(m.skin_normals.size() * sizeof(float)),
                         dst_nrm);
     }
 }
-
-// ============================================================
-//  updateAnimation() — главная точка обновления анимации
-// ============================================================
-
 void glb_model::updateAnimation(float time, int animIndex) {
     if (!loaded || !scene || animIndex >= (int)scene->mNumAnimations) return;
 
@@ -807,16 +671,13 @@ void glb_model::updateAnimation(float time, int animIndex) {
     double tps   = anim->mTicksPerSecond > 0 ? anim->mTicksPerSecond : 25.0;
     float  ticks = fmodf(time * (float)tps, (float)anim->mDuration);
 
-    // обход дерева нод — заполняем глобальные трансформы всех нод
     std::unordered_map<std::string, aiMatrix4x4> globals;
-    globals.reserve(128); // pre-alloc чтобы не реаллоцироваться
+    globals.reserve(128); 
     traverseNode(ticks, animIndex, scene->mRootNode, aiMatrix4x4(), globals);
 
-    // root_inv нужен для перевода в пространство меша
     aiMatrix4x4 rootInv = scene->mRootNode->mTransformation;
     rootInv.Inverse();
 
-    // скиним только скинованные меши
     for (auto& m : meshes)
         if (m.skinned)
             applySkinning(m, globals, rootInv);
@@ -824,15 +685,10 @@ void glb_model::updateAnimation(float time, int animIndex) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-// ============================================================
-//  draw() — VBO-рендеринг вместо glBegin/glEnd
-// ============================================================
-
 void glb_model::draw() {
     if (!loaded) return;
 
     glPushAttrib(GL_ALL_ATTRIB_BITS);
-    // НЕ отключаем GL_LIGHTING – пусть модель освещается
     glColor4f(1.f, 1.f, 1.f, 1.f);
 
     glPushMatrix();
@@ -854,29 +710,24 @@ void glb_model::draw() {
             glDisable(GL_TEXTURE_2D);
         }
 
-        // Позиции
         glBindBuffer(GL_ARRAY_BUFFER, m.pos_vbo);
         glVertexPointer(3, GL_FLOAT, 0, nullptr);
 
-        // Нормали (если есть)
         if (m.norm_vbo) {
             glEnableClientState(GL_NORMAL_ARRAY);
             glBindBuffer(GL_ARRAY_BUFFER, m.norm_vbo);
             glNormalPointer(GL_FLOAT, 0, nullptr);
         }
 
-        // UV
         if (m.has_uv && m.tex) {
             glEnableClientState(GL_TEXTURE_COORD_ARRAY);
             glBindBuffer(GL_ARRAY_BUFFER, m.uv_vbo);
             glTexCoordPointer(2, GL_FLOAT, 0, nullptr);
         }
 
-        // Индексы и отрисовка
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
         glDrawElements(GL_TRIANGLES, m.idx_count, GL_UNSIGNED_INT, nullptr);
 
-        // Отключение
         if (m.norm_vbo) glDisableClientState(GL_NORMAL_ARRAY);
         if (m.has_uv && m.tex) glDisableClientState(GL_TEXTURE_COORD_ARRAY);
         glDisable(GL_TEXTURE_2D);
