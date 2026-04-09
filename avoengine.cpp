@@ -488,6 +488,8 @@ void changeSize3D(int w,int h){
     gluLookAt(camera.eye_x,camera.eye_y,camera.eye_z,
               camera.ctr_x,camera.ctr_y,camera.ctr_z,
               camera.up_x,camera.up_y,camera.up_z);
+    window_w=w;
+    window_h=h;
 }
 // настройка изменения размеров в 2д режиме
 void changeSize2D(int w,int h){
@@ -544,6 +546,8 @@ void setup_display(int* argc,char** argv,float r,float g,float b,float a,const c
     // возможность прозрачности
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
         fprintf(stderr, "Failed to initialize GLEW\n");
@@ -806,6 +810,7 @@ void end_2d(){
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
     glutReshapeFunc(changeSize3D);
+    changeSize3D(window_w, window_h);
 }
 
 //              аудио
