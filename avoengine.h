@@ -7,6 +7,8 @@
 #include <cmath>
 #include "miniaudio.h"
 
+struct GLFWwindow;
+
 extern int window_w;
 extern int window_h;
 extern int screen_w;
@@ -73,6 +75,7 @@ private:
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void changeSize3D(int w,int h);
 void changeSize2D(int w,int h);
+void framebuffer_size_callback(GLFWwindow* /*window*/, int w, int h);
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw);
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw);
 void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices,const std::vector<int>& indices,const std::vector<float>& texcoords={},const std::vector<float>& normals={});

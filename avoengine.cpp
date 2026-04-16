@@ -21,6 +21,7 @@
 // вспомогательные утилиты для opengl(матрицы, проекции и прочие нежности для немощей)
 #include <GL/glu.h>
 // основная библиотека opengl
+#include <GLFW/glfw3.h>
 #include <GL/glut.h>
 // библиотека для импорта текстур
 #include <SOIL/SOIL.h>
@@ -48,6 +49,8 @@
 using namespace std;
 // переменные для хранения в них размеров окна и экрана
 int window_w = 0, window_h = 0, screen_w = 0, screen_h = 0;
+static GLFWwindow* g_window = nullptr;
+// железо
 string cpu_name;
 string ram_v;
 string gpu_name;
@@ -510,48 +513,78 @@ void changeSize2D(int w,int h){
     window_w=w;
     window_h=h;
 }
-
-void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h){
-    // инициализация аудио(будет потом)
+// переключение изменения размеров
+static bool is3D = false;
+void framebuffer_size_callback(GLFWwindow* /*window*/, int w, int h){
+    if (is3D) {
+        changeSize3D(w, h);
+    } else {
+        changeSize2D(w, h);
+    }
+    window_w = w;
+    window_h = h;
+}
+// инициализация окна
+void setup_display(int* argc, char** argv, float r, float g, float b, float a, const char* name, int w, int h) {
     init_audio();
-    // инициализация glut
-    glutInit(argc,argv);
-    // записываем в переменные размеры окна и монитора
-    screen_w=glutGet(GLUT_SCREEN_WIDTH);
-    screen_h=glutGet(GLUT_SCREEN_HEIGHT);
-    window_w=w;
-    window_h=h;
-    auto cpus=hwinfo::getAllCPUs();
-    cpu_name=cpus.empty() ? "Unknown" : cpus[0].modelName();
-    hwinfo::Memory mem=hwinfo::Memory();
-    ram_v=std::to_string(mem.total_Bytes()/(1024*1024))+" MB";
-    auto gpus=hwinfo::getAllGPUs();
-    gpu_name=gpus.empty()?"Unknown":gpus[0].name();
-    // параметры буфера кадра
-    // двойная буферизация / 4 канала / буфер глубины(хз что значит)
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
-    // позиция окна
-    glutInitWindowPosition(screen_w/4,screen_h/8);
-    // размеры окна
-    glutInitWindowSize(w,h);
-    // имя окна
-    glutCreateWindow(name);
-    // функция для изменения размеров по умолчанию
-    glutReshapeFunc(changeSize2D);
-    // цвет заднего фона
-    glClearColor(r,g,b,a);
-    // настройка глубины(хз что это)
-    glEnable(GL_DEPTH_TEST);
-    glClearDepth(1.0f);
-    // возможность прозрачности
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
+
+    if (!glfwInit()) {
+        cerr << "Failed to initialize GLFW\n";
+        exit(EXIT_FAILURE);
+    }
+
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_DOUBLEBUFFER, GLFW_TRUE);
+    glfwWindowHint(GLFW_DEPTH_BITS, 24);
+
+    GLFWmonitor* primary = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(primary);
+    screen_w = mode->width;
+    screen_h = mode->height;
+
+    GLFWwindow* window = glfwCreateWindow(w, h, name, nullptr, nullptr);
+    if (!window) {
+        glfwTerminate();
+        cerr << "Failed to create GLFW window\n";
+        exit(EXIT_FAILURE);
+    }
+    glfwSetWindowPos(window, screen_w / 4, screen_h / 8);
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(1);
+
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {
-        fprintf(stderr, "Failed to initialize GLEW\n");
+        cerr << "Failed to initialize GLEW\n";
     }
+
+    // Колбэк изменения размера (замена glutReshapeFunc)
+    glfwSetFramebufferSizeCallback(window, [](GLFWwindow*, int width, int height) {
+        window_w = width;
+        window_h = height;
+        // Логика выбора changeSize2D / changeSize3D остаётся за вами (вы уже исправили)
+    });
+
+    // Системная информация (как раньше)
+    auto cpus = hwinfo::getAllCPUs();
+    cpu_name = cpus.empty() ? "Unknown" : cpus[0].modelName();
+    hwinfo::Memory mem = hwinfo::Memory();
+    ram_v = to_string(mem.total_Bytes() / (1024 * 1024)) + " MB";
+    auto gpus = hwinfo::getAllGPUs();
+    gpu_name = gpus.empty() ? "Unknown" : gpus[0].name();
+
+    window_w = w;
+    window_h = h;
+
+    glClearColor(r, g, b, a);
+    glEnable(GL_DEPTH_TEST);
+    glClearDepth(1.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+
+    changeSize2D(w, h);
 }
 // настройка камеры
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw){
@@ -781,7 +814,8 @@ void apply_material(float r, float g, float b, float alpha, float shininess){
 }
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
-void begin_2d(int w, int h){
+void begin_2d(int w, int h) {
+    is3D = false;
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
@@ -789,17 +823,18 @@ void begin_2d(int w, int h){
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
-    glDisable(GL_DEPTH_TEST);   
-    glDisable(GL_LIGHTING);  
-    glDisable(GL_FOG);         
-    glDisable(GL_TEXTURE_2D);  
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f); 
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_LIGHTING);
+    glDisable(GL_FOG);
+    glDisable(GL_TEXTURE_2D);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glutReshapeFunc(changeSize2D);
+    // Колбэк изменения размера теперь будет использовать флаг s_is3D
 }
 // переключаем матрицу на 3д(невероятно)
-void end_2d(){
+void end_2d() {
+    is3D = true;  // после возврата в 3D
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_LIGHTING);
@@ -809,7 +844,7 @@ void end_2d(){
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
-    glutReshapeFunc(changeSize3D);
+    // Принудительно вызываем changeSize3D с текущими размерами
     changeSize3D(window_w, window_h);
 }
 

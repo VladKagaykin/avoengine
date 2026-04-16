@@ -10,89 +10,107 @@
 #include "miniaudio.h"
 #include <vector>
 #include <cstring>
+#include <GLFW/glfw3.h>
 #include <GL/glut.h>
 #include <SOIL/SOIL.h>
 #include <string>
 #include <iostream>
 #include <map>
 #include <unordered_map>
+#include <chrono>
 using namespace std;
-
-int tick=0;
-const int max_tick=64;
 
 //              утилиты
 // система тиков
+int tick=0;
+const int max_tick=64;
 int absolute_tick = 0;
+static std::chrono::steady_clock::time_point last_tick_time;
+static const std::chrono::microseconds tick_interval(15625);
 
-void timer() {
-    glutTimerFunc(16, [](int){ timer(); }, 0);
-    tick++;
-    if (tick > max_tick) tick = 0;
-    absolute_tick++;
+void init_tick_system() {
+    last_tick_time = std::chrono::steady_clock::now();
 }
-void init_tick_system(){
-    timer();
+
+void update_ticks() {
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last_tick_time);
+
+    int ticks_to_add = static_cast<int>(elapsed.count() / tick_interval.count());
+    if (ticks_to_add > 0) {
+        absolute_tick += ticks_to_add;
+        tick = (tick + ticks_to_add) % (max_tick + 1);
+        last_tick_time += ticks_to_add * tick_interval;
+    }
 }
+
 // поставить иконку
-#include <GL/freeglut_ext.h>
-#ifdef _WIN32
-    #include <windows.h>
-#else
-    #include <X11/Xlib.h>
-    #include <X11/Xutil.h>
-    #include <GL/glx.h>
-#endif
-
-void set_icon(const char* path){
+void set_icon(const char* path) {
     int width, height, channels;
-    unsigned char* image=SOIL_load_image(path, &width, &height, &channels, SOIL_LOAD_RGBA);
-    if (!image) {
-        return;
+    unsigned char* image = stbi_load(path, &width, &height, &channels, 4); // принудительно RGBA
+    if (!image) return;
+
+    GLFWimage icon;
+    icon.width = width;
+    icon.height = height;
+    icon.pixels = image;
+
+    GLFWwindow* window = glfwGetCurrentContext();
+    if (window) {
+        glfwSetWindowIcon(window, 1, &icon);
     }
-#ifdef _WIN32
-    HWND hwnd = (HWND)glutGetWindowData();
-    if (!hwnd) hwnd = GetActiveWindow();
-    if (hwnd) {
-        HICON hIcon = CreateIcon(GetModuleHandle(NULL), width, height, 1, 32, NULL, image);
-        SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
-        SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
-    }
-#else
-    Display* display = glXGetCurrentDisplay();
-    Window win = glXGetCurrentDrawable();
-    if (display && win) {
-        std::vector<unsigned long> icon_data;
-        icon_data.push_back(width);
-        icon_data.push_back(height);
-        for (int i = 0; i < width * height; i++) {
-            unsigned char r = image[i * 4];
-            unsigned char g = image[i * 4 + 1];
-            unsigned char b = image[i * 4 + 2];
-            unsigned char a = image[i * 4 + 3];
-            icon_data.push_back((a << 24) | (r << 16) | (g << 8) | b);
-        }
-        Atom net_wm_icon = XInternAtom(display, "_NET_WM_ICON", False);
-        Atom cardinal = XInternAtom(display, "CARDINAL", False);
-        XChangeProperty(display, win, net_wm_icon, cardinal, 32,PropModeReplace, (unsigned char*)icon_data.data(), icon_data.size());
-        XFlush(display);
-    }
-#endif
-    SOIL_free_image_data(image);
+
+    stbi_image_free(image);
 }
 // считывание клавиш клавиатуры
 bool keys[256]={},skeys[512]={};
-void keyboard_down(unsigned char key,int,int){keys[key]=true;}
-void keyboard_up(unsigned char key,int,int){keys[key]=false;}
-void special_up(int key,int,int){skeys[key]=false;}
-void special_down(int key,int,int){skeys[key]=true;}
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (key >= 0 && key < 256) {
+        keys[key] = (action == GLFW_PRESS || action == GLFW_REPEAT);
+    }
+    if (key >= 256 && key < 512) {
+        skeys[key] = (action == GLFW_PRESS || action == GLFW_REPEAT);
+    }
+}
+void init_keyboard(GLFWwindow* window) {
+    glfwSetKeyCallback(window, key_callback);
+}
 // считывание мыши
 std::map<std::string, bool> mouse;
 int mouse_x = 0, mouse_y = 0;
 bool mouse_captured = false;
-static int capture_center_x = 400, capture_center_y = 300;
+static double last_mouse_x = 0.0, last_mouse_y = 0.0;
 
-void init_mouse(){
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    std::string btn = (button == GLFW_MOUSE_BUTTON_LEFT)   ? "left" :
+                      (button == GLFW_MOUSE_BUTTON_MIDDLE) ? "middle" : "right";
+    mouse[btn] = (action == GLFW_PRESS);
+    mouse[btn + "_click"] = (action == GLFW_PRESS);
+    // Позиция обновляется в cursor_pos_callback
+}
+
+void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (mouse_captured) {
+        // Режим захвата: вычисляем дельту и варпим в центр
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        double center_x = width / 2.0;
+        double center_y = height / 2.0;
+        mouse_x += static_cast<int>(xpos - center_x);
+        mouse_y += static_cast<int>(ypos - center_y);
+        glfwSetCursorPos(window, center_x, center_y);
+    } else {
+        mouse_x = static_cast<int>(xpos);
+        mouse_y = static_cast<int>(ypos);
+    }
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    if (yoffset > 0) mouse["wheel_up"] = true;
+    else if (yoffset < 0) mouse["wheel_down"] = true;
+}
+
+void init_mouse(GLFWwindow* window) {
     mouse["left"] = false;
     mouse["right"] = false;
     mouse["middle"] = false;
@@ -101,56 +119,35 @@ void init_mouse(){
     mouse["middle_click"] = false;
     mouse["wheel_up"] = false;
     mouse["wheel_down"] = false;
-    glutMouseFunc([](int button, int state, int x, int y) {
-        std::string btn = (button == GLUT_LEFT_BUTTON) ? "left" : 
-                          (button == GLUT_MIDDLE_BUTTON) ? "middle" : "right";
-        mouse[btn] = (state == GLUT_DOWN);
-        mouse[btn + "_click"] = (state == GLUT_DOWN);
-        mouse_x = x; mouse_y = y;
-    });
-    
-    #ifdef __FREEGLUT_EXT_H__
-    glutMouseWheelFunc([](int wheel, int dir, int x, int y) {
-        if (dir > 0) mouse["wheel_up"] = true;
-        else if (dir < 0) mouse["wheel_down"] = true;
-    });
-    #endif
-    glutMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
-    glutPassiveMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
+
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetCursorPosCallback(window, cursor_pos_callback);
+    glfwSetScrollCallback(window, scroll_callback);
 }
 
-void set_mouse_capture(bool capture){
-    if (capture && !mouse_captured) {
-        mouse_captured = true;
-        capture_center_x = glutGet(GLUT_WINDOW_WIDTH) / 2;
-        capture_center_y = glutGet(GLUT_WINDOW_HEIGHT) / 2;
-        glutSetCursor(GLUT_CURSOR_NONE);
-        glutWarpPointer(capture_center_x, capture_center_y);
-        glutMotionFunc([](int x, int y) {
-            mouse_x += x - capture_center_x;
-            mouse_y += y - capture_center_y;
-            glutWarpPointer(capture_center_x, capture_center_y);
-        });
-        glutPassiveMotionFunc([](int x, int y) {
-            mouse_x += x - capture_center_x;
-            mouse_y += y - capture_center_y;
-            glutWarpPointer(capture_center_x, capture_center_y);
-        });
-    } 
-    else if (!capture && mouse_captured) {
-        mouse_captured = false;
-        glutSetCursor(GLUT_CURSOR_INHERIT);
-        glutMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
-        glutPassiveMotionFunc([](int x, int y) { mouse_x = x; mouse_y = y; });
-    }
-}
-
-void update_mouse(){
+void update_mouse() {
     mouse["left_click"] = false;
     mouse["right_click"] = false;
     mouse["middle_click"] = false;
     mouse["wheel_up"] = false;
     mouse["wheel_down"] = false;
+}
+
+// Управление захватом мыши
+void set_mouse_capture(GLFWwindow* window, bool capture) {
+    if (capture && !mouse_captured) {
+        mouse_captured = true;
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        // Сброс дельты при входе в захват
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        last_mouse_x = width / 2.0;
+        last_mouse_y = height / 2.0;
+        glfwSetCursorPos(window, last_mouse_x, last_mouse_y);
+    } else if (!capture && mouse_captured) {
+        mouse_captured = false;
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    }
 }
 //          простые 3д примитивы
 // плоскость

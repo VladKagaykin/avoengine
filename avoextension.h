@@ -12,25 +12,23 @@
 #include <assimp/postprocess.h>
 #include <map>
 #include <unordered_map>
+struct GLFWwindow;
 
 extern int tick;
 extern const int max_tick;
 extern int absolute_tick;
 
-void timer();
 void init_tick_system();
+void update_ticks();
 void set_icon(const char* path);
 extern bool keys[256];
 extern bool skeys[512];
-void keyboard_down(unsigned char key,int,int);
-void keyboard_up(unsigned char key,int,int);
-void special_up(int key,int,int);
-void special_down(int key,int,int);
+void init_keyboard(GLFWwindow* window);
 extern std::map<std::string, bool> mouse;
 extern int mouse_x,mouse_y;
 extern bool mouse_captured;
-void init_mouse();
-void set_mouse_capture(bool capture);
+void init_mouse(GLFWwindow* window);
+void set_mouse_capture(GLFWwindow* window, bool capture);
 void update_mouse();
 void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices);
 
