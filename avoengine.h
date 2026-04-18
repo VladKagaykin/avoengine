@@ -18,6 +18,15 @@ extern std::string cpu_name;
 extern std::string gpu_name;
 extern std::string ram_v;
 
+//              шейдеры
+// тип данных для программы шейдера
+extern GLuint currentShaderProg; 
+
+// функции
+GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
+void useShader(GLuint id);
+void stopShader();
+
 GLuint loadTextureFromFile(const char* filename);
 void clearTextureCache();
 void preloadTextures(const std::vector<std::string>& filenames);
