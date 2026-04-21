@@ -112,6 +112,11 @@ private:
 };
 void set_ambient_light(float r, float g, float b);
 void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
+void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);
+void disable_fog();
+void set_fog_range(float start, float end);
+void set_fog_color(float r, float g, float b);
+void set_fog_density(float density);
 void begin_2d(int w,int h);
 void end_2d();
 void init_audio();
