@@ -61,16 +61,19 @@ public:
     pseudo_3d_entity(float x, float y, float z,
                      float g_angle, float v_angle, float r_angle,
                      std::vector<const char*> textures, int v_angles,
-                     float* vertices)
-        : x(x), y(y), z(z),
-          g_angle(g_angle), v_angle(v_angle), r_angle(r_angle),
-          textures(std::move(textures)), v_angles(v_angles),
-          vertices(vertices) {}
+                     float* vertices);
 
     void draw(float cam_x, float cam_y, float cam_z) const;
 
-    void setRadius(float r) { radius = r; }
+    void setCastShadow(bool enable);
+    bool castsShadow() const { return _castsShadow; }
+
+    // Возвращает радиус (вычисляется автоматически)
     float getRadius() const { return radius; }
+
+    float getX() const { return x; }
+    float getY() const { return y; }
+    float getZ() const { return z; }
 
     void setGAngle(float a) { g_angle = a; }
     void setVAngle(float a) { v_angle = a; }
@@ -80,30 +83,32 @@ public:
     float getVAngle() const { return v_angle; }
     float getRAngle() const { return r_angle; }
 
-    float getX() const { return x; }
-    float getY() const { return y; }
-    float getZ() const { return z; }
-
+    GLuint getShadowTexture(float dir_x, float dir_y, float dir_z) const;
+    GLuint getTextureFromDirection(float dir_x, float dir_y, float dir_z) const;
+    const std::vector<const char*>& getTextures() const { return textures; }
 private:
+    void computeRadius();
     int getTextureIndex(float dir_x, float dir_y, float dir_z) const;
-
     bool isVisible(float cam_x, float cam_y, float cam_z) const;
 
     float x, y, z;
-    float g_angle;   
-    float v_angle;  
-    float r_angle;   
-    float radius = 1.0f;
+    float g_angle, v_angle, r_angle;
+    float radius;
 
     std::vector<const char*> textures;
     int v_angles;
     float* vertices;
 
     mutable int cachedTexIdx = -1;
-    mutable float cachedDirX = 1e9f;
-    mutable float cachedDirY = 1e9f;
-    mutable float cachedDirZ = 1e9f;
+    mutable float cachedDirX = 1e9f, cachedDirY = 1e9f, cachedDirZ = 1e9f;
+
+    bool _castsShadow = false;
 };
+
+extern std::vector<pseudo_3d_entity*> shadowCasters;
+
+void applyAllShadows();
+
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void changeSize3D(int w,int h);
 void changeSize2D(int w,int h);

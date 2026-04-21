@@ -80,7 +80,8 @@ struct fog_params {
     float end = 30.0f;
 };
 static fog_params fog;
-
+// свет
+static std::vector<Light*> activeLights;
 //              утилиты 
 // вычисляем то, куда смотрит центр камеры и прочее
 static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
@@ -168,6 +169,7 @@ varying vec3 vN;
 varying vec3 vP;
 varying vec4 vColor;
 varying vec2 vTexCoord;
+varying vec3 vWorldPos;   // позиция в мировых координатах (может использоваться в будущем)
 
 void main() {
     vN = normalize(gl_NormalMatrix * gl_Normal);
@@ -175,20 +177,38 @@ void main() {
     vP = mvPos.xyz;
     vColor = gl_Color;
     vTexCoord = gl_MultiTexCoord0.st;
+    
+    // Мировая позиция: объектные координаты + текущее смещение модели
+    vWorldPos = vec3(gl_Vertex); 
+    
     gl_Position = ftransform();
 }
 )";
 
 static const char* defaultFragmentShader = R"(
 #define MAX_LIGHTS 16
+#define MAX_SHADOW_CASTERS 16
 
 struct Light {
     bool enabled;
-    vec3 position;      // в координатах камеры
+    vec3 position;
     vec3 direction;
     vec3 diffuse;
-    float cutoff;       // косинус угла отсечки
-    vec3 attenuation;   // constant, linear, quadratic
+    float cutoff;
+    vec3 attenuation;
+};
+
+struct ShadowCaster {
+    mat4 shadowMatrix;
+    sampler2D shadowMap;
+    float darkness;
+    float objDistance;     // расстояние от источника до объекта в пространстве камеры
+    vec3 lightDir;         // направление от источника к объекту (нормализованное) [может не использоваться]
+    
+    // --- Новые поля для поддержки нескольких источников ---
+    vec3 lightPos;         // позиция источника в пространстве камеры
+    vec3 lightDirection;   // направление источника (нормализованное) в пространстве камеры
+    float lightCutoff;     // косинус угла отсечки (если источник – прожектор)
 };
 
 varying vec3 vN;
@@ -204,11 +224,15 @@ uniform vec3 fogColor;
 uniform float fogStart;
 uniform float fogEnd;
 
+uniform ShadowCaster shadowCasters[MAX_SHADOW_CASTERS];
+uniform int numShadowCasters;
+
 void main() {
     vec3 N = normalize(vN);
     vec4 texColor = texture2D(tex, vTexCoord);
     vec3 totalLight = ambientLight;
 
+    // --- Стандартное освещение от всех источников (как и раньше) ---
     for (int i = 0; i < MAX_LIGHTS; i++) {
         if (i >= numLights) break;
         if (!lights[i].enabled) continue;
@@ -217,24 +241,56 @@ void main() {
         float dist = length(L);
         L = normalize(L);
 
-        // Spot light (жёсткая отсечка, как в OpenGL)
         vec3 D = normalize(lights[i].direction);
         float cosTheta = dot(-L, D);
         if (cosTheta < lights[i].cutoff) continue;
-        float spot = 1.0;
 
-        // Attenuation
         float att = 1.0 / (lights[i].attenuation.x +
                            lights[i].attenuation.y * dist +
                            lights[i].attenuation.z * dist * dist);
 
         float diff = max(dot(N, L), 0.0);
-        totalLight += lights[i].diffuse * diff * spot * att;
+        float lightContrib = diff * att;
+
+        totalLight += lights[i].diffuse * lightContrib;
     }
 
     vec3 finalColor = texColor.rgb * vColor.rgb * totalLight;
 
-    // Линейный туман
+    // --- ПРОЕКТИВНЫЕ ТЕНИ (с проверкой глубины и учётом параметров конкретного источника) ---
+    for (int s = 0; s < MAX_SHADOW_CASTERS; s++) {
+        if (s >= numShadowCasters) break;
+        if (shadowCasters[s].darkness <= 0.0) continue;
+
+        // Вектор от источника (переданного для этого кастера) до текущего фрагмента
+        vec3 fragToLight = shadowCasters[s].lightPos - vP;
+        float fragDist = length(fragToLight);
+
+        // Тень рисуется только если фрагмент находится ДАЛЬШЕ объекта
+        // if (fragDist <= shadowCasters[s].objDistance + 0.1) continue;
+
+        // Проверка, попадает ли фрагмент в конус источника (если это прожектор)
+        vec3 Ldir = normalize(fragToLight);
+        float cosTheta = dot(-Ldir, normalize(shadowCasters[s].lightDirection));
+        if (cosTheta < shadowCasters[s].lightCutoff) continue;
+
+        // Преобразуем координаты фрагмента в пространство теневой карты
+        vec4 shadowCoord = shadowCasters[s].shadowMatrix * vec4(vP, 1.0);
+        vec3 proj = shadowCoord.xyz / shadowCoord.w;
+        proj.y = 1.0 - proj.y;   // исправление переворота текстуры (если необходимо)
+
+        // Если проективные координаты в допустимом диапазоне – накладываем тень
+        if (proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0 && proj.z >= 0.0) {
+            vec4 shadowTex = texture2D(shadowCasters[s].shadowMap, proj.xy);
+            // Если в текстуре есть альфа (силуэт объекта) – затемняем
+            if (shadowTex.a > 0.1) {
+                finalColor.rgb *= (1.0 - shadowCasters[s].darkness);
+            }
+        }
+    }
+    // ----------------------------------------------------------------
+
+    // Туман
     float fogCoord = length(vP);
     float fogFactor = clamp((fogEnd - fogCoord) / (fogEnd - fogStart), 0.0, 1.0);
     finalColor = mix(fogColor, finalColor, fogFactor);
@@ -491,6 +547,16 @@ void draw_text(const char* text,float x,float y,void* font,float r,float g,float
 }
 
 //              класс для рисовки псевдо 3д существ
+pseudo_3d_entity::pseudo_3d_entity(float x, float y, float z,
+                                   float g_angle, float v_angle, float r_angle,
+                                   std::vector<const char*> textures, int v_angles,
+                                   float* vertices)
+    : x(x), y(y), z(z),
+      g_angle(g_angle), v_angle(v_angle), r_angle(r_angle),
+      textures(std::move(textures)), v_angles(v_angles),
+      vertices(vertices) {
+    computeRadius();
+}
 // проверяем есть ли на экране
 bool pseudo_3d_entity::isVisible(float cam_x, float cam_y, float cam_z) const{
     const float dx=x-cam_x,dy=y-cam_y,dz=z-cam_z;
@@ -644,6 +710,243 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     glRotatef(total_roll + 180.0f, 0, 0, 1);
     light_square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices, tex);
     glPopMatrix();
+}
+
+void pseudo_3d_entity::computeRadius() {
+    float maxDist = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        float vx = vertices[i*2];
+        float vy = vertices[i*2+1];
+        float dist = sqrtf(vx*vx + vy*vy);
+        if (dist > maxDist) maxDist = dist;
+    }
+    radius = maxDist;
+}
+
+void pseudo_3d_entity::setCastShadow(bool enable) {
+    if (enable == _castsShadow) return;
+    _castsShadow = enable;
+    if (enable) {
+        shadowCasters.push_back(this);
+    } else {
+        auto it = std::find(shadowCasters.begin(), shadowCasters.end(), this);
+        if (it != shadowCasters.end()) shadowCasters.erase(it);
+    }
+}
+
+GLuint pseudo_3d_entity::getTextureFromDirection(float lx, float ly, float lz) const {
+    int idx = getTextureIndex(lx, ly, lz);
+    if (idx < 0 || idx >= (int)textures.size()) return 0;
+    return loadTextureFromFile(textures[idx]);
+}
+
+GLuint pseudo_3d_entity::getShadowTexture(float lx, float ly, float lz) const {
+    int idx = getTextureIndex(lx, ly, lz);
+    if (idx < 0 || idx >= (int)textures.size()) return 0;
+    return loadTextureFromFile(textures[idx]);
+}
+
+std::vector<pseudo_3d_entity*> shadowCasters;
+
+void applyAllShadows() {
+    GLuint prog = currentShaderProg;
+    if (!prog) return;
+
+    const int MAX_SHADOW_CASTERS = 16;
+
+    // --- 1. Сортировка кастеров по расстоянию до камеры ---
+    std::vector<std::pair<float, pseudo_3d_entity*>> sortedCasters;
+    for (pseudo_3d_entity* ent : shadowCasters) {
+        if (!ent || !ent->castsShadow()) continue;
+        float dx = ent->getX() - camera.eye_x;
+        float dy = ent->getY() - camera.eye_y;
+        float dz = ent->getZ() - camera.eye_z;
+        float dist = dx*dx + dy*dy + dz*dz;   // квадрат расстояния (для сортировки)
+        sortedCasters.emplace_back(dist, ent);
+    }
+    std::sort(sortedCasters.begin(), sortedCasters.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    int casterCount = std::min((int)sortedCasters.size(), MAX_SHADOW_CASTERS);
+    glUniform1i(glGetUniformLocation(prog, "numShadowCasters"), casterCount);
+
+    if (casterCount == 0) {
+        for (int i = 0; i < MAX_SHADOW_CASTERS; ++i) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
+            glUniform1f(glGetUniformLocation(prog, buf), 0.0f);
+        }
+        return;
+    }
+
+    // --- 2. Получаем текущую модельно-видовую матрицу камеры ---
+    GLfloat cameraView[16];
+    glGetFloatv(GL_MODELVIEW_MATRIX, cameraView);
+
+    auto worldToCamera = [&](float x, float y, float z) {
+        float w = cameraView[3]*x + cameraView[7]*y + cameraView[11]*z + cameraView[15];
+        struct { float x, y, z; } res;
+        res.x = (cameraView[0]*x + cameraView[4]*y + cameraView[8]*z + cameraView[12]) / w;
+        res.y = (cameraView[1]*x + cameraView[5]*y + cameraView[9]*z + cameraView[13]) / w;
+        res.z = (cameraView[2]*x + cameraView[6]*y + cameraView[10]*z + cameraView[14]) / w;
+        return res;
+    };
+
+    // --- 3. Обработка каждого кастера (до 16 ближайших) ---
+    for (int i = 0; i < casterCount; ++i) {
+        pseudo_3d_entity* ent = sortedCasters[i].second;
+
+        // Выбор наиболее подходящего источника света (как в предыдущем ответе)
+        Light* bestLight = nullptr;
+        float bestScore = -1.0f;
+        for (Light* light : activeLights) {
+            if (!light->isEnabled()) continue;
+            float toObj[3] = {
+                ent->getX() - light->pos[0],
+                ent->getY() - light->pos[1],
+                ent->getZ() - light->pos[2]
+            };
+            float distToObj = sqrtf(toObj[0]*toObj[0] + toObj[1]*toObj[1] + toObj[2]*toObj[2]);
+            if (distToObj < 0.001f) continue;
+            float dirDot = (toObj[0]*light->dir[0] + toObj[1]*light->dir[1] + toObj[2]*light->dir[2]) / distToObj;
+            float cutoffCos = cosf(light->cutoff * M_PI / 180.0f);
+            if (dirDot < cutoffCos) continue;
+            float score = light->intensity / (distToObj * distToObj + 0.1f);
+            if (score > bestScore) {
+                bestScore = score;
+                bestLight = light;
+            }
+        }
+
+        if (!bestLight) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
+            glUniform1f(glGetUniformLocation(prog, buf), 0.0f);
+            continue;
+        }
+
+        // Позиции источника и объекта в пространстве камеры
+        auto lightCamPos = worldToCamera(bestLight->pos[0], bestLight->pos[1], bestLight->pos[2]);
+        auto entCamPos   = worldToCamera(ent->getX(), ent->getY(), ent->getZ());
+
+        // Расстояние от источника до объекта в видовых координатах
+        float objDistance = sqrtf( (entCamPos.x - lightCamPos.x) * (entCamPos.x - lightCamPos.x) +
+                           (entCamPos.y - lightCamPos.y) * (entCamPos.y - lightCamPos.y) +
+                           (entCamPos.z - lightCamPos.z) * (entCamPos.z - lightCamPos.z) ) 
+                  + ent->getRadius();   // <-- добавляем радиус
+
+        // Направление от источника к объекту (для выбора текстуры)
+        float toLight[3] = {
+            bestLight->pos[0] - ent->getX(),
+            bestLight->pos[1] - ent->getY(),
+            bestLight->pos[2] - ent->getZ()
+        };
+        GLuint texID = ent->getShadowTexture(toLight[0], toLight[1], toLight[2]);
+        if (!texID) continue;
+
+        float r = ent->getRadius();
+
+        // Направление от источника к объекту в пространстве камеры
+        float dirX = entCamPos.x - lightCamPos.x;
+        float dirY = entCamPos.y - lightCamPos.y;
+        float dirZ = entCamPos.z - lightCamPos.z;
+        float len = sqrtf(dirX*dirX + dirY*dirY + dirZ*dirZ);
+        if (len > 0.001f) {
+            dirX /= len;
+            dirY /= len;
+            dirZ /= len;
+        }
+
+        // Увеличенное смещение для отбрасывания тени ЗА объект
+        float offset = ent->getRadius() * 6.0f;   // подберите под свои масштабы (5–10)
+        float targetX = entCamPos.x + dirX * offset;
+        float targetY = entCamPos.y + dirY * offset;
+        float targetZ = entCamPos.z + dirZ * offset;
+
+        // === ОБЪЯВЛЕНИЕ МАССИВОВ ДЛЯ МАТРИЦ ===
+        float projMat[16];
+        float viewMat[16];
+
+        // Строим проекцию
+        float projSize = ent->getRadius() * 1;
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadIdentity();
+        glOrtho(-projSize, projSize, -projSize, projSize, 0.1f, 100.0f);
+        glGetFloatv(GL_PROJECTION_MATRIX, projMat);
+        glPopMatrix();
+
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadIdentity();
+        // Выбираем up‑вектор, не параллельный направлению взгляда
+        float upX = 0.0f, upY = 1.0f, upZ = 0.0f;
+        if (fabsf(dirY) > 0.999f) {  // если направление почти вертикальное
+            upX = 1.0f; upY = 0.0f; upZ = 0.0f;  // используем ось X как up
+        }
+        gluLookAt(lightCamPos.x, lightCamPos.y, lightCamPos.z,
+                targetX, targetY, targetZ,
+                upX, upY, upZ);
+        glGetFloatv(GL_MODELVIEW_MATRIX, viewMat);
+        glPopMatrix();
+
+        float bias[16] = {
+            0.5f, 0.0f, 0.0f, 0.0f,
+            0.0f, 0.5f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.5f, 0.0f,
+            0.5f, 0.5f, 0.5f, 1.0f
+        };
+        float shadowMat[16];
+        glPushMatrix();
+        glLoadMatrixf(bias);
+        glMultMatrixf(projMat);
+        glMultMatrixf(viewMat);
+        glGetFloatv(GL_MODELVIEW_MATRIX, shadowMat);
+        glPopMatrix();
+
+        // Передача uniform-переменных
+        char buf[64];
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].shadowMatrix", i);
+        glUniformMatrix4fv(glGetUniformLocation(prog, buf), 1, GL_FALSE, shadowMat);
+
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
+        glUniform1f(glGetUniformLocation(prog, buf), 0.8f);
+
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].objDistance", i);
+        glUniform1f(glGetUniformLocation(prog, buf), objDistance);
+
+        // Параметры источника для шейдера
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].lightPos", i);
+        glUniform3fv(glGetUniformLocation(prog, buf), 1, &lightCamPos.x);
+
+        float lightDirView[3];
+        for (int k = 0; k < 3; ++k) {
+            lightDirView[k] = cameraView[0+k] * bestLight->dir[0] +
+                            cameraView[4+k] * bestLight->dir[1] +
+                            cameraView[8+k] * bestLight->dir[2];
+        }
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].lightDirection", i);
+        glUniform3fv(glGetUniformLocation(prog, buf), 1, lightDirView);
+
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].lightCutoff", i);
+        glUniform1f(glGetUniformLocation(prog, buf), cosf(bestLight->cutoff * M_PI / 180.0f));
+
+        // Привязка текстуры
+        glActiveTexture(GL_TEXTURE1 + i);
+        bindTexture(texID);
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].shadowMap", i);
+        glUniform1i(glGetUniformLocation(prog, buf), 1 + i);
+    }
+
+    // --- 5. Отключаем неиспользуемые слоты ---
+    for (int i = casterCount; i < MAX_SHADOW_CASTERS; ++i) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
+        glUniform1f(glGetUniformLocation(prog, buf), 0.0f);
+    }
+
+    glActiveTexture(GL_TEXTURE0);
+    glMatrixMode(GL_MODELVIEW);
 }
 
 //              opengl
@@ -918,8 +1221,6 @@ void disable_light() {
         lighting_global = false;
     }
 }
-
-static std::vector<Light*> activeLights;
 
 Light::Light() {
     // По умолчанию источник выключен
