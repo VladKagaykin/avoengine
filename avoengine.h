@@ -56,30 +56,53 @@ void circle(float scale,float cx,float cy,double r,double g,double b,float radiu
 
 void draw_text(const char* text,float x,float y,void* font,float r,float g,float b,float a=1.0f);
 
-class pseudo_3d_entity{
+class pseudo_3d_entity {
 public:
-    pseudo_3d_entity(float x,float y,float z,float g_angle,float v_angle,std::vector<const char*> textures,int v_angles,float* vertices);
-    void draw(float cam_h,float cam_x,float cam_y,float cam_z)const;
-    void setRadius(float r){radius=r;}
-    float getRadius()const{return radius;}
-    void setGAngle(float a){g_angle=a;}
-    void setVAngle(float a){v_angle=a;}
-    float getGAngle()const{return g_angle;}
-    float getVAngle()const{return v_angle;}
-    float getX()const{return x;}
-    float getY()const{return y;}
-    float getZ()const{return z;}
+    pseudo_3d_entity(float x, float y, float z,
+                     float g_angle, float v_angle, float r_angle,
+                     std::vector<const char*> textures, int v_angles,
+                     float* vertices)
+        : x(x), y(y), z(z),
+          g_angle(g_angle), v_angle(v_angle), r_angle(r_angle),
+          textures(std::move(textures)), v_angles(v_angles),
+          vertices(vertices) {}
+
+    void draw(float cam_x, float cam_y, float cam_z) const;
+
+    void setRadius(float r) { radius = r; }
+    float getRadius() const { return radius; }
+
+    void setGAngle(float a) { g_angle = a; }
+    void setVAngle(float a) { v_angle = a; }
+    void setRAngle(float a) { r_angle = a; }
+
+    float getGAngle() const { return g_angle; }
+    float getVAngle() const { return v_angle; }
+    float getRAngle() const { return r_angle; }
+
+    float getX() const { return x; }
+    float getY() const { return y; }
+    float getZ() const { return z; }
+
 private:
-    int getTextureIndex(float cam_h,float cam_v)const;
-    bool isVisible(float cam_x,float cam_y,float cam_z)const;
-    float x,y,z,g_angle,v_angle;
-    float radius=1.0f;
-    std::vector<const char*>textures;
+    int getTextureIndex(float dir_x, float dir_y, float dir_z) const;
+
+    bool isVisible(float cam_x, float cam_y, float cam_z) const;
+
+    float x, y, z;
+    float g_angle;   
+    float v_angle;  
+    float r_angle;   
+    float radius = 1.0f;
+
+    std::vector<const char*> textures;
     int v_angles;
     float* vertices;
-    mutable int cachedTexIdx=-1;
-    mutable float cachedCamH=1e9f;
-    mutable float cachedCamV=1e9f;
+
+    mutable int cachedTexIdx = -1;
+    mutable float cachedDirX = 1e9f;
+    mutable float cachedDirY = 1e9f;
+    mutable float cachedDirZ = 1e9f;
 };
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void changeSize3D(int w,int h);

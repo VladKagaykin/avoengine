@@ -491,10 +491,6 @@ void draw_text(const char* text,float x,float y,void* font,float r,float g,float
 }
 
 //              класс для рисовки псевдо 3д существ
-// переменные класса
-pseudo_3d_entity::pseudo_3d_entity(float x,float y,float z,float g_angle,float v_angle,vector<const char*> textures,int v_angles,float* vertices)
-    :x(x),y(y),z(z),g_angle(g_angle),v_angle(v_angle),textures(std::move(textures)),v_angles(v_angles),vertices(vertices){}
-
 // проверяем есть ли на экране
 bool pseudo_3d_entity::isVisible(float cam_x, float cam_y, float cam_z) const{
     const float dx=x-cam_x,dy=y-cam_y,dz=z-cam_z;
@@ -518,114 +514,135 @@ bool pseudo_3d_entity::isVisible(float cam_x, float cam_y, float cam_z) const{
 
     return (depth/dist)>=cosf(half_diag+slack);
 }
-
 // вычисляем какую текстуру поставить
-int pseudo_3d_entity::getTextureIndex(float cam_h,float cam_v)const{
-    if(fabsf(cam_h-cachedCamH)<0.5f&&fabsf(cam_v-cachedCamV)<0.5f)return cachedTexIdx;
-    cachedCamH=cam_h;
-    cachedCamV=cam_v;
-    if(textures.empty()){
-        cachedTexIdx=-1;
+int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) const {
+    if (fabsf(dir_x - cachedDirX) < 0.01f &&
+        fabsf(dir_y - cachedDirY) < 0.01f &&
+        fabsf(dir_z - cachedDirZ) < 0.01f)
+        return cachedTexIdx;
+
+    cachedDirX = dir_x;
+    cachedDirY = dir_y;
+    cachedDirZ = dir_z;
+
+    if (textures.empty()) {
+        cachedTexIdx = -1;
         return -1;
     }
-    const int total=int(textures.size());
-    const int h_count=total/v_angles;
-    if(h_count<=0){
-        cachedTexIdx=-1;
+
+    const int total = int(textures.size());
+    const int h_count = total / v_angles;
+    if (h_count <= 0) {
+        cachedTexIdx = -1;
         return -1;
     }
-    const float ch=cam_h*float(M_PI)/180.0f;
-    const float cv=cam_v*float(M_PI)/180.0f;
-    const float cos_cv=cosf(cv);
-    const float dir_x=cos_cv*sinf(ch);
-    const float dir_y=sinf(cv);
-    const float dir_z=cos_cv*cosf(ch);
+    const float ga = g_angle * float(M_PI) / 180.0f;
+    const float va = v_angle * float(M_PI) / 180.0f;
+    const float ra = r_angle * float(M_PI) / 180.0f;
 
-    const float ga=g_angle*float(M_PI)/180.0f;
-    const float va=v_angle*float(M_PI)/180.0f;
 
-    const float cos_ga=cosf(-ga),sin_ga=sinf(-ga);
-    const float lx=dir_x*cos_ga+dir_z*sin_ga;
-    const float ly=dir_y;
-    const float lz=-dir_x*sin_ga+dir_z*cos_ga;
+    float lx = dir_x, ly = dir_y, lz = dir_z;
 
-    const float cos_va=cosf(va),sin_va=sinf(va);
-    const float fx=lx;
-    const float fy=ly*cos_va+lz*sin_va;
-    const float fz=-ly*sin_va+lz*cos_va;
+    float cos_ra = cosf(-ra), sin_ra = sinf(-ra);
+    float tx = lx * cos_ra - ly * sin_ra;
+    float ty = lx * sin_ra + ly * cos_ra;
+    lx = tx; ly = ty;
 
-    const float local_v=atan2f(fy,sqrtf(fx*fx+fz*fz))*180.0f/float(M_PI);
-    const float local_h=(fabsf(local_v)>88.0f)?0.0f:atan2f(fx,fz)*180.0f/float(M_PI);
+    float cos_va = cosf(-va), sin_va = sinf(-va);
+    tx = lx;
+    ty = ly * cos_va - lz * sin_va;
+    float tz = ly * sin_va + lz * cos_va;
+    lx = tx; ly = ty; lz = tz;
 
-    const float v_rel=fmaxf(0.0f,fminf(180.0f,local_v+90.0f));
-    const int v_index=int(fminf(v_rel/(180.0f/v_angles),float(v_angles-1)));
+    float cos_ga = cosf(-ga), sin_ga = sinf(-ga);
+    tx = lx * cos_ga + lz * sin_ga;
+    tz = -lx * sin_ga + lz * cos_ga;
+    lx = tx; lz = tz;
 
-    const float step_h=360.0f/h_count;
-    const int h_index=int((fmodf(local_h+360.0f,360.0f)+step_h*0.5f)/step_h)%h_count;
+    float local_h = atan2f(lx, lz) * 180.0f / float(M_PI);
+    float local_v = atan2f(ly, sqrtf(lx*lx + lz*lz)) * 180.0f / float(M_PI);
 
-    cachedTexIdx=v_index*h_count+h_index;
-    if(cachedTexIdx>=total)cachedTexIdx=total-1;
+    float v_rel = fmaxf(0.0f, fminf(180.0f, local_v + 90.0f));
+    int v_index = int(fminf(v_rel / (180.0f / v_angles), float(v_angles - 1)));
+
+    const float step_h = 360.0f / h_count;
+    if (local_h < 0) local_h += 360.0f;
+    int h_index = int((local_h + step_h * 0.5f) / step_h) % h_count;
+
+    cachedTexIdx = v_index * h_count + h_index;
+    if (cachedTexIdx >= total) cachedTexIdx = total - 1;
     return cachedTexIdx;
 }
 // рисуем сущность
-void pseudo_3d_entity::draw(float cam_h,float cam_x,float cam_y,float cam_z)const{
-    if(!isVisible(cam_x,cam_y,cam_z))return;
+void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
+    if (!isVisible(cam_x, cam_y, cam_z)) return;
 
-    const float dx=cam_x-x,dy=cam_y-y,dz=cam_z-z;
-    const float dist=sqrtf(dx*dx+dy*dy+dz*dz);
+    const float dx = cam_x - x;
+    const float dy = cam_y - y;
+    const float dz = cam_z - z;
+    const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
 
-    const float pitch=atan2f(dy,sqrtf(dx*dx+dz*dz))*180.0f/float(M_PI);
+    const int tidx = getTextureIndex(dx, dy, dz);
+    const char* tex = (tidx >= 0) ? textures[tidx] : nullptr;
 
-    const int tidx=getTextureIndex(cam_h,pitch);
-    const char* tex=(tidx>=0)?textures[tidx]:nullptr;
+    const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
+    const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
+    const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
 
-    const float fx=(dist>1e-4f)?dx/dist:0.0f;
-    const float fy=(dist>1e-4f)?dy/dist:1.0f;
-    const float fz=(dist>1e-4f)?dz/dist:0.0f;
+    float wx = 0, wy = 1, wz = 0;
+    if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+    float rx = wy * fz - wz * fy;
+    float ry = wz * fx - wx * fz;
+    float rz = wx * fy - wy * fx;
+    const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+    if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
 
-    float wx=0,wy=1,wz=0;
-    if(fabsf(fy)>0.999f){wx=0;wy=0;wz=1;}
-    float rx=wy*fz-wz*fy,ry=wz*fx-wx*fz,rz=wx*fy-wy*fx;
-    const float rlen=sqrtf(rx*rx+ry*ry+rz*rz);
-    if(rlen>1e-4f){rx/=rlen;ry/=rlen;rz/=rlen;}
+    const float ux = fy * rz - fz * ry;
+    const float uy = fz * rx - fx * rz;
+    const float uz = fx * ry - fy * rx;
 
-    const float ux=fy*rz-fz*ry,uy=fz*rx-fx*rz,uz=fx*ry-fy*rx;
+    const float mat[16] = {
+        rx, ry, rz, 0,
+        ux, uy, uz, 0,
+        fx, fy, fz, 0,
+        0,  0,  0,  1
+    };
 
-    const float mat[16]={
-                            rx, ry, rz, 0,
-                            ux, uy, uz, 0,
-                            fx, fy, fz, 0,
-                            0,  0,  0, 1
-                        };
+    const float ga = g_angle * float(M_PI) / 180.0f;
+    const float va = v_angle * float(M_PI) / 180.0f;
 
-    const float ga=g_angle*float(M_PI)/180.0f;
-    const float va=v_angle*float(M_PI)/180.0f;
+    float eu_x = -sinf(ga) * sinf(va);
+    float eu_y = -cosf(va);
+    float eu_z = -cosf(ga) * sinf(va);
 
-    float eu_x=-sinf(ga)*sinf(va);
-    float eu_y=-cosf(va);
-    float eu_z=-cosf(ga)*sinf(va);
+    float dot = eu_x * fx + eu_y * fy + eu_z * fz;
+    float pu_x = eu_x - dot * fx;
+    float pu_y = eu_y - dot * fy;
+    float pu_z = eu_z - dot * fz;
+    float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
 
-    float dot=eu_x*fx+eu_y*fy+eu_z*fz;
-    float pu_x=eu_x-dot*fx,pu_y=eu_y-dot*fy,pu_z=eu_z-dot*fz;
-    float plen=sqrtf(pu_x*pu_x+pu_y*pu_y+pu_z*pu_z);
-
-    if(plen<0.01f){
-        const float ef_x=cosf(va)*sinf(ga);
-        const float ef_y=-sinf(va);
-        const float ef_z=cosf(va)*cosf(ga);
-        const float d2=ef_x*fx+ef_y*fy+ef_z*fz;
-        pu_x=ef_x-d2*fx;pu_y=ef_y-d2*fy;pu_z=ef_z-d2*fz;
+    if (plen < 0.01f) {
+        const float ef_x = cosf(va) * sinf(ga);
+        const float ef_y = -sinf(va);
+        const float ef_z = cosf(va) * cosf(ga);
+        const float d2 = ef_x * fx + ef_y * fy + ef_z * fz;
+        pu_x = ef_x - d2 * fx;
+        pu_y = ef_y - d2 * fy;
+        pu_z = ef_z - d2 * fz;
     }
 
-    const float roll=atan2f(-(pu_x*rx+pu_y*ry+pu_z*rz),pu_x*ux+pu_y*uy+pu_z*uz)*180.0f/float(M_PI);
+    float billboard_roll = atan2f(-(pu_x * rx + pu_y * ry + pu_z * rz),
+                                   pu_x * ux + pu_y * uy + pu_z * uz) * 180.0f / float(M_PI);
 
-    const bool mirror=(tidx==0);
+    float total_roll = billboard_roll + r_angle;
+
+    const bool mirror = (tidx == 0);
 
     glPushMatrix();
-    glTranslatef(x,y,z);
+    glTranslatef(x, y, z);
     glMultMatrixf(mat);
-    glRotatef(roll+180.0f,0,0,1);
-    light_square(1.0f,0,0,1,1,1,mirror?-180.0f:0.0f,vertices,tex);
+    glRotatef(total_roll + 180.0f, 0, 0, 1);
+    light_square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices, tex);
     glPopMatrix();
 }
 
