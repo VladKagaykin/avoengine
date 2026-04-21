@@ -33,6 +33,7 @@
 #include <hwinfo/hwinfo.h>
 // математика(п, синусы, косинусы)
 #include <cmath>
+#include <algorithm>
 // удобная запись в переменные через printf и прочую хрень
 #include <cstdio>
 // взаимодействия с консолью
@@ -70,6 +71,16 @@ static vector<ma_sound*> loopingSounds;
 // инициализация камеры
 CameraParams camera;
 
+// туман
+struct fog_params {
+    bool enabled = false;
+    float density = 0.05f;
+    float color[3] = {0.7f, 0.8f, 0.9f};
+    float start = 5.0f;
+    float end = 30.0f;
+};
+static fog_params fog;
+
 //              утилиты 
 // вычисляем то, куда смотрит центр камеры и прочее
 static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
@@ -91,11 +102,9 @@ static inline void bindTexture(GLuint id){
     }
 }
 
-// шейдер
-
+//              шейдеры
 // Переменная для хранения текущей программы шейдеров
 GLuint currentShaderProg = 0;
-
 // Функция для проверки ошибок компиляции
 void checkShaderErrors(GLuint shader, string type) {
     GLint success;
@@ -151,6 +160,95 @@ void stopShader() {
     glUseProgram(0);
     currentShaderProg = 0;
 }
+
+GLuint defaultLightingShader = 0;
+
+static const char* defaultVertexShader = R"(
+varying vec3 vN;
+varying vec3 vP;
+varying vec4 vColor;
+varying vec2 vTexCoord;
+
+void main() {
+    vN = normalize(gl_NormalMatrix * gl_Normal);
+    vec4 mvPos = gl_ModelViewMatrix * gl_Vertex;
+    vP = mvPos.xyz;
+    vColor = gl_Color;
+    vTexCoord = gl_MultiTexCoord0.st;
+    gl_Position = ftransform();
+}
+)";
+
+static const char* defaultFragmentShader = R"(
+#define MAX_LIGHTS 256
+
+struct Light {
+    bool enabled;
+    vec3 position;      // в координатах камеры
+    vec3 direction;
+    vec3 diffuse;
+    float cutoff;       // косинус угла отсечки
+    vec3 attenuation;   // constant, linear, quadratic
+};
+
+varying vec3 vN;
+varying vec3 vP;
+varying vec4 vColor;
+varying vec2 vTexCoord;
+
+uniform sampler2D tex;
+uniform Light lights[MAX_LIGHTS];
+uniform int numLights;
+uniform vec3 ambientLight;
+uniform vec3 fogColor;
+uniform float fogStart;
+uniform float fogEnd;
+
+void main() {
+    vec3 N = normalize(vN);
+    vec4 texColor = texture2D(tex, vTexCoord);
+    vec3 totalLight = ambientLight;
+
+    for (int i = 0; i < MAX_LIGHTS; i++) {
+        if (i >= numLights) break;
+        if (!lights[i].enabled) continue;
+
+        vec3 L = lights[i].position - vP;
+        float dist = length(L);
+        L = normalize(L);
+
+        // Spot light (жёсткая отсечка, как в OpenGL)
+        vec3 D = normalize(lights[i].direction);
+        float cosTheta = dot(-L, D);
+        if (cosTheta < lights[i].cutoff) continue;
+        float spot = 1.0;
+
+        // Attenuation
+        float att = 1.0 / (lights[i].attenuation.x +
+                           lights[i].attenuation.y * dist +
+                           lights[i].attenuation.z * dist * dist);
+
+        float diff = max(dot(N, L), 0.0);
+        totalLight += lights[i].diffuse * diff * spot * att;
+    }
+
+    vec3 finalColor = texColor.rgb * vColor.rgb * totalLight;
+
+    // Линейный туман
+    float fogCoord = length(vP);
+    float fogFactor = clamp((fogEnd - fogCoord) / (fogEnd - fogStart), 0.0, 1.0);
+    finalColor = mix(fogColor, finalColor, fogFactor);
+
+    gl_FragColor = vec4(finalColor, texColor.a * vColor.a);
+}
+)";
+
+static void initDefaultShader() {
+    if (defaultLightingShader == 0) {
+        defaultLightingShader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
+    }
+}
+
 //              текстуры
 // функция для загрузки текстуры
 GLuint loadTextureFromFile(const char* filename){
@@ -587,7 +685,6 @@ void framebuffer_size_callback(GLFWwindow* /*window*/, int w, int h){
 // инициализация окна
 void setup_display(int* argc, char** argv, float r, float g, float b, float a, const char* name, int w, int h) {
     init_audio();
-
     if (!glfwInit()) {
         cerr << "Failed to initialize GLFW\n";
         exit(EXIT_FAILURE);
@@ -643,7 +740,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
-
+    initDefaultShader();
     changeSize2D(w, h);
 }
 // настройка камеры
@@ -662,10 +759,13 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     float adj_pitch = norm_pitch;
     float up_x = 0, up_y = 1, up_z = 0;
 
+    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
+    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
+
     if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
         adj_pitch = 180.0f - norm_pitch; 
         up_y = -1.0f;                    
-        yaw += 180.0f;                    
+        yaw += 180.0f;                 
     } else {
         if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
         up_y = 1.0f;
@@ -686,9 +786,6 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
-
-    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
-    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 }
 // перемещение камеры
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
@@ -702,6 +799,9 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
 
     float adj_pitch = norm_pitch;
     float up_x = 0, up_y = 1, up_z = 0;
+
+    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
+    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 
     if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
         adj_pitch = 180.0f - norm_pitch;
@@ -724,10 +824,6 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
-
-    // обновляем звук
-    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
-    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 }
 
 //              3д(может быть потом ещё что-то будет)
@@ -776,91 +872,175 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const ch
 // свет
 static bool lighting_global = false;
 
-void enable_light(){
-    if (!lighting_global){
-        glEnable(GL_LIGHTING);
+void enable_light() {
+    if (!lighting_global) {
+        initDefaultShader();
+        useShader(defaultLightingShader);   // currentShaderProg = defaultLightingShader
         lighting_global = true;
-        // Включаем цвет материала (чтобы цвет фигур влиял на освещение)
         glEnable(GL_COLOR_MATERIAL);
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+        // Передаём начальные uniform-значения в текущий шейдер
+        set_ambient_light(0.05f, 0.05f, 0.05f);
+        if (fog.enabled) {
+            glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"),
+                        fog.color[0], fog.color[1], fog.color[2]);
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), fog.start);
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), fog.end);
+        }
+        applyAllLights();
     }
 }
 
-void disable_light(){
-    if (lighting_global){
-        glDisable(GL_LIGHTING);
+void disable_light() {
+    if (lighting_global) {
+        stopShader();
         lighting_global = false;
     }
 }
 
-Light::Light(int index):lightId(GL_LIGHT0 + index), intensity(1.0f), cutoff(180.0f){
-    pos[0] = 0; pos[1] = 0; pos[2] = 1; pos[3] = 1;
-    dir[0] = 0; dir[1] = 0; dir[2] = -1;
-    color[0] = 1; color[1] = 1; color[2] = 1;
+static std::vector<Light*> activeLights;
+
+Light::Light() {
+    // По умолчанию источник выключен
 }
 
-void Light::setPosition(float x, float y, float z){
-    pos[0] = x; pos[1] = y; pos[2] = z; pos[3] = 1.0f;
-    if (lighting_global) glLightfv(lightId, GL_POSITION, pos);
-}
+void Light::setPosition(float x, float y, float z) {pos[0] = x; pos[1] = y; pos[2] = z;}
 
-void Light::setDirectionFromPitchYaw(float pitch_deg, float yaw_deg){
+void Light::setDirectionFromPitchYaw(float pitch_deg, float yaw_deg) {
     float pitch = pitch_deg * M_PI / 180.0f;
     float yaw   = yaw_deg   * M_PI / 180.0f;
     dir[0] = cosf(pitch) * sinf(yaw);
     dir[1] = sinf(pitch);
     dir[2] = cosf(pitch) * cosf(yaw);
-    if (lighting_global) glLightfv(lightId, GL_SPOT_DIRECTION, dir);
 }
 
-void Light::setColor(float r,float g,float b){
+void Light::setColor(float r, float g, float b) {
     color[0] = r; color[1] = g; color[2] = b;
-    if (lighting_global) {
-        GLfloat diffuse[]  = {r * intensity, g * intensity, b * intensity, 1.0f};
-        GLfloat specular[] = {r * intensity, g * intensity, b * intensity, 1.0f};
-        glLightfv(lightId, GL_DIFFUSE,  diffuse);
-        glLightfv(lightId, GL_SPECULAR, specular);
-    }
 }
 
-void Light::setIntensity(float i){
+void Light::setIntensity(float i) {
     intensity = i;
-    setColor(color[0], color[1], color[2]);
 }
 
-void Light::setRadius(float radius_deg){
+void Light::setRadius(float radius_deg) {
     cutoff = (radius_deg >= 360.0f) ? 180.0f : radius_deg;
-    if (lighting_global) {
-        glLightf(lightId, GL_SPOT_CUTOFF, cutoff);
-        if (cutoff < 180.0f) {
-            glLightf(lightId, GL_SPOT_EXPONENT, 0.5f);
+}
+
+void Light::setAttenuation(float constant, float linear, float quadratic) {
+    constAtt = constant;
+    linearAtt = linear;
+    quadAtt = quadratic;
+}
+
+void Light::enable() {
+    if (!enabled) {
+        enabled = true;
+        activeLights.push_back(this);
+    }
+}
+
+void Light::disable() {
+    if (enabled) {
+        enabled = false;
+        auto it = std::find(activeLights.begin(), activeLights.end(), this);
+        if (it != activeLights.end()) activeLights.erase(it);
+    }
+}
+
+void Light::applyToShader(int index, GLuint prog) const {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "lights[%d].enabled", index);
+    glUniform1i(glGetUniformLocation(prog, buf), enabled ? 1 : 0);
+    if (!enabled) return;
+
+    snprintf(buf, sizeof(buf), "lights[%d].position", index);
+    glUniform3fv(glGetUniformLocation(prog, buf), 1, pos);
+
+    snprintf(buf, sizeof(buf), "lights[%d].direction", index);
+    glUniform3fv(glGetUniformLocation(prog, buf), 1, dir);
+
+    float diff[3] = { color[0]*intensity, color[1]*intensity, color[2]*intensity };
+    snprintf(buf, sizeof(buf), "lights[%d].diffuse", index);
+    glUniform3fv(glGetUniformLocation(prog, buf), 1, diff);
+
+    snprintf(buf, sizeof(buf), "lights[%d].cutoff", index);
+    glUniform1f(glGetUniformLocation(prog, buf), cosf(cutoff * M_PI / 180.0f));
+
+    snprintf(buf, sizeof(buf), "lights[%d].attenuation", index);
+    glUniform3f(glGetUniformLocation(prog, buf), constAtt, linearAtt, quadAtt);
+}
+
+void applyAllLights() {
+    GLuint prog = currentShaderProg;
+    if (prog == 0) return;
+
+    // Получаем текущую модельно-видовую матрицу (она уже установлена через gluLookAt)
+    GLfloat mv[16];
+    glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+
+    // Извлекаем верхнюю 3x3 часть для преобразования направлений (без переноса)
+    GLfloat mv3[9] = {
+        mv[0], mv[1], mv[2],
+        mv[4], mv[5], mv[6],
+        mv[8], mv[9], mv[10]
+    };
+
+    int count = (int)activeLights.size();
+    glUniform1i(glGetUniformLocation(prog, "numLights"), count);
+
+    for (int i = 0; i < count; ++i) {
+        Light* light = activeLights[i];
+        if (!light->isEnabled()) continue;
+
+        // Преобразуем позицию в пространство вида: vPos = MV * worldPos
+        float worldPos[4] = { light->pos[0], light->pos[1], light->pos[2], 1.0f };
+        float viewPos[4] = {0,0,0,0};
+        for (int r = 0; r < 4; ++r) {
+            viewPos[r] = mv[r]   * worldPos[0] +
+                         mv[r+4] * worldPos[1] +
+                         mv[r+8] * worldPos[2] +
+                         mv[r+12]* worldPos[3];
         }
+
+        // Преобразуем направление (как вектор, без переноса)
+        float worldDir[3] = { light->dir[0], light->dir[1], light->dir[2] };
+        float viewDir[3] = {0,0,0};
+        for (int r = 0; r < 3; ++r) {
+            viewDir[r] = mv3[r]   * worldDir[0] +
+                         mv3[r+3] * worldDir[1] +
+                         mv3[r+6] * worldDir[2];
+        }
+
+        // Передаём преобразованные значения в шейдер
+        char buf[64];
+        snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
+        glUniform1i(glGetUniformLocation(prog, buf), 1);
+
+        snprintf(buf, sizeof(buf), "lights[%d].position", i);
+        glUniform3fv(glGetUniformLocation(prog, buf), 1, viewPos);
+
+        snprintf(buf, sizeof(buf), "lights[%d].direction", i);
+        glUniform3fv(glGetUniformLocation(prog, buf), 1, viewDir);
+
+        float diff[3] = { light->color[0] * light->intensity,
+                          light->color[1] * light->intensity,
+                          light->color[2] * light->intensity };
+        snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
+        glUniform3fv(glGetUniformLocation(prog, buf), 1, diff);
+
+        snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
+        glUniform1f(glGetUniformLocation(prog, buf), cosf(light->cutoff * M_PI / 180.0f));
+
+        snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
+        glUniform3f(glGetUniformLocation(prog, buf), light->constAtt, light->linearAtt, light->quadAtt);
     }
 }
 
-void Light::enable(){
-    glEnable(lightId);
-    setPosition(pos[0], pos[1], pos[2]);
-    setColor(color[0], color[1], color[2]);
-    setRadius(cutoff == 180.0f ? 360.0f : cutoff);
-    glLightfv(lightId, GL_SPOT_DIRECTION, dir);
-}
-
-void Light::disable(){
-    glDisable(lightId);
-}
-
-void Light::setAttenuation(float constant, float linear, float quadratic){
-    if (lighting_global) {
-        glLightf(lightId, GL_CONSTANT_ATTENUATION, constant);
-        glLightf(lightId, GL_LINEAR_ATTENUATION, linear);
-        glLightf(lightId, GL_QUADRATIC_ATTENUATION, quadratic);
+void set_ambient_light(float r, float g, float b) {
+    if (currentShaderProg) {
+        glUniform3f(glGetUniformLocation(currentShaderProg, "ambientLight"), r, g, b);
     }
-}
-
-void set_ambient_light(float r, float g, float b){
-    GLfloat ambient[] = {r, g, b, 1.0f};
-    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
 }
 
 void apply_material(float r, float g, float b, float alpha, float shininess){
@@ -873,40 +1053,25 @@ void apply_material(float r, float g, float b, float alpha, float shininess){
     glMaterialf (GL_FRONT_AND_BACK, GL_SHININESS, shininess);
 }
 
-// туман
-struct fog_params {
-    bool enabled = false;
-    float density = 0.05f;
-    float color[3] = {0.7f, 0.8f, 0.9f};
-    float start = 5.0f;
-    float end = 30.0f;
-};
-static fog_params fog;
-
-void enable_fog(float density, float r, float g, float b, float start, float end){
+//              туман
+void enable_fog(float density, float r, float g, float b, float start, float end) {
     fog.enabled = true;
     fog.density = density;
-    fog.color[0] = r;
-    fog.color[1] = g;
-    fog.color[2] = b;
+    fog.color[0] = r; fog.color[1] = g; fog.color[2] = b;
     fog.start = start;
     fog.end = end;
-    
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_FOG);
-    glFogi(GL_FOG_MODE, GL_LINEAR);
-    glFogf(GL_FOG_START, fog.start);
-    glFogf(GL_FOG_END, fog.end);
-    glFogfv(GL_FOG_COLOR, fog.color);
-    glEnable(GL_ALPHA_TEST);
-    glAlphaFunc(GL_GREATER, 0.1f);
+
+    if (currentShaderProg) {
+        glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"), r, g, b);
+        glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), start);
+        glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), end);
+    }
+    // Убираем glEnable(GL_FOG) и настройки фиксированного тумана
 }
 
 void disable_fog(){
     fog.enabled = false;
-    glDisable(GL_FOG);
-    glDisable(GL_ALPHA_TEST);
+    // Убираем glDisable(GL_FOG);
 }
 
 void set_fog_density(float density) {
@@ -914,17 +1079,19 @@ void set_fog_density(float density) {
     if (fog.enabled) {
         fog.start = 2.0f / density;
         fog.end = 15.0f / density;
-        glFogf(GL_FOG_START, fog.start);
-        glFogf(GL_FOG_END, fog.end);
+        if (currentShaderProg) {
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), fog.start);
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), fog.end);
+        }
     }
 }
 
 void set_fog_color(float r, float g, float b) {
-    fog.color[0] = r;
-    fog.color[1] = g;
-    fog.color[2] = b;
+    fog.color[0] = r; fog.color[1] = g; fog.color[2] = b;
     if (fog.enabled) {
-        glFogfv(GL_FOG_COLOR, fog.color);
+        if (currentShaderProg) {
+            glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"), r, g, b);
+        }
     }
 }
 
@@ -932,8 +1099,10 @@ void set_fog_range(float start, float end) {
     fog.start = start;
     fog.end = end;
     if (fog.enabled) {
-        glFogf(GL_FOG_START, fog.start);
-        glFogf(GL_FOG_END, fog.end);
+        if (currentShaderProg) {
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), start);
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), end);
+        }
     }
 }
 
@@ -941,6 +1110,7 @@ void set_fog_range(float start, float end) {
 // переключаем матрицу на 2д
 void begin_2d(int w, int h) {
     is3D = false;
+    stopShader();                  
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
@@ -955,22 +1125,34 @@ void begin_2d(int w, int h) {
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    // Колбэк изменения размера теперь будет использовать флаг s_is3D
 }
 // переключаем матрицу на 3д(невероятно)
 void end_2d() {
-    is3D = true;  // после возврата в 3D
+    is3D = true;
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_LIGHTING);
     glEnable(GL_FOG);
+
     glMatrixMode(GL_MODELVIEW);
     glPopMatrix();
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
-    // Принудительно вызываем changeSize3D с текущими размерами
+
     changeSize3D(window_w, window_h);
+
+    if (lighting_global) {
+        useShader(defaultLightingShader);
+        // Восстанавливаем uniform тумана и освещения
+        if (fog.enabled) {
+            glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"),
+                        fog.color[0], fog.color[1], fog.color[2]);
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), fog.start);
+            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), fog.end);
+        }
+        applyAllLights();
+    }
 }
 
 //              аудио

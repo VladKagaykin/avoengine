@@ -91,25 +91,42 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const ch
 void enable_light();
 void disable_light();
 
-class Light{
+#define MAX_LIGHTS 256
+
+class Light {
 public:
-    Light(int index = 0);
+    Light();
     void setPosition(float x, float y, float z);
     void setDirectionFromPitchYaw(float pitch_deg, float yaw_deg);
     void setColor(float r, float g, float b);
     void setIntensity(float intensity);
     void setRadius(float radius_deg);
+    void setAttenuation(float constant, float linear, float quadratic);
     void enable();
     void disable();
-    void setAttenuation(float constant, float linear, float quadratic);
-private:
-    int lightId;
-    float pos[4];
-    float dir[3];
-    float color[3];
-    float intensity;
-    float cutoff; 
+    bool isEnabled() const { return enabled; }
+
+    void applyToShader(int index, GLuint program) const;
+
+    // Поля теперь публичные
+    bool enabled = false;
+    float pos[3]   = {0,0,0};
+    float dir[3]   = {0,0,-1};
+    float color[3] = {1,1,1};
+    float intensity = 1.0f;
+    float cutoff    = 180.0f;
+    float constAtt  = 1.0f;
+    float linearAtt = 0.0f;
+    float quadAtt   = 0.0f;
 };
+
+// Глобальная функция для передачи всех активных источников в текущий шейдер
+void applyAllLights();
+
+// ID дефолтного шейдера (будет создан при инициализации)
+extern GLuint defaultLightingShader;
+
+
 void set_ambient_light(float r, float g, float b);
 void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
 void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);

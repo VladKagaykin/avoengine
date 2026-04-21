@@ -234,6 +234,10 @@ void remove_panorama(){
 }
 void draw_panorama(float camX, float camY, float camZ){
     if (!sphere_sky.enabled || sphere_sky.texture == 0) return;
+    
+    GLuint prevShader = currentShaderProg;
+    if (prevShader) stopShader();
+
     glPushAttrib(GL_ALL_ATTRIB_BITS); 
     glDisable(GL_LIGHTING);
     glDisable(GL_DEPTH_TEST);
@@ -245,10 +249,11 @@ void draw_panorama(float camX, float camY, float camZ){
     glPushMatrix();
     glTranslatef(camX, camY, camZ);
     glRotatef(90, 1, 0, 0); 
-
     glCallList(skybox_list); 
     glPopMatrix();
     glPopAttrib();
+
+    if (prevShader) useShader(prevShader);
 }
 //              hud
 void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop){
