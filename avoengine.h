@@ -91,7 +91,7 @@ void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const ch
 void enable_light();
 void disable_light();
 
-#define MAX_LIGHTS 256
+#define MAX_LIGHTS 16
 
 class Light {
 public:

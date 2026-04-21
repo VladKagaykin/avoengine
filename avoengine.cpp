@@ -180,7 +180,7 @@ void main() {
 )";
 
 static const char* defaultFragmentShader = R"(
-#define MAX_LIGHTS 256
+#define MAX_LIGHTS 16
 
 struct Light {
     bool enabled;
@@ -978,25 +978,65 @@ void applyAllLights() {
     GLuint prog = currentShaderProg;
     if (prog == 0) return;
 
-    // Получаем текущую модельно-видовую матрицу (она уже установлена через gluLookAt)
+    // Собираем все включенные источники
+    std::vector<Light*> candidates;
+    for (Light* light : activeLights) {
+        if (light->isEnabled()) {
+            candidates.push_back(light);
+        }
+    }
+
+    if (candidates.empty()) {
+        glUniform1i(glGetUniformLocation(prog, "numLights"), 0);
+        return;
+    }
+
+    // Сортировка по важности 
+    const float camX = camera.eye_x;
+    const float camY = camera.eye_y;
+    const float camZ = camera.eye_z;
+    const float camDirX = camera.dir_x;
+    const float camDirY = camera.dir_y;
+    const float camDirZ = camera.dir_z;
+
+    std::sort(candidates.begin(), candidates.end(),
+        [&](Light* a, Light* b) {
+            float dx_a = a->pos[0] - camX;
+            float dy_a = a->pos[1] - camY;
+            float dz_a = a->pos[2] - camZ;
+            float dist_a = sqrtf(dx_a*dx_a + dy_a*dy_a + dz_a*dz_a) + 0.001f;
+
+            float dx_b = b->pos[0] - camX;
+            float dy_b = b->pos[1] - camY;
+            float dz_b = b->pos[2] - camZ;
+            float dist_b = sqrtf(dx_b*dx_b + dy_b*dy_b + dz_b*dz_b) + 0.001f;
+
+            float dot_a = (dx_a * camDirX + dy_a * camDirY + dz_a * camDirZ) / dist_a;
+            float dot_b = (dx_b * camDirX + dy_b * camDirY + dz_b * camDirZ) / dist_b;
+
+            float dirFactor_a = std::max(0.2f, dot_a);
+            float dirFactor_b = std::max(0.2f, dot_b);
+
+            float weight_a = a->intensity * dirFactor_a / (dist_a * dist_a);
+            float weight_b = b->intensity * dirFactor_b / (dist_b * dist_b);
+
+            return weight_a > weight_b;
+        });
+
+    int count = std::min((int)candidates.size(), MAX_LIGHTS);
+    glUniform1i(glGetUniformLocation(prog, "numLights"), count);
+
     GLfloat mv[16];
     glGetFloatv(GL_MODELVIEW_MATRIX, mv);
-
-    // Извлекаем верхнюю 3x3 часть для преобразования направлений (без переноса)
     GLfloat mv3[9] = {
         mv[0], mv[1], mv[2],
         mv[4], mv[5], mv[6],
         mv[8], mv[9], mv[10]
     };
 
-    int count = (int)activeLights.size();
-    glUniform1i(glGetUniformLocation(prog, "numLights"), count);
-
     for (int i = 0; i < count; ++i) {
-        Light* light = activeLights[i];
-        if (!light->isEnabled()) continue;
+        Light* light = candidates[i];
 
-        // Преобразуем позицию в пространство вида: vPos = MV * worldPos
         float worldPos[4] = { light->pos[0], light->pos[1], light->pos[2], 1.0f };
         float viewPos[4] = {0,0,0,0};
         for (int r = 0; r < 4; ++r) {
@@ -1006,7 +1046,6 @@ void applyAllLights() {
                          mv[r+12]* worldPos[3];
         }
 
-        // Преобразуем направление (как вектор, без переноса)
         float worldDir[3] = { light->dir[0], light->dir[1], light->dir[2] };
         float viewDir[3] = {0,0,0};
         for (int r = 0; r < 3; ++r) {
@@ -1015,7 +1054,6 @@ void applyAllLights() {
                          mv3[r+6] * worldDir[2];
         }
 
-        // Передаём преобразованные значения в шейдер
         char buf[64];
         snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
         glUniform1i(glGetUniformLocation(prog, buf), 1);
