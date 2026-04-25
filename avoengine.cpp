@@ -224,20 +224,26 @@ uniform float fogEnd;
 
 uniform ShadowCaster shadowCasters[MAX_SHADOW_CASTERS];
 uniform int numShadowCasters;
-uniform bool receiveShadows = true;
+uniform bool receiveShadows;
 
 void main() {
-    vec3 N = normalize(vN);
     vec4 texColor = texture2D(tex, vTexCoord);
+    if (texColor.a < 0.01) discard; 
+
+    vec3 N = normalize(vN);
     vec3 totalLight = ambientLight;
 
-    for (int i = 0; i < MAX_LIGHTS; i++) {
-        if (i >= numLights) break;
+    // Исправлено: замена min(int, int) на безопасный цикл
+    int activeLightsCount = numLights;
+    if (activeLightsCount > MAX_LIGHTS) activeLightsCount = MAX_LIGHTS;
+
+    for (int i = 0; i < activeLightsCount; i++) {
         if (!lights[i].enabled) continue;
 
-        vec3 L = lights[i].position - vP;
-        float dist = length(L);
-        L = normalize(L);
+        vec3 L_vec = lights[i].position - vP;
+        float distSq = dot(L_vec, L_vec);
+        float dist = sqrt(distSq);
+        vec3 L = L_vec / dist;
 
         vec3 D = normalize(lights[i].direction);
         float cosTheta = dot(-L, D);
@@ -245,7 +251,7 @@ void main() {
 
         float att = 1.0 / (lights[i].attenuation.x +
                            lights[i].attenuation.y * dist +
-                           lights[i].attenuation.z * dist * dist);
+                           lights[i].attenuation.z * distSq);
 
         float diff = max(dot(N, L), 0.0);
         totalLight += lights[i].diffuse * diff * att;
@@ -253,9 +259,12 @@ void main() {
 
     vec3 finalColor = texColor.rgb * vColor.rgb * totalLight;
 
-    if (receiveShadows) {
-        for (int s = 0; s < MAX_SHADOW_CASTERS; s++) {
-            if (s >= numShadowCasters) break;
+    if (receiveShadows && numShadowCasters > 0) {
+        // Исправлено: замена min(int, int) для теней
+        int activeShadows = numShadowCasters;
+        if (activeShadows > MAX_SHADOW_CASTERS) activeShadows = MAX_SHADOW_CASTERS;
+
+        for (int s = 0; s < activeShadows; s++) {
             if (shadowCasters[s].darkness <= 0.0) continue;
 
             vec3 fragToLight = shadowCasters[s].lightPos - vP;
@@ -269,28 +278,21 @@ void main() {
 
             const float zNear = 0.1;
             const float zFar  = 1000.0;
-
             float objDepthNorm = (shadowCasters[s].lightObjDist - zNear) / (zFar - zNear);
+            float bias = clamp(0.0001 * (1.0 - abs(cosTheta)), 0.00001, 0.001);
 
-            float bias = 0.0001 * (1.0 - abs(cosTheta)); 
-            bias = clamp(bias, 0.00001, 0.001);
-
-            if (objDepthNorm + bias > 1.0) objDepthNorm = 1.0 - bias;
-
-            if (proj.z < objDepthNorm + bias) {
-                continue; 
-            }
-
-            if (proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0 && proj.z >= 0.0) {
-                vec4 shadowTex = texture2D(shadowCasters[s].shadowMap, proj.xy);
-                if (shadowTex.a > 0.1) {
-                    finalColor.rgb *= (1.0 - shadowCasters[s].darkness);
+            if (proj.z > objDepthNorm + bias) {
+                if (proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0) {
+                    vec4 shadowTex = texture2D(shadowCasters[s].shadowMap, proj.xy);
+                    if (shadowTex.a > 0.1) {
+                        finalColor.rgb *= (1.0 - shadowCasters[s].darkness);
+                    }
                 }
             }
         }
     }
 
-    float fogCoord = length(vP);
+    float fogCoord = length(vP); 
     float fogFactor = clamp((fogEnd - fogCoord) / (fogEnd - fogStart), 0.0, 1.0);
     finalColor = mix(fogColor, finalColor, fogFactor);
 
