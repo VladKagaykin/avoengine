@@ -32,9 +32,6 @@ void set_mouse_capture(GLFWwindow* window, bool capture);
 void update_mouse();
 void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices);
 
-void set_panorama(const char* path);
-void remove_panorama();
-void draw_panorama(float camX, float camY, float camZ);
 void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop = false);
 void disappearing_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop = false);
 

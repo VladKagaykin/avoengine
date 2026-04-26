@@ -72,16 +72,15 @@ static vector<ma_sound*> loopingSounds;
 CameraParams camera;
 
 // туман
-struct fog_params {
-    bool enabled = false;
-    float density = 0.05f;
-    float color[3] = {0.7f, 0.8f, 0.9f};
-    float start = 5.0f;
-    float end = 30.0f;
-};
-static fog_params fog;
+fog_params fog;
 // свет
 static std::vector<Light*> activeLights;
+
+float global_pitch = 0.0f;
+float global_yaw = 0.0f;
+float global_ambient[3] = {0.05f, 0.05f, 0.05f};
+std::vector<pseudo_3d_entity*> allEntities;
+
 //              утилиты 
 // вычисляем то, куда смотрит центр камеры и прочее
 static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
@@ -550,12 +549,12 @@ void draw_text(const char* text,float x,float y,void* font,float r,float g,float
 //              класс для рисовки псевдо 3д существ
 pseudo_3d_entity::pseudo_3d_entity(float x, float y, float z,
                                    float g_angle, float v_angle, float r_angle,
-                                   std::vector<const char*> textures, int v_angles,
-                                   float* vertices)
+                                   std::vector<std::string> textures, int v_angles,
+                                   const std::vector<float>& vertices)
     : x(x), y(y), z(z),
       g_angle(g_angle), v_angle(v_angle), r_angle(r_angle),
       textures(std::move(textures)), v_angles(v_angles),
-      vertices(vertices) {
+      vertices_(vertices) {
     computeRadius();
 }
 // проверяем есть ли на экране
@@ -607,7 +606,6 @@ int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) con
     const float va = v_angle * float(M_PI) / 180.0f;
     const float ra = r_angle * float(M_PI) / 180.0f;
 
-
     float lx = dir_x, ly = dir_y, lz = dir_z;
 
     float cos_ra = cosf(-ra), sin_ra = sinf(-ra);
@@ -650,7 +648,7 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
 
     const int tidx = getTextureIndex(dx, dy, dz);
-    const char* tex = (tidx >= 0) ? textures[tidx] : nullptr;
+    const char* tex = (tidx >= 0 && tidx < (int)textures.size()) ? textures[tidx].c_str() : nullptr;
 
     const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
     const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
@@ -715,7 +713,7 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     glTranslatef(x, y, z);
     glMultMatrixf(mat);
     glRotatef(total_roll + 180.0f, 0, 0, 1);
-    light_square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices, tex);
+    light_square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
     glPopMatrix();
 
     // Возвращаем получение теней для остальных объектов
@@ -727,9 +725,9 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
 
 void pseudo_3d_entity::computeRadius() {
     float maxDist = 0.0f;
-    for (int i = 0; i < 4; ++i) {
-        float vx = vertices[i*2];
-        float vy = vertices[i*2+1];
+    for (size_t i = 0; i < vertices_.size(); i += 2) {
+        float vx = vertices_[i];
+        float vy = vertices_[i+1];
         float dist = sqrtf(vx*vx + vy*vy);
         if (dist > maxDist) maxDist = dist;
     }
@@ -750,13 +748,13 @@ void pseudo_3d_entity::setCastShadow(bool enable) {
 GLuint pseudo_3d_entity::getTextureFromDirection(float lx, float ly, float lz) const {
     int idx = getTextureIndex(lx, ly, lz);
     if (idx < 0 || idx >= (int)textures.size()) return 0;
-    return loadTextureFromFile(textures[idx]);
+    return loadTextureFromFile(textures[idx].c_str());
 }
 
 GLuint pseudo_3d_entity::getShadowTexture(float lx, float ly, float lz) const {
     int idx = getTextureIndex(lx, ly, lz);
     if (idx < 0 || idx >= (int)textures.size()) return 0;
-    return loadTextureFromFile(textures[idx]);
+    return loadTextureFromFile(textures[idx].c_str());
 }
 
 std::vector<pseudo_3d_entity*> shadowCasters;
@@ -842,7 +840,7 @@ void applyAllShadows() {
         GLuint texID = ent->getShadowTexture(lightToEnt[0], lightToEnt[1], lightToEnt[2]);
         if (!texID) continue;
 
-        float projSize = ent->getRadius() * 0.9; 
+        float projSize = ent->getRadius() * 0.9;
         glMatrixMode(GL_PROJECTION);
         glPushMatrix();
         glLoadIdentity();
@@ -988,6 +986,7 @@ void framebuffer_size_callback(GLFWwindow* /*window*/, int w, int h){
 }
 // инициализация окна
 void setup_display(int* argc, char** argv, float r, float g, float b, float a, const char* name, int w, int h) {
+    // glutInit(argc,argv);
     init_audio();
     if (!glfwInit()) {
         cerr << "Failed to initialize GLFW\n";
@@ -1092,6 +1091,9 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
+
+    global_pitch = pitch;
+    global_yaw = yaw;
 }
 // перемещение камеры
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
@@ -1131,6 +1133,9 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
+
+    global_pitch = pitch;
+    global_yaw = yaw;
 }
 
 //              3д(может быть потом ещё что-то будет)
@@ -1381,6 +1386,9 @@ void applyAllLights() {
 }
 
 void set_ambient_light(float r, float g, float b) {
+    global_ambient[0] = r;
+    global_ambient[1] = g;
+    global_ambient[2] = b;
     if (currentShaderProg) {
         glUniform3f(glGetUniformLocation(currentShaderProg, "ambientLight"), r, g, b);
     }
@@ -1643,4 +1651,495 @@ void draw_performance_hud(int win_w,int win_h){
     snprintf(buf,sizeof(buf),"CPU: %s  RAM: %s  GPU: %s",cpu_name.c_str(),ram_v.c_str(),gpu_name.c_str());
     draw_text(buf,10.0f,float(win_h)-44.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     end_2d();
+}
+// панорама
+sphere_panorama sphere_sky;
+static GLuint skybox_list = 0; 
+void set_panorama(const char* path) {
+    if (sphere_sky.enabled) remove_panorama();
+    sphere_sky.texture = SOIL_load_OGL_texture(
+        path,
+        SOIL_LOAD_AUTO,
+        SOIL_CREATE_NEW_ID,
+        SOIL_FLAG_MIPMAPS | SOIL_FLAG_INVERT_Y | SOIL_FLAG_COMPRESS_TO_DXT
+    );
+
+    if (sphere_sky.texture == 0) {
+        printf("ERROR: Could not load texture from %s. Reason: %s\n", path, SOIL_last_result());
+        system("pwd"); 
+        return;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); 
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
+
+    skybox_list = glGenLists(1);
+    glNewList(skybox_list, GL_COMPILE);
+        float radius = 180.0f;
+        int stacks = 32, slices = 32;
+        for (int i = 0; i < stacks; i++) {
+            float lat0 = M_PI * (-0.5f + (float)i / stacks);
+            float z0 = sin(lat0), zr0 = cos(lat0);
+            float lat1 = M_PI * (-0.5f + (float)(i + 1) / stacks);
+            float z1 = sin(lat1), zr1 = cos(lat1);
+            glBegin(GL_QUAD_STRIP);
+            for (int j = 0; j <= slices; j++) {
+                float lng = 2 * M_PI * (float)j / slices;
+                float x = cos(lng), y = sin(lng);
+                glTexCoord2f((float)j / slices, (float)i / stacks);
+                glVertex3f(x * zr0 * radius, y * zr0 * radius, z0 * radius);
+                glTexCoord2f((float)j / slices, (float)(i + 1) / stacks);
+                glVertex3f(x * zr1 * radius, y * zr1 * radius, z1 * radius);
+            }
+            glEnd();
+        }
+    glEndList();
+    sphere_sky.enabled = true;
+    sphere_sky.path = path;
+    printf("Panorama loaded successfully: %s\n", path);
+}
+void remove_panorama(){
+    if (sphere_sky.enabled) {
+        glDeleteTextures(1, &sphere_sky.texture);
+        glDeleteLists(skybox_list, 1);
+        sphere_sky.enabled = false;
+    }
+}
+void draw_panorama(float camX, float camY, float camZ){
+    if (!sphere_sky.enabled || sphere_sky.texture == 0) return;
+    
+    GLuint prevShader = currentShaderProg;
+    if (prevShader) stopShader();
+
+    glPushAttrib(GL_ALL_ATTRIB_BITS); 
+    glDisable(GL_LIGHTING);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_FOG);         
+    glDepthMask(GL_FALSE);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
+    glColor4f(1, 1, 1, 1);     
+    glPushMatrix();
+    glTranslatef(camX, camY, camZ);
+    glRotatef(90, 1, 0, 0); 
+    glCallList(skybox_list); 
+    glPopMatrix();
+    glPopAttrib();
+
+    if (prevShader) useShader(prevShader);
+}
+// карта
+static inline void write_u32(std::vector<uint8_t>& buf, uint32_t v) {
+    buf.push_back(v & 0xFF);
+    buf.push_back((v >> 8) & 0xFF);
+    buf.push_back((v >> 16) & 0xFF);
+    buf.push_back((v >> 24) & 0xFF);
+}
+
+static inline void write_float(std::vector<uint8_t>& buf, float v) {
+    uint32_t tmp;
+    memcpy(&tmp, &v, 4);
+    write_u32(buf, tmp);
+}
+
+static inline void write_string(std::vector<uint8_t>& buf, const std::string& s) {
+    write_u32(buf, (uint32_t)s.size());
+    buf.insert(buf.end(), s.begin(), s.end());
+}
+
+static inline bool read_u32(const uint8_t*& data, size_t& remaining, uint32_t& out) {
+    if (remaining < 4) return false;
+    out = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+    data += 4; remaining -= 4;
+    return true;
+}
+
+static inline bool read_float(const uint8_t*& data, size_t& remaining, float& out) {
+    uint32_t tmp;
+    if (!read_u32(data, remaining, tmp)) return false;
+    memcpy(&out, &tmp, 4);
+    return true;
+}
+
+static inline bool read_string(const uint8_t*& data, size_t& remaining, std::string& out) {
+    uint32_t len;
+    if (!read_u32(data, remaining, len)) return false;
+    if (len > remaining) return false;
+    out.assign((const char*)data, len);
+    data += len; remaining -= len;
+    return true;
+}
+
+enum class ChunkType : uint32_t {
+    ENTY = 0x59544E45,
+    LITE = 0x4554494C,
+    FOGS = 0x53474F46,
+    CAME = 0x454D4143,
+    PANO = 0x4F4E4150,
+    AMBI = 0x49424D41,
+    USER = 0x52455355
+};
+
+static void write_chunk(std::vector<uint8_t>& out, ChunkType type, const std::vector<uint8_t>& data) {
+    uint32_t fourcc = static_cast<uint32_t>(type);
+    out.push_back(fourcc & 0xFF);
+    out.push_back((fourcc >> 8) & 0xFF);
+    out.push_back((fourcc >> 16) & 0xFF);
+    out.push_back((fourcc >> 24) & 0xFF);
+    write_u32(out, (uint32_t)data.size());
+    out.insert(out.end(), data.begin(), data.end());
+}
+
+static bool load_map_internal(const std::vector<uint8_t>& filedata, MapData& map) {
+    const uint8_t* p = filedata.data();
+    size_t remaining = filedata.size();
+
+    if (remaining < 4) return false;
+    if (memcmp(p, "AVOM", 4) != 0) return false;
+    p += 4; remaining -= 4;
+
+    if (remaining < 4) return false;
+    uint16_t ver_major = p[0] | (p[1] << 8);
+    uint16_t ver_minor = p[2] | (p[3] << 8);
+    p += 4; remaining -= 4;
+
+    if (ver_major != 1) {
+        std::cerr << "Unsupported .avomap major version " << ver_major << std::endl;
+        return false;
+    }
+
+    while (remaining >= 8) {
+        uint32_t fourcc;
+        memcpy(&fourcc, p, 4);
+        p += 4; remaining -= 4;
+
+        uint32_t chunkSize;
+        if (!read_u32(p, remaining, chunkSize)) return false;
+        if (chunkSize > remaining) return false;
+
+        const uint8_t* chunkData = p;
+        p += chunkSize;
+        remaining -= chunkSize;
+
+        ChunkType ctype = static_cast<ChunkType>(fourcc);
+
+        switch (ctype) {
+            case ChunkType::ENTY: {
+                if (chunkSize < 1) break;
+                uint8_t ver = chunkData[0];
+                if (ver != 0) break;
+                const uint8_t* d = chunkData + 1;
+                size_t r = chunkSize - 1;
+                MapEntity ent;
+                if (!read_float(d, r, ent.x) || !read_float(d, r, ent.y) || !read_float(d, r, ent.z)) break;
+                if (!read_float(d, r, ent.g_angle) || !read_float(d, r, ent.v_angle) || !read_float(d, r, ent.r_angle)) break;
+                if (!read_u32(d, r, (uint32_t&)ent.v_angles)) break;
+                uint32_t texCount;
+                if (!read_u32(d, r, texCount)) break;
+                ent.textures.resize(texCount);
+                for (auto& tex : ent.textures) {
+                    if (!read_string(d, r, tex)) break;
+                }
+                uint32_t vertCount;
+                if (!read_u32(d, r, vertCount)) break;
+                ent.vertices.resize(vertCount);
+                for (auto& v : ent.vertices) {
+                    if (!read_float(d, r, v)) break;
+                }
+                if (d <= p) {
+                    uint8_t shadowByte = 0;
+                    if (r > 0) {
+                        shadowByte = d[0];
+                        d++; r--;
+                    }
+                    ent.castShadow = (shadowByte != 0);
+                }
+                map.entities.push_back(ent);
+                break;
+            }
+            case ChunkType::LITE: {
+                if (chunkSize < 1) break;
+                uint8_t ver = chunkData[0];
+                if (ver != 0) break;
+                const uint8_t* d = chunkData + 1;
+                size_t r = chunkSize - 1;
+                MapData::LightData light;
+                uint32_t enabled32;
+                if (!read_u32(d, r, enabled32)) break;
+                light.enabled = (enabled32 != 0);
+                for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.pos[i])) break;
+                for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.dir[i])) break;
+                for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.color[i])) break;
+                if (!read_float(d, r, light.intensity)) break;
+                if (!read_float(d, r, light.cutoff)) break;
+                if (!read_float(d, r, light.constAtt)) break;
+                if (!read_float(d, r, light.linearAtt)) break;
+                if (!read_float(d, r, light.quadAtt)) break;
+                map.lights.push_back(light);
+                break;
+            }
+            case ChunkType::FOGS: {
+                if (chunkSize < 1) break;
+                uint8_t ver = chunkData[0];
+                if (ver != 0) break;
+                const uint8_t* d = chunkData + 1;
+                size_t r = chunkSize - 1;
+                uint32_t enabled32;
+                if (!read_u32(d, r, enabled32)) break;
+                map.fog_enabled = (enabled32 != 0);
+                if (!read_float(d, r, map.fog_density)) break;
+                for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.fog_color[i])) break;
+                if (!read_float(d, r, map.fog_start)) break;
+                if (!read_float(d, r, map.fog_end)) break;
+                break;
+            }
+            case ChunkType::CAME: {
+                if (chunkSize < 1) break;
+                uint8_t ver = chunkData[0];
+                if (ver != 0) break;
+                const uint8_t* d = chunkData + 1;
+                size_t r = chunkSize - 1;
+                for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.camera_eye[i])) break;
+                if (!read_float(d, r, map.camera_pitch)) break;
+                if (!read_float(d, r, map.camera_yaw)) break;
+                break;
+            }
+            case ChunkType::PANO: {
+                if (chunkSize < 1) break;
+                uint8_t ver = chunkData[0];
+                if (ver != 0) break;
+                const uint8_t* d = chunkData + 1;
+                size_t r = chunkSize - 1;
+                if (!read_string(d, r, map.panorama_path)) break;
+                break;
+            }
+            case ChunkType::AMBI: {
+                if (chunkSize < 1) break;
+                uint8_t ver = chunkData[0];
+                if (ver != 0) break;
+                const uint8_t* d = chunkData + 1;
+                size_t r = chunkSize - 1;
+                for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.ambient[i])) break;
+                break;
+            }
+            case ChunkType::USER: {
+                if (chunkSize < 1) break;
+                uint8_t ver = chunkData[0];
+                if (ver != 0) break;
+                const uint8_t* d = chunkData + 1;
+                size_t r = chunkSize - 1;
+                uint32_t numEntries;
+                if (!read_u32(d, r, numEntries)) break;
+                for (uint32_t i = 0; i < numEntries; ++i) {
+                    std::string key;
+                    if (!read_string(d, r, key)) break;
+                    uint32_t dataLen;
+                    if (!read_u32(d, r, dataLen)) break;
+                    if (dataLen > r) break;
+                    std::vector<uint8_t> blob(d, d + dataLen);
+                    d += dataLen; r -= dataLen;
+                    map.userData[key] = std::move(blob);
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return true;
+}
+
+bool save_map(const char* filename, const MapData& map) {
+    std::vector<uint8_t> out;
+
+    out.push_back('A'); out.push_back('V'); out.push_back('O'); out.push_back('M');
+    out.push_back(1); out.push_back(0);      // major = 1 (little‑endian)
+    out.push_back(0); out.push_back(0);
+
+    for (const auto& ent : map.entities) {
+        std::vector<uint8_t> data;
+        data.push_back(0);
+        write_float(data, ent.x);
+        write_float(data, ent.y);
+        write_float(data, ent.z);
+        write_float(data, ent.g_angle);
+        write_float(data, ent.v_angle);
+        write_float(data, ent.r_angle);
+        write_u32(data, ent.v_angles);
+        write_u32(data, (uint32_t)ent.textures.size());
+        for (const auto& t : ent.textures) write_string(data, t);
+        write_u32(data, (uint32_t)ent.vertices.size());
+        for (float v : ent.vertices) write_float(data, v);
+        data.push_back(ent.castShadow ? 1 : 0);
+        write_chunk(out, ChunkType::ENTY, data);
+    }
+
+    for (const auto& light : map.lights) {
+        std::vector<uint8_t> data;
+        data.push_back(0);
+        write_u32(data, light.enabled ? 1 : 0);
+        for (int i = 0; i < 3; ++i) write_float(data, light.pos[i]);
+        for (int i = 0; i < 3; ++i) write_float(data, light.dir[i]);
+        for (int i = 0; i < 3; ++i) write_float(data, light.color[i]);
+        write_float(data, light.intensity);
+        write_float(data, light.cutoff);
+        write_float(data, light.constAtt);
+        write_float(data, light.linearAtt);
+        write_float(data, light.quadAtt);
+        write_chunk(out, ChunkType::LITE, data);
+    }
+
+    {
+        std::vector<uint8_t> data;
+        data.push_back(0);
+        write_u32(data, map.fog_enabled ? 1 : 0);
+        write_float(data, map.fog_density);
+        for (int i = 0; i < 3; ++i) write_float(data, map.fog_color[i]);
+        write_float(data, map.fog_start);
+        write_float(data, map.fog_end);
+        write_chunk(out, ChunkType::FOGS, data);
+    }
+
+    {
+        std::vector<uint8_t> data;
+        data.push_back(0);
+        for (int i = 0; i < 3; ++i) write_float(data, map.camera_eye[i]);
+        write_float(data, map.camera_pitch);
+        write_float(data, map.camera_yaw);
+        write_chunk(out, ChunkType::CAME, data);
+    }
+
+    if (!map.panorama_path.empty()) {
+        std::vector<uint8_t> data;
+        data.push_back(0);
+        write_string(data, map.panorama_path);
+        write_chunk(out, ChunkType::PANO, data);
+    }
+
+    {
+        std::vector<uint8_t> data;
+        data.push_back(0);
+        for (int i = 0; i < 3; ++i) write_float(data, map.ambient[i]);
+        write_chunk(out, ChunkType::AMBI, data);
+    }
+
+    if (!map.userData.empty()) {
+        std::vector<uint8_t> data;
+        data.push_back(0);
+        write_u32(data, (uint32_t)map.userData.size());
+        for (const auto& [key, blob] : map.userData) {
+            write_string(data, key);
+            write_u32(data, (uint32_t)blob.size());
+            data.insert(data.end(), blob.begin(), blob.end());
+        }
+        write_chunk(out, ChunkType::USER, data);
+    }
+
+    FILE* f = fopen(filename, "wb");
+    if (!f) return false;
+    fwrite(out.data(), 1, out.size(), f);
+    fclose(f);
+    return true;
+}
+
+bool load_map(const char* filename, MapData& map) {
+    FILE* f = fopen(filename, "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    std::vector<uint8_t> data(size);
+    fread(data.data(), 1, size, f);
+    fclose(f);
+    return load_map_internal(data, map);
+}
+
+MapEntity entityToMapData(const pseudo_3d_entity& ent) {
+    MapEntity me;
+    me.x = ent.getX();
+    me.y = ent.getY();
+    me.z = ent.getZ();
+    me.g_angle = ent.getGAngle();
+    me.v_angle = ent.getVAngle();
+    me.r_angle = ent.getRAngle();
+    me.v_angles = ent.getVAngles();
+    me.textures = ent.getTextures();
+    me.vertices = ent.getVertices();
+    me.castShadow = ent.castsShadow();
+    return me;
+}
+
+pseudo_3d_entity* mapDataToEntity(const MapEntity& data) {
+    return new pseudo_3d_entity(data.x, data.y, data.z,
+                                data.g_angle, data.v_angle, data.r_angle,
+                                data.textures, data.v_angles, data.vertices);
+}
+
+MapData::LightData lightToMapData(const Light& light) {
+    MapData::LightData l;
+    l.enabled = light.isEnabled();
+    memcpy(l.pos, light.pos, sizeof(l.pos));
+    memcpy(l.dir, light.dir, sizeof(l.dir));
+    memcpy(l.color, light.color, sizeof(l.color));
+    l.intensity = light.intensity;
+    l.cutoff = light.cutoff;
+    l.constAtt = light.constAtt;
+    l.linearAtt = light.linearAtt;
+    l.quadAtt = light.quadAtt;
+    return l;
+}
+
+void mapDataToLight(const MapData::LightData& data, Light& out) {
+    out.setPosition(data.pos[0], data.pos[1], data.pos[2]);
+    memcpy(out.dir, data.dir, sizeof(out.dir));
+    out.setColor(data.color[0], data.color[1], data.color[2]);
+    out.setIntensity(data.intensity);
+    out.setRadius(data.cutoff);
+    out.setAttenuation(data.constAtt, data.linearAtt, data.quadAtt);
+    if (data.enabled) out.enable(); else out.disable();
+}
+
+void registerEntity(pseudo_3d_entity* e) {
+    if (std::find(allEntities.begin(), allEntities.end(), e) == allEntities.end()) {
+        allEntities.push_back(e);
+    }
+}
+
+void unregisterEntity(pseudo_3d_entity* e) {
+    auto it = std::find(allEntities.begin(), allEntities.end(), e);
+    if (it != allEntities.end()) allEntities.erase(it);
+}
+
+void save_current_scene(const char* filename) {
+    MapData map;
+
+    for (auto* e : allEntities) {
+        map.entities.push_back(entityToMapData(*e));
+    }
+
+    for (auto* l : activeLights) {
+        map.lights.push_back(lightToMapData(*l));
+    }
+
+    map.fog_enabled = fog.enabled;
+    map.fog_density = fog.density;
+    memcpy(map.fog_color, fog.color, sizeof(fog.color));
+    map.fog_start = fog.start;
+    map.fog_end = fog.end;
+
+    map.camera_eye[0] = camera.eye_x;
+    map.camera_eye[1] = camera.eye_y;
+    map.camera_eye[2] = camera.eye_z;
+    map.camera_pitch = global_pitch;
+    map.camera_yaw = global_yaw;
+
+    extern sphere_panorama sphere_sky;
+    if (sphere_sky.enabled) {
+        map.panorama_path = sphere_sky.path;
+    }
+
+    memcpy(map.ambient, global_ambient, sizeof(global_ambient));
+
+    save_map(filename, map);
 }

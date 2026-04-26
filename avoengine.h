@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <unordered_map>
 #include "miniaudio.h"
 
 struct GLFWwindow;
@@ -60,8 +61,8 @@ class pseudo_3d_entity {
 public:
     pseudo_3d_entity(float x, float y, float z,
                      float g_angle, float v_angle, float r_angle,
-                     std::vector<const char*> textures, int v_angles,
-                     float* vertices);
+                     std::vector<std::string> textures, int v_angles,
+                     const std::vector<float>& vertices);
 
     void draw(float cam_x, float cam_y, float cam_z) const;
 
@@ -85,7 +86,9 @@ public:
 
     GLuint getShadowTexture(float dir_x, float dir_y, float dir_z) const;
     GLuint getTextureFromDirection(float dir_x, float dir_y, float dir_z) const;
-    const std::vector<const char*>& getTextures() const { return textures; }
+    const std::vector<std::string>& getTextures() const { return textures; }
+    const std::vector<float>& getVertices() const { return vertices_; }
+    int getVAngles() const { return v_angles; }
 private:
     void computeRadius();
     int getTextureIndex(float dir_x, float dir_y, float dir_z) const;
@@ -95,9 +98,9 @@ private:
     float g_angle, v_angle, r_angle;
     float radius;
 
-    std::vector<const char*> textures;
+    std::vector<std::string> textures;
     int v_angles;
-    float* vertices;
+    std::vector<float> vertices_;
 
     mutable int cachedTexIdx = -1;
     mutable float cachedDirX = 1e9f, cachedDirY = 1e9f, cachedDirZ = 1e9f;
@@ -154,7 +157,6 @@ void applyAllLights();
 // ID дефолтного шейдера (будет создан при инициализации)
 extern GLuint defaultLightingShader;
 
-
 void set_ambient_light(float r, float g, float b);
 void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
 void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);
@@ -171,4 +173,84 @@ void play_sound_3d(const char* filename,float x,float y,float z,float volume=1.0
 void play_sound_3d_loop(const char* filename,float x,float y,float z,float volume=1.0f);
 void stop_all_looping_sounds();
 void draw_performance_hud(int win_w,int win_h);
-#endif 
+
+struct sphere_panorama {
+    bool enabled = false;
+    GLuint texture = 0;
+    std::string path;
+};
+extern sphere_panorama sphere_sky;
+
+void set_panorama(const char* path);
+void remove_panorama();
+void draw_panorama(float camX, float camY, float camZ);
+
+struct MapEntity {
+    float x, y, z;
+    float g_angle, v_angle, r_angle;
+    int v_angles;
+    std::vector<std::string> textures;
+    std::vector<float> vertices;
+    bool castShadow = false;
+};
+
+struct MapData {
+    std::vector<MapEntity> entities;
+
+    struct LightData {
+        bool enabled = false;
+        float pos[3] = {0,0,0};
+        float dir[3] = {0,0,-1};
+        float color[3] = {1,1,1};
+        float intensity = 1.0f;
+        float cutoff = 180.0f;
+        float constAtt = 1.0f;
+        float linearAtt = 0.0f;
+        float quadAtt = 0.0f;
+    };
+    std::vector<LightData> lights;
+
+    bool fog_enabled = false;
+    float fog_density = 0.05f;
+    float fog_color[3] = {0.7f, 0.8f, 0.9f};
+    float fog_start = 5.0f;
+    float fog_end = 30.0f;
+
+    float camera_eye[3] = {0,0,0};
+    float camera_pitch = 0.0f;
+    float camera_yaw = 0.0f;
+
+    std::string panorama_path;
+    float ambient[3] = {0.05f, 0.05f, 0.05f};
+
+    std::unordered_map<std::string, std::vector<uint8_t>> userData;
+};
+
+bool save_map(const char* filename, const MapData& map);
+bool load_map(const char* filename, MapData& map);
+
+MapEntity entityToMapData(const pseudo_3d_entity& ent);
+pseudo_3d_entity* mapDataToEntity(const MapEntity& data);
+
+MapData::LightData lightToMapData(const Light& light);
+void mapDataToLight(const MapData::LightData& data, Light& out);
+
+struct fog_params {
+    bool enabled = false;
+    float density = 0.05f;
+    float color[3] = {0.7f, 0.8f, 0.9f};
+    float start = 5.0f;
+    float end = 30.0f;
+};
+extern fog_params fog;
+
+extern float global_pitch;
+extern float global_yaw;
+extern float global_ambient[3];
+
+extern std::vector<pseudo_3d_entity*> allEntities;
+void registerEntity(pseudo_3d_entity* e);
+void unregisterEntity(pseudo_3d_entity* e);
+void save_current_scene(const char* filename);
+
+#endif
