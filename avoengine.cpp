@@ -169,7 +169,8 @@ varying vec3 vN;
 varying vec3 vP;
 varying vec4 vColor;
 varying vec2 vTexCoord;
-varying vec3 vWorldPos;  
+varying vec3 vWorldPos;
+varying vec4 vClipPos;
 
 void main() {
     vN = normalize(gl_NormalMatrix * gl_Normal);
@@ -181,6 +182,7 @@ void main() {
     vWorldPos = vec3(gl_Vertex); 
     
     gl_Position = ftransform();
+    vClipPos = gl_Position;
 }
 )";
 
@@ -212,6 +214,7 @@ varying vec3 vN;
 varying vec3 vP;
 varying vec4 vColor;
 varying vec2 vTexCoord;
+varying vec4 vClipPos;
 
 uniform sampler2D tex;
 uniform Light lights[MAX_LIGHTS];
@@ -225,7 +228,21 @@ uniform ShadowCaster shadowCasters[MAX_SHADOW_CASTERS];
 uniform int numShadowCasters;
 uniform bool receiveShadows;
 
+uniform bool portalMode;
+uniform bool portalDepthOnly;
+uniform sampler2D portalTex;
+
 void main() {
+    if (portalMode) {
+        if (portalDepthOnly) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+        vec2 uv = (vClipPos.xy / vClipPos.w) * 0.5 + 0.5;
+        gl_FragColor = texture2D(portalTex, uv);
+        return;
+    }
+
     vec4 texColor = texture2D(tex, vTexCoord);
     if (texColor.a < 0.01) discard; 
 
@@ -2142,4 +2159,303 @@ void save_current_scene(const char* filename) {
     memcpy(map.ambient, global_ambient, sizeof(global_ambient));
 
     save_map(filename, map);
+}
+Portal::Portal(float ax, float ay, float az,
+               float bx, float by, float bz,
+               const std::vector<float>& verts,
+               float yawA, float pitchA, float rollA,
+               float yawB, float pitchB, float rollB)
+    : ax(ax), ay(ay), az(az)
+    , bx(bx), by(by), bz(bz)
+    , vertices(verts)
+    , yawA(yawA), pitchA(pitchA), rollA(rollA)
+    , yawB(yawB), pitchB(pitchB), rollB(rollB)
+{
+    initFBOs(window_w > 0 ? window_w : 800, window_h > 0 ? window_h : 600);
+}
+
+Portal::~Portal() {
+    destroyFBOs();
+}
+
+void Portal::setSceneDrawCallback(std::function<void()> cb) {
+    sceneDraw = cb;
+}
+
+void Portal::initFBOs(int w, int h) {
+    auto createFBO = [](FBO& fb, int w, int h) {
+        fb.w = w; fb.h = h;
+
+        glGenTextures(1, &fb.colorTex);
+        glBindTexture(GL_TEXTURE_2D, fb.colorTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glGenTextures(1, &fb.depthTex);
+        glBindTexture(GL_TEXTURE_2D, fb.depthTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        glGenFramebuffers(1, &fb.fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fb.fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb.colorTex, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  GL_TEXTURE_2D, fb.depthTex, 0);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            cerr << "Portal FBO incomplete\n";
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    };
+
+    createFBO(fboA, w, h);
+    createFBO(fboB, w, h);
+}
+
+void Portal::destroyFBOs() {
+    auto del = [](FBO& fb) {
+        if (fb.fbo)      { glDeleteFramebuffers(1, &fb.fbo);  fb.fbo = 0; }
+        if (fb.colorTex) { glDeleteTextures(1, &fb.colorTex); fb.colorTex = 0; }
+        if (fb.depthTex) { glDeleteTextures(1, &fb.depthTex); fb.depthTex = 0; }
+    };
+    del(fboA); del(fboB);
+}
+
+void Portal::resizeFBOs(int w, int h) {
+    if (fboA.w == w && fboA.h == h) return;
+    destroyFBOs();
+    initFBOs(w, h);
+}
+
+glm::vec3 Portal::portalNormal(float px, float py, float pz, bool sideB) const {
+    // Локальная нормаль (без поворота) смотрит против оси Z
+    glm::vec3 localNormal(0.0f, 0.0f, -1.0f);
+
+    float yaw   = sideB ? yawB   : yawA;
+    float pitch = sideB ? pitchB : pitchA;
+    float roll  = sideB ? rollB  : rollA;
+
+    // Поворот через mat4 -> mat3
+    glm::mat4 rot4 = glm::mat4(1.0f);
+    rot4 = glm::rotate(rot4, glm::radians(yaw),   glm::vec3(0.0f, 1.0f, 0.0f));
+    rot4 = glm::rotate(rot4, glm::radians(pitch), glm::vec3(1.0f, 0.0f, 0.0f));
+    rot4 = glm::rotate(rot4, glm::radians(roll),  glm::vec3(0.0f, 0.0f, 1.0f));
+    glm::mat3 rot = glm::mat3(rot4);
+
+    return rot * localNormal;
+}
+
+bool Portal::isFrontFacing(float px, float py, float pz,
+                            float cam_x, float cam_y, float cam_z) const {
+    // Всегда считаем лицевой (двусторонний портал)
+    return true;
+}
+
+glm::mat4 Portal::getPortalTransform(float fx, float fy, float fz,
+                                      float tx, float ty, float tz) const {
+    // Вычисляем центры порталов
+    int n = (int)vertices.size() / 3;
+    glm::vec3 centerA(0,0,0), centerB(0,0,0);
+    for (int i = 0; i < n; i++) {
+        centerA += glm::vec3(fx + vertices[i*3], fy + vertices[i*3+1], fz + vertices[i*3+2]);
+        centerB += glm::vec3(tx + vertices[i*3], ty + vertices[i*3+1], tz + vertices[i*3+2]);
+    }
+    centerA /= (float)n;
+    centerB /= (float)n;
+
+    // Нормали с учётом поворота
+    glm::vec3 nA = portalNormal(fx, fy, fz, false); // портал A
+    glm::vec3 nB = portalNormal(tx, ty, tz, true);  // портал B
+
+    // Локальные базисы из углов поворота
+    auto makeBasis = [](float yaw, float pitch, float roll) {
+        glm::mat4 rot4 = glm::mat4(1.0f);
+        rot4 = glm::rotate(rot4, glm::radians(yaw),   glm::vec3(0.0f, 1.0f, 0.0f));
+        rot4 = glm::rotate(rot4, glm::radians(pitch), glm::vec3(1.0f, 0.0f, 0.0f));
+        rot4 = glm::rotate(rot4, glm::radians(roll),  glm::vec3(0.0f, 0.0f, 1.0f));
+        return glm::mat3(rot4);
+    };
+
+    glm::mat3 rotA = makeBasis(yawA, pitchA, rollA);
+    glm::mat3 rotB = makeBasis(yawB, pitchB, rollB);
+
+    // Матрица преобразования мира: из A в B
+    glm::mat4 fromA(1.0f);
+    fromA[0] = glm::vec4(rotA[0], 0.0f);
+    fromA[1] = glm::vec4(rotA[1], 0.0f);
+    fromA[2] = glm::vec4(rotA[2], 0.0f);
+    fromA[3] = glm::vec4(centerA, 1.0f);
+
+    glm::mat4 toB(1.0f);
+    toB[0] = glm::vec4(rotB[0], 0.0f);
+    toB[1] = glm::vec4(rotB[1], 0.0f);
+    toB[2] = glm::vec4(rotB[2], 0.0f);
+    toB[3] = glm::vec4(centerB, 1.0f);
+
+    return toB * glm::inverse(fromA);
+}
+
+static void portalSetUniforms(GLuint prog, GLuint tex, bool depthOnly) {
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "portalMode"),      1);
+    glUniform1i(glGetUniformLocation(prog, "portalDepthOnly"), depthOnly ? 1 : 0);
+    glUniform1i(glGetUniformLocation(prog, "portalTex"),       1);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+static void portalClearUniforms(GLuint prog) {
+    glUniform1i(glGetUniformLocation(prog, "portalMode"),      0);
+    glUniform1i(glGetUniformLocation(prog, "portalDepthOnly"), 0);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glUseProgram(0);
+}
+
+void Portal::drawPortalSurface(float px, float py, float pz, GLuint tex, bool sideB) {
+    int n = (int)vertices.size() / 3;
+    if (n < 3) return;
+
+    GLuint prog = defaultLightingShader;
+
+    glDisable(GL_CULL_FACE); // для двусторонности
+
+    portalSetUniforms(prog, tex, false);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_FALSE);
+    glDepthFunc(GL_LEQUAL);
+
+    glBegin(GL_TRIANGLE_FAN);
+    for (int i = 0; i < n; i++)
+        glVertex3f(px + vertices[i*3], py + vertices[i*3+1], pz + vertices[i*3+2]);
+    glEnd();
+
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_LESS);
+    portalClearUniforms(prog);
+
+    portalSetUniforms(prog, 0, true);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glDepthMask(GL_TRUE);
+
+    glBegin(GL_TRIANGLE_FAN);
+    for (int i = 0; i < n; i++)
+        glVertex3f(px + vertices[i*3], py + vertices[i*3+1], pz + vertices[i*3+2]);
+    glEnd();
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    portalClearUniforms(prog);
+
+    glEnable(GL_CULL_FACE);
+}
+
+void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
+                                  float dst_x, float dst_y, float dst_z,
+                                  int depth, bool drawingA) {
+    if (!sceneDraw) return;
+
+    FBO& fbo = drawingA ? fboA : fboB;
+    resizeFBOs(window_w > 0 ? window_w : 800, window_h > 0 ? window_h : 600);
+
+    glm::mat4 portalMat = getPortalTransform(src_x, src_y, src_z, dst_x, dst_y, dst_z);
+
+    // Позиция камеры в мире B
+    glm::vec3 camPos = glm::vec3(portalMat * glm::vec4(camera.eye_x, camera.eye_y, camera.eye_z, 1.0f));
+
+    // Получаем чистую ориентацию портала B
+    glm::mat3 rotB = glm::mat3(portalMat); // верхняя 3x3 часть — вращение из A в B
+
+    // Направление взгляда: вращаем вектор камеры обратным вращением портала B,
+    // чтобы убрать зеркальное отражение, вызванное матрицей portalMat.
+    glm::vec3 newDir = glm::normalize(glm::inverse(rotB) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
+
+    float new_pitch = glm::degrees(asinf(newDir.y));
+    float new_yaw   = glm::degrees(atan2f(newDir.x, newDir.z));
+
+    // Плоскость отсечения по целевому порталу (dst)
+    glm::vec3 dstNorm = portalNormal(dst_x, dst_y, dst_z, !drawingA); // для dst используем его ориентацию
+    int n = vertices.size() / 3;
+    glm::vec3 dstCenter(0,0,0);
+    for (int i = 0; i < n; i++)
+        dstCenter += glm::vec3(dst_x + vertices[i*3], dst_y + vertices[i*3+1], dst_z + vertices[i*3+2]);
+    dstCenter /= (float)n;
+
+    GLdouble clipPlane[4] = {
+        (GLdouble)dstNorm.x,
+        (GLdouble)dstNorm.y,
+        (GLdouble)dstNorm.z,
+        -(GLdouble)glm::dot(dstNorm, dstCenter)
+    };
+
+    // Сейвим состояние камеры
+    float savedEyeX = camera.eye_x, savedEyeY = camera.eye_y, savedEyeZ = camera.eye_z;
+    float savedCtrX = camera.ctr_x, savedCtrY = camera.ctr_y, savedCtrZ = camera.ctr_z;
+    float savedDirX = camera.dir_x, savedDirY = camera.dir_y, savedDirZ = camera.dir_z;
+    float savedUpX = camera.up_x, savedUpY = camera.up_y, savedUpZ = camera.up_z;
+    float savedPitch = global_pitch, savedYaw = global_yaw;
+
+    // Рендерим в FBO
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo.fbo);
+    glViewport(0, 0, fbo.w, fbo.h);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Устанавливаем временную камеру вручную (без move_camera, чтобы не портить звук/глобальные углы)
+    camera.eye_x = camPos.x; camera.eye_y = camPos.y; camera.eye_z = camPos.z;
+    camera.dir_x = newDir.x; camera.dir_y = newDir.y; camera.dir_z = newDir.z;
+    camera.ctr_x = camPos.x + newDir.x; // центр взгляда (1 единица вперёд)
+    camera.ctr_y = camPos.y + newDir.y;
+    camera.ctr_z = camPos.z + newDir.z;
+    global_pitch = new_pitch;
+    global_yaw = new_yaw;
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+    gluLookAt(camPos.x, camPos.y, camPos.z,
+              camera.ctr_x, camera.ctr_y, camera.ctr_z,
+              camera.up_x, camera.up_y, camera.up_z);
+
+    glEnable(GL_CLIP_PLANE0);
+    glClipPlane(GL_CLIP_PLANE0, clipPlane);
+
+    sceneDraw();
+
+    glDisable(GL_CLIP_PLANE0);
+    glPopMatrix();
+
+    // Восстанавливаем основную камеру
+    camera.eye_x = savedEyeX; camera.eye_y = savedEyeY; camera.eye_z = savedEyeZ;
+    camera.ctr_x = savedCtrX; camera.ctr_y = savedCtrY; camera.ctr_z = savedCtrZ;
+    camera.dir_x = savedDirX; camera.dir_y = savedDirY; camera.dir_z = savedDirZ;
+    camera.up_x = savedUpX; camera.up_y = savedUpY; camera.up_z = savedUpZ;
+    global_pitch = savedPitch; global_yaw = savedYaw;
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    gluLookAt(savedEyeX, savedEyeY, savedEyeZ,
+              savedEyeX + savedDirX, savedEyeY + savedDirY, savedEyeZ + savedDirZ,
+              savedUpX, savedUpY, savedUpZ);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, window_w, window_h);
+}
+
+void Portal::draw(int recursion_depth) {
+    resizeFBOs(window_w > 0 ? window_w : 800, window_h > 0 ? window_h : 600);
+
+    // A -> B
+    renderThroughPortal(ax, ay, az, bx, by, bz, recursion_depth, false);
+    drawPortalSurface(ax, ay, az, fboB.colorTex, false);
+
+    // B -> A
+    renderThroughPortal(bx, by, bz, ax, ay, az, recursion_depth, true);
+    drawPortalSurface(bx, by, bz, fboA.colorTex, true);
 }

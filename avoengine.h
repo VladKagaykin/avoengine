@@ -253,4 +253,56 @@ void registerEntity(pseudo_3d_entity* e);
 void unregisterEntity(pseudo_3d_entity* e);
 void save_current_scene(const char* filename);
 
+
+#include <functional>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+class Portal {
+public:
+    Portal(
+        float ax, float ay, float az,
+        float bx, float by, float bz,
+        const std::vector<float>& vertices,
+        float yawA = 0.0f, float pitchA = 0.0f, float rollA = 0.0f,
+        float yawB = 0.0f, float pitchB = 0.0f, float rollB = 0.0f
+    );
+    ~Portal();
+
+    void setSceneDrawCallback(std::function<void()> cb);
+    void draw(int recursion_depth = 2);
+
+    float ax, ay, az;
+    float bx, by, bz;
+    float yawA, pitchA, rollA;
+    float yawB, pitchB, rollB;
+    std::vector<float> vertices;
+
+private:
+    struct FBO {
+        GLuint fbo = 0;
+        GLuint colorTex = 0;
+        GLuint depthTex = 0;
+        int w = 0, h = 0;
+    };
+
+    void initFBOs(int w, int h);
+    void destroyFBOs();
+    void resizeFBOs(int w, int h);
+
+    glm::mat4 getPortalTransform(float fx, float fy, float fz,
+                                  float tx, float ty, float tz) const;
+    glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
+    bool isFrontFacing(float px, float py, float pz,
+                       float cam_x, float cam_y, float cam_z) const;
+
+    void renderThroughPortal(float src_x, float src_y, float src_z,
+                              float dst_x, float dst_y, float dst_z,
+                              int depth, bool drawingA);
+    void drawPortalSurface(float px, float py, float pz, GLuint tex, bool sideB);
+
+    FBO fboA, fboB;
+    std::function<void()> sceneDraw;
+};
+
 #endif
