@@ -278,6 +278,8 @@ public:
     float yawB, pitchB, rollB;
     std::vector<float> vertices;
 
+    void checkTeleport();
+
 private:
     struct FBO {
         GLuint fbo = 0;
@@ -303,6 +305,43 @@ private:
 
     FBO fboA, fboB;
     std::function<void()> sceneDraw;
+
+    glm::vec3 prevCamPos = glm::vec3(0.0f);  
+    float prevSignedDist = 0.0f;              
+    bool prevValid = false;
+    glm::vec3 getCenterA(const glm::mat4& worldMat) const {
+        glm::vec3 center(ax, ay, az);
+        int n = vertices.size() / 3;
+        for (int i = 0; i < n; ++i) {
+            glm::vec4 local(vertices[i*3], vertices[i*3+1], vertices[i*3+2], 1.0f);
+            glm::vec3 world = glm::vec3(worldMat * local);
+            center += world;
+        }
+        return center / float(n + 1);
+    }
+
+    bool pointInPortalPolygon(const glm::vec2& point) const {
+        int n = vertices.size() / 3;
+        if (n < 3) return false;
+        bool inside = false;
+        for (int i = 0, j = n-1; i < n; j = i++) {
+            float xi = vertices[i*3];
+            float yi = vertices[i*3+1];
+            float xj = vertices[j*3];
+            float yj = vertices[j*3+1];
+            if ( ((yi > point.y) != (yj > point.y)) &&
+                (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi) )
+                inside = !inside;
+        }
+        return inside;
+    }
+    struct SideState {
+        glm::vec3 prevCamPos = glm::vec3(0.0f);
+        float prevSignedDist = 0.0f;
+        bool prevValid = false;
+    };
+    SideState sideA, sideB;
+    int teleportCooldown = 0;
 };
 
 #endif

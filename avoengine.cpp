@@ -2454,3 +2454,103 @@ void Portal::draw(int recursion_depth) {
     renderThroughPortal(bx, by, bz, ax, ay, az, recursion_depth, true);
     drawPortalSurface(bx, by, bz, fboA.colorTex, true);
 }
+
+void Portal::checkTeleport() {
+    if (teleportCooldown > 0) {
+        --teleportCooldown;
+        return;
+    }
+
+    glm::vec3 camPos(camera.eye_x, camera.eye_y, camera.eye_z);
+
+    auto computeWorldMatrix = [&](float px, float py, float pz,
+                                   float yaw, float pitch, float roll) -> glm::mat4 {
+        glm::mat4 rot = glm::mat4(1.0f);
+        rot = glm::rotate(rot, glm::radians(yaw),   glm::vec3(0,1,0));
+        rot = glm::rotate(rot, glm::radians(pitch), glm::vec3(1,0,0));
+        rot = glm::rotate(rot, glm::radians(roll),  glm::vec3(0,0,1));
+        return glm::translate(glm::mat4(1.0f), glm::vec3(px, py, pz)) * rot;
+    };
+
+    auto checkPortalSide = [&](SideState& state,
+                                float sx, float sy, float sz,
+                                float syaw, float spitch, float sroll,
+                                float dx, float dy, float dz,
+                                float dyaw, float dpitch, float droll,
+                                glm::vec3 localNormal) -> bool
+    {
+        glm::mat4 worldSrc = computeWorldMatrix(sx, sy, sz, syaw, spitch, sroll);
+        glm::vec3 normal = glm::mat3(worldSrc) * localNormal;
+
+        glm::vec3 center(0.0f);
+        int n = vertices.size() / 3;
+        for (int i = 0; i < n; ++i) {
+            glm::vec4 local(vertices[i*3], vertices[i*3+1], vertices[i*3+2], 1.0f);
+            center += glm::vec3(worldSrc * local);
+        }
+        center /= float(n);
+
+        float dist = glm::dot(normal, camPos - center);
+
+        if (!state.prevValid) {
+            state.prevCamPos = camPos;
+            state.prevSignedDist = dist;
+            state.prevValid = true;
+            return false;
+        }
+
+        float prevDist = state.prevSignedDist;
+
+        if (prevDist * dist >= 0.0f) {
+            state.prevCamPos = camPos;
+            state.prevSignedDist = dist;
+            return false;
+        }
+
+        float t = prevDist / (prevDist - dist);
+        glm::vec3 intersection = state.prevCamPos + t * (camPos - state.prevCamPos);
+
+        glm::mat4 invWorld = glm::inverse(worldSrc);
+        glm::vec3 localPt = glm::vec3(invWorld * glm::vec4(intersection, 1.0f));
+        if (!pointInPortalPolygon(glm::vec2(localPt.x, localPt.y))) {
+            state.prevCamPos = camPos;
+            state.prevSignedDist = dist;
+            return false;
+        }
+
+        glm::mat4 transform = getPortalTransform(sx, sy, sz, dx, dy, dz);
+        glm::vec4 newPos4 = transform * glm::vec4(intersection, 1.0f);
+        glm::vec3 newPos(newPos4.x, newPos4.y, newPos4.z);
+
+        glm::vec4 lookAtPt(camPos.x + camera.dir_x,
+                           camPos.y + camera.dir_y,
+                           camPos.z + camera.dir_z, 1.0f);
+        glm::vec4 newLookAt4 = transform * lookAtPt;
+        glm::vec3 newLookAt(newLookAt4.x, newLookAt4.y, newLookAt4.z);
+        glm::vec3 newDir = glm::normalize(newLookAt - newPos);
+        float newYaw   = glm::degrees(atan2f(newDir.x, newDir.z));
+        float newPitch = glm::degrees(asinf(newDir.y));
+
+        glm::mat4 worldDst = computeWorldMatrix(dx, dy, dz, dyaw, dpitch, droll);
+        glm::vec3 pushNormal = glm::mat3(worldDst) * (-localNormal);
+        const float push = 0.5f;
+        newPos += pushNormal * push;
+
+        move_camera(newPos.x, newPos.y, newPos.z, newPitch, newYaw);
+
+        state.prevValid = false;
+        SideState& otherState = (&state == &sideA) ? sideB : sideA;
+        otherState.prevValid = false;
+        teleportCooldown = 5;
+        return true;
+    };
+
+    if (checkPortalSide(sideA, ax, ay, az, yawA, pitchA, rollA,
+                        bx, by, bz, yawB, pitchB, rollB,
+                        glm::vec3(0.0f, 0.0f, -1.0f)))
+        return;
+
+    checkPortalSide(sideB, bx, by, bz, yawB, pitchB, rollB,
+                    ax, ay, az, yawA, pitchA, rollA,
+                    glm::vec3(0.0f, 0.0f, 1.0f));
+}
