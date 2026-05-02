@@ -2392,7 +2392,7 @@ void Portal::drawPortalSurface(float px, float py, float pz, GLuint tex, bool si
 
 void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
                                   float dst_x, float dst_y, float dst_z,
-                                  int depth, bool drawingA) {
+                                  int depth, bool drawingA){
     if (!sceneDraw) return;
 
     FBO& fbo = drawingA ? fboA : fboB;
@@ -2401,9 +2401,7 @@ void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
     glm::mat4 portalMat = getPortalTransform(src_x, src_y, src_z, dst_x, dst_y, dst_z);
 
     glm::vec3 camPos = glm::vec3(portalMat * glm::vec4(camera.eye_x, camera.eye_y, camera.eye_z, 1.0f));
-
     glm::vec3 newDir = glm::normalize(glm::mat3(portalMat) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
-
     float new_pitch = glm::degrees(asinf(newDir.y));
     float new_yaw   = glm::degrees(atan2f(newDir.x, newDir.z));
 
@@ -2436,7 +2434,8 @@ void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
     camera.ctr_x = camPos.x + newDir.x;
     camera.ctr_y = camPos.y + newDir.y;
     camera.ctr_z = camPos.z + newDir.z;
-    camera.pitch = savedPitch; camera.yaw = savedYaw;
+    camera.pitch = new_pitch;
+    camera.yaw   = new_yaw;
 
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
@@ -2569,12 +2568,12 @@ void Portal::checkTeleport() {
 
         glm::mat4 worldDst = computeWorldMatrix(dx, dy, dz, dyaw, dpitch, droll);
         glm::vec3 pushNormal = glm::mat3(worldDst) * (-localNormal);
-        const float push = 1.5f;
-        if (prevDist > 0.0f) {
-            newPos += pushNormal * push;
-        } else {
-            newPos -= pushNormal * push;
-        }
+        // const float push = 1.5f;
+        // if (prevDist > 0.0f) {
+        //     newPos += pushNormal * push;
+        // } else {
+        //     newPos -= pushNormal * push;
+        // }
 
         move_camera(newPos.x, newPos.y, newPos.z, newPitch, newYaw, newRoll);
 
