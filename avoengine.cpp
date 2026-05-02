@@ -1055,6 +1055,8 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     initDefaultShader();
     changeSize2D(w, h);
 }
+//                                                                                      КОЛХОЗ!!! ПОТОМ СРОЧНО ИСПРАВИТЬ!!!
+float global_pitch,global_yaw;
 // настройка камеры
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll){
     // задаём параметры камеры
@@ -1091,6 +1093,15 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     // вычисляем точку взгляда
     lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z,camera.dir_x, camera.dir_y, camera.dir_z);
 
+    if (roll != 0.0f) {
+        float rad = roll * M_PI / 180.0f;
+        glm::vec3 fwd(camera.dir_x, camera.dir_y, camera.dir_z);
+        glm::vec3 up0(up_x, up_y, up_z);
+        glm::mat3 rot = glm::mat3(glm::rotate(glm::mat4(1.0f), rad, fwd));
+        glm::vec3 newUp = rot * up0;
+        up_x = newUp.x; up_y = newUp.y; up_z = newUp.z;
+    }
+
     // настройка матрицы на проекцию
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -1101,16 +1112,18 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     glLoadIdentity();
     gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
 
+    global_pitch = pitch;
+    global_yaw = yaw;
     camera.pitch = pitch;
     camera.yaw   = yaw;
     camera.roll  = roll;
 }
 // перемещение камеры
-void move_camera(float eye_x, float eye_y, float eye_z, float pitch, float yaw, float roll){
+void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll){
     // обновляем параметры камеры
-    camera.eye_x = eye_x;
-    camera.eye_y = eye_y;
-    camera.eye_z = eye_z;
+    camera.eye_x=eye_x;
+    camera.eye_y=eye_y;
+    camera.eye_z=eye_z;
 
     float norm_pitch = fmod(pitch, 360.0f);
     if (norm_pitch < 0) norm_pitch += 360.0f;
@@ -1118,24 +1131,26 @@ void move_camera(float eye_x, float eye_y, float eye_z, float pitch, float yaw, 
     float adj_pitch = norm_pitch;
     float up_x = 0, up_y = 1, up_z = 0;
 
-    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
-    ma_engine_listener_set_direction(&audio_engine, 0, camera.dir_x, camera.dir_y, camera.dir_z);
+    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
+    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 
     if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
-        adj_pitch = 180.0f - norm_pitch;
-        up_y = -1.0f;
+        adj_pitch = 180.0f - norm_pitch; 
+        up_y = -1.0f;                    
         yaw += 180.0f;
-        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f);
+        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f); 
     } else {
         if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
         up_y = 1.0f;
         ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
     }
 
+    camera.up_x = up_x;
+    camera.up_y = up_y;
+    camera.up_z = up_z;
+
     // считаем направление взгляда
-    lookAtForward(eye_x, eye_y, eye_z, adj_pitch, yaw,
-                  camera.ctr_x, camera.ctr_y, camera.ctr_z,
-                  camera.dir_x, camera.dir_y, camera.dir_z);
+    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z, camera.dir_x, camera.dir_y, camera.dir_z);
 
     if (roll != 0.0f) {
         float rad = roll * M_PI / 180.0f;
@@ -1146,17 +1161,13 @@ void move_camera(float eye_x, float eye_y, float eye_z, float pitch, float yaw, 
         up_x = newUp.x; up_y = newUp.y; up_z = newUp.z;
     }
 
-    camera.up_x = up_x;
-    camera.up_y = up_y;
-    camera.up_z = up_z;
-
     // обновляем матрицу
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    gluLookAt(eye_x, eye_y, eye_z,
-              camera.ctr_x, camera.ctr_y, camera.ctr_z,
-              up_x, up_y, up_z);
+    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
 
+    global_pitch = pitch;
+    global_yaw = yaw;
     camera.pitch = pitch;
     camera.yaw   = yaw;
     camera.roll  = roll;
@@ -2249,11 +2260,6 @@ glm::vec3 Portal::portalNormal(float px, float py, float pz, bool sideB) const {
     return rot * localNormal;
 }
 
-bool Portal::isFrontFacing(float px, float py, float pz,
-                            float cam_x, float cam_y, float cam_z) const {
-    return true;
-}
-
 glm::mat4 Portal::getPortalTransform(float fx, float fy, float fz,
                                       float tx, float ty, float tz) const {
     bool srcIsA = (fx == ax && fy == ay && fz == az);
@@ -2479,10 +2485,6 @@ void Portal::draw(int recursion_depth) {
 }
 
 void Portal::checkTeleport() {
-    if (teleportCooldown > 0) {
-        --teleportCooldown;
-        return;
-    }
 
     glm::vec3 camPos(camera.eye_x, camera.eye_y, camera.eye_z);
 
@@ -2580,7 +2582,6 @@ void Portal::checkTeleport() {
         state.prevValid = false;
         SideState& otherState = (&state == &sideA) ? sideB : sideA;
         otherState.prevValid = false;
-        teleportCooldown = 5;
         return true;
     };
 

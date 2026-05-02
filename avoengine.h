@@ -289,8 +289,6 @@ private:
     glm::mat4 getPortalTransform(float fx, float fy, float fz,
                                   float tx, float ty, float tz) const;
     glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
-    bool isFrontFacing(float px, float py, float pz,
-                       float cam_x, float cam_y, float cam_z) const;
 
     void renderThroughPortal(float src_x, float src_y, float src_z,
                               float dst_x, float dst_y, float dst_z,
@@ -335,7 +333,6 @@ private:
         bool prevValid = false;
     };
     SideState sideA, sideB;
-    int teleportCooldown = 0;
 };
 
 #endif
