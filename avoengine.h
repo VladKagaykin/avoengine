@@ -19,11 +19,8 @@ extern std::string cpu_name;
 extern std::string gpu_name;
 extern std::string ram_v;
 
-//              шейдеры
-// тип данных для программы шейдера
 extern GLuint currentShaderProg; 
 
-// функции
 GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
 void useShader(GLuint id);
 void stopShader();
@@ -42,6 +39,9 @@ struct CameraParams{
     float ctr_x=0,ctr_y=0,ctr_z=1;
     float up_x=0,up_y=1,up_z=0;
     float dir_x=0,dir_y=0,dir_z=1;
+    float pitch=0.0f;
+    float yaw=0.0f;
+    float roll=0.0f;
 };
 
 extern CameraParams camera;
@@ -69,7 +69,6 @@ public:
     void setCastShadow(bool enable);
     bool castsShadow() const { return _castsShadow; }
 
-    // Возвращает радиус (вычисляется автоматически)
     float getRadius() const { return radius; }
 
     float getX() const { return x; }
@@ -116,8 +115,8 @@ void setup_display(int* argc,char** argv,float r,float g,float b,float a,const c
 void changeSize3D(int w,int h);
 void changeSize2D(int w,int h);
 void framebuffer_size_callback(GLFWwindow* /*window*/, int w, int h);
-void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw);
-void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw);
+void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);
+void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);
 void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices,const std::vector<int>& indices,const std::vector<float>& texcoords={},const std::vector<float>& normals={});
 void enable_light();
 void disable_light();
@@ -139,7 +138,6 @@ public:
 
     void applyToShader(int index, GLuint program) const;
 
-    // Поля теперь публичные
     bool enabled = false;
     float pos[3]   = {0,0,0};
     float dir[3]   = {0,0,-1};
@@ -151,10 +149,8 @@ public:
     float quadAtt   = 0.0f;
 };
 
-// Глобальная функция для передачи всех активных источников в текущий шейдер
 void applyAllLights();
 
-// ID дефолтного шейдера (будет создан при инициализации)
 extern GLuint defaultLightingShader;
 
 void set_ambient_light(float r, float g, float b);
@@ -244,8 +240,6 @@ struct fog_params {
 };
 extern fog_params fog;
 
-extern float global_pitch;
-extern float global_yaw;
 extern float global_ambient[3];
 
 extern std::vector<pseudo_3d_entity*> allEntities;

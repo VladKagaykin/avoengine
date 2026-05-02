@@ -76,8 +76,6 @@ fog_params fog;
 // свет
 static std::vector<Light*> activeLights;
 
-float global_pitch = 0.0f;
-float global_yaw = 0.0f;
 float global_ambient[3] = {0.05f, 0.05f, 0.05f};
 std::vector<pseudo_3d_entity*> allEntities;
 
@@ -1058,7 +1056,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     changeSize2D(w, h);
 }
 // настройка камеры
-void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw){
+void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll){
     // задаём параметры камеры
     camera.fov=fov;
     camera.znear=0.1f;
@@ -1103,15 +1101,16 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     glLoadIdentity();
     gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
 
-    global_pitch = pitch;
-    global_yaw = yaw;
+    camera.pitch = pitch;
+    camera.yaw   = yaw;
+    camera.roll  = roll;
 }
 // перемещение камеры
-void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
+void move_camera(float eye_x, float eye_y, float eye_z, float pitch, float yaw, float roll){
     // обновляем параметры камеры
-    camera.eye_x=eye_x;
-    camera.eye_y=eye_y;
-    camera.eye_z=eye_z;
+    camera.eye_x = eye_x;
+    camera.eye_y = eye_y;
+    camera.eye_z = eye_z;
 
     float norm_pitch = fmod(pitch, 360.0f);
     if (norm_pitch < 0) norm_pitch += 360.0f;
@@ -1119,34 +1118,48 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw){
     float adj_pitch = norm_pitch;
     float up_x = 0, up_y = 1, up_z = 0;
 
-    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
-    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
+    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
+    ma_engine_listener_set_direction(&audio_engine, 0, camera.dir_x, camera.dir_y, camera.dir_z);
 
     if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
-        adj_pitch = 180.0f - norm_pitch; 
-        up_y = -1.0f;                    
+        adj_pitch = 180.0f - norm_pitch;
+        up_y = -1.0f;
         yaw += 180.0f;
-        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f); 
+        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f);
     } else {
         if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
         up_y = 1.0f;
         ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
     }
 
+    // считаем направление взгляда
+    lookAtForward(eye_x, eye_y, eye_z, adj_pitch, yaw,
+                  camera.ctr_x, camera.ctr_y, camera.ctr_z,
+                  camera.dir_x, camera.dir_y, camera.dir_z);
+
+    if (roll != 0.0f) {
+        float rad = roll * M_PI / 180.0f;
+        glm::vec3 fwd(camera.dir_x, camera.dir_y, camera.dir_z);
+        glm::vec3 up0(up_x, up_y, up_z);
+        glm::mat3 rot = glm::mat3(glm::rotate(glm::mat4(1.0f), rad, fwd));
+        glm::vec3 newUp = rot * up0;
+        up_x = newUp.x; up_y = newUp.y; up_z = newUp.z;
+    }
+
     camera.up_x = up_x;
     camera.up_y = up_y;
     camera.up_z = up_z;
 
-    // считаем направление взгляда
-    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z, camera.dir_x, camera.dir_y, camera.dir_z);
-
     // обновляем матрицу
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
-    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
+    gluLookAt(eye_x, eye_y, eye_z,
+              camera.ctr_x, camera.ctr_y, camera.ctr_z,
+              up_x, up_y, up_z);
 
-    global_pitch = pitch;
-    global_yaw = yaw;
+    camera.pitch = pitch;
+    camera.yaw   = yaw;
+    camera.roll  = roll;
 }
 
 //              3д(может быть потом ещё что-то будет)
@@ -2135,8 +2148,8 @@ void save_current_scene(const char* filename) {
     map.camera_eye[0] = camera.eye_x;
     map.camera_eye[1] = camera.eye_y;
     map.camera_eye[2] = camera.eye_z;
-    map.camera_pitch = global_pitch;
-    map.camera_yaw = global_yaw;
+    map.camera_pitch = camera.pitch;
+    map.camera_yaw = camera.yaw;
 
     extern sphere_panorama sphere_sky;
     if (sphere_sky.enabled) {
@@ -2412,7 +2425,7 @@ void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
     float savedCtrX = camera.ctr_x, savedCtrY = camera.ctr_y, savedCtrZ = camera.ctr_z;
     float savedDirX = camera.dir_x, savedDirY = camera.dir_y, savedDirZ = camera.dir_z;
     float savedUpX = camera.up_x, savedUpY = camera.up_y, savedUpZ = camera.up_z;
-    float savedPitch = global_pitch, savedYaw = global_yaw;
+    float savedPitch = camera.pitch, savedYaw = camera.yaw;
 
     glBindFramebuffer(GL_FRAMEBUFFER, fbo.fbo);
     glViewport(0, 0, fbo.w, fbo.h);
@@ -2423,8 +2436,7 @@ void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
     camera.ctr_x = camPos.x + newDir.x;
     camera.ctr_y = camPos.y + newDir.y;
     camera.ctr_z = camPos.z + newDir.z;
-    global_pitch = new_pitch;
-    global_yaw = new_yaw;
+    camera.pitch = savedPitch; camera.yaw = savedYaw;
 
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
@@ -2445,7 +2457,7 @@ void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
     camera.ctr_x = savedCtrX; camera.ctr_y = savedCtrY; camera.ctr_z = savedCtrZ;
     camera.dir_x = savedDirX; camera.dir_y = savedDirY; camera.dir_z = savedDirZ;
     camera.up_x = savedUpX; camera.up_y = savedUpY; camera.up_z = savedUpZ;
-    global_pitch = savedPitch; global_yaw = savedYaw;
+    camera.pitch = savedPitch; camera.yaw = savedYaw;
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
@@ -2534,20 +2546,37 @@ void Portal::checkTeleport() {
         glm::vec4 newPos4 = transform * glm::vec4(intersection, 1.0f);
         glm::vec3 newPos(newPos4.x, newPos4.y, newPos4.z);
 
-        glm::vec3 newDir = glm::normalize(glm::mat3(transform) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
-        float newYaw   = glm::degrees(atan2f(newDir.x, newDir.z));
-        float newPitch = glm::degrees(asinf(newDir.y));
+        glm::mat3 rotMat = glm::mat3(transform);
+        glm::vec3 oldForward(camera.dir_x, camera.dir_y, camera.dir_z);
+        glm::vec3 oldUp(camera.up_x, camera.up_y, camera.up_z);
+        glm::vec3 newForward = glm::normalize(rotMat * oldForward);
+        glm::vec3 newUp      = rotMat * oldUp;
+
+        float newPitch = glm::degrees(asinf(newForward.y));
+        float newYaw   = glm::degrees(atan2f(newForward.x, newForward.z));
+
+        float np = fmod(newPitch, 360.0f);
+        if (np < 0) np += 360.0f;
+        glm::vec3 defUp = (np > 90.0f && np < 270.0f)
+                            ? glm::vec3(0.0f, -1.0f, 0.0f)
+                            : glm::vec3(0.0f,  1.0f, 0.0f);
+
+        glm::vec3 right = glm::normalize(glm::cross(newUp, newForward));
+        glm::vec3 correctedUp = glm::cross(newForward, right);
+        float cosRoll = glm::dot(defUp, correctedUp);
+        float sinRoll = glm::dot(glm::cross(defUp, correctedUp), newForward);
+        float newRoll = glm::degrees(atan2f(sinRoll, cosRoll));
 
         glm::mat4 worldDst = computeWorldMatrix(dx, dy, dz, dyaw, dpitch, droll);
         glm::vec3 pushNormal = glm::mat3(worldDst) * (-localNormal);
         const float push = 1.5f;
         if (prevDist > 0.0f) {
-            newPos += pushNormal * push; 
+            newPos += pushNormal * push;
         } else {
-            newPos -= pushNormal * push; 
+            newPos -= pushNormal * push;
         }
 
-        move_camera(newPos.x, newPos.y, newPos.z, newPitch, newYaw);
+        move_camera(newPos.x, newPos.y, newPos.z, newPitch, newYaw, newRoll);
 
         state.prevValid = false;
         SideState& otherState = (&state == &sideA) ? sideB : sideA;
