@@ -2570,12 +2570,12 @@ void Portal::checkTeleport() {
 
         glm::mat4 worldDst = computeWorldMatrix(dx, dy, dz, dyaw, dpitch, droll);
         glm::vec3 pushNormal = glm::mat3(worldDst) * (-localNormal);
-        // const float push = 1.5f;
-        // if (prevDist > 0.0f) {
-        //     newPos += pushNormal * push;
-        // } else {
-        //     newPos -= pushNormal * push;
-        // }
+        const float push = 0.1f;
+        if (prevDist > 0.0f) {
+            newPos += pushNormal * push;
+        } else {
+            newPos -= pushNormal * push;
+        }
 
         move_camera(newPos.x, newPos.y, newPos.z, newPitch, newYaw, newRoll);
 
