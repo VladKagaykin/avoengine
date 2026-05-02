@@ -2243,17 +2243,31 @@ bool Portal::isFrontFacing(float px, float py, float pz,
 
 glm::mat4 Portal::getPortalTransform(float fx, float fy, float fz,
                                       float tx, float ty, float tz) const {
-    int n = (int)vertices.size() / 3;
-    glm::vec3 centerA(0,0,0), centerB(0,0,0);
-    for (int i = 0; i < n; i++) {
-        centerA += glm::vec3(fx + vertices[i*3], fy + vertices[i*3+1], fz + vertices[i*3+2]);
-        centerB += glm::vec3(tx + vertices[i*3], ty + vertices[i*3+1], tz + vertices[i*3+2]);
-    }
-    centerA /= (float)n;
-    centerB /= (float)n;
+    bool srcIsA = (fx == ax && fy == ay && fz == az);
 
-    glm::vec3 nA = portalNormal(fx, fy, fz, false); 
-    glm::vec3 nB = portalNormal(tx, ty, tz, true);  
+    float srcYaw, srcPitch, srcRoll, dstYaw, dstPitch, dstRoll;
+    float srcX, srcY, srcZ, dstX, dstY, dstZ;
+
+    if (srcIsA) {
+        srcYaw = yawA; srcPitch = pitchA; srcRoll = rollA;
+        dstYaw = yawB; dstPitch = pitchB; dstRoll = rollB;
+        srcX = ax; srcY = ay; srcZ = az;
+        dstX = bx; dstY = by; dstZ = bz;
+    } else {
+        srcYaw = yawB; srcPitch = pitchB; srcRoll = rollB;
+        dstYaw = yawA; dstPitch = pitchA; dstRoll = rollA;
+        srcX = bx; srcY = by; srcZ = bz;
+        dstX = ax; dstY = ay; dstZ = az;
+    }
+
+    int n = (int)vertices.size() / 3;
+    glm::vec3 centerSrc(0,0,0), centerDst(0,0,0);
+    for (int i = 0; i < n; i++) {
+        centerSrc += glm::vec3(srcX + vertices[i*3], srcY + vertices[i*3+1], srcZ + vertices[i*3+2]);
+        centerDst += glm::vec3(dstX + vertices[i*3], dstY + vertices[i*3+1], dstZ + vertices[i*3+2]);
+    }
+    centerSrc /= (float)n;
+    centerDst /= (float)n;
 
     auto makeBasis = [](float yaw, float pitch, float roll) {
         glm::mat4 rot4 = glm::mat4(1.0f);
@@ -2263,22 +2277,22 @@ glm::mat4 Portal::getPortalTransform(float fx, float fy, float fz,
         return glm::mat3(rot4);
     };
 
-    glm::mat3 rotA = makeBasis(yawA, pitchA, rollA);
-    glm::mat3 rotB = makeBasis(yawB, pitchB, rollB);
+    glm::mat3 rotSrc = makeBasis(srcYaw, srcPitch, srcRoll);
+    glm::mat3 rotDst = makeBasis(dstYaw, dstPitch, dstRoll);
 
-    glm::mat4 fromA(1.0f);
-    fromA[0] = glm::vec4(rotA[0], 0.0f);
-    fromA[1] = glm::vec4(rotA[1], 0.0f);
-    fromA[2] = glm::vec4(rotA[2], 0.0f);
-    fromA[3] = glm::vec4(centerA, 1.0f);
+    glm::mat4 fromSrc(1.0f);
+    fromSrc[0] = glm::vec4(rotSrc[0], 0.0f);
+    fromSrc[1] = glm::vec4(rotSrc[1], 0.0f);
+    fromSrc[2] = glm::vec4(rotSrc[2], 0.0f);
+    fromSrc[3] = glm::vec4(centerSrc, 1.0f);
 
-    glm::mat4 toB(1.0f);
-    toB[0] = glm::vec4(rotB[0], 0.0f);
-    toB[1] = glm::vec4(rotB[1], 0.0f);
-    toB[2] = glm::vec4(rotB[2], 0.0f);
-    toB[3] = glm::vec4(centerB, 1.0f);
+    glm::mat4 toDst(1.0f);
+    toDst[0] = glm::vec4(rotDst[0], 0.0f);
+    toDst[1] = glm::vec4(rotDst[1], 0.0f);
+    toDst[2] = glm::vec4(rotDst[2], 0.0f);
+    toDst[3] = glm::vec4(centerDst, 1.0f);
 
-    return toB * glm::inverse(fromA);
+    return toDst * glm::inverse(fromSrc);
 }
 
 static void portalSetUniforms(GLuint prog, GLuint tex, bool depthOnly) {
@@ -2375,9 +2389,7 @@ void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
 
     glm::vec3 camPos = glm::vec3(portalMat * glm::vec4(camera.eye_x, camera.eye_y, camera.eye_z, 1.0f));
 
-    glm::mat3 rotB = glm::mat3(portalMat);
-
-    glm::vec3 newDir = glm::normalize(glm::inverse(rotB) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
+    glm::vec3 newDir = glm::normalize(glm::mat3(portalMat) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
 
     float new_pitch = glm::degrees(asinf(newDir.y));
     float new_yaw   = glm::degrees(atan2f(newDir.x, newDir.z));
@@ -2522,12 +2534,7 @@ void Portal::checkTeleport() {
         glm::vec4 newPos4 = transform * glm::vec4(intersection, 1.0f);
         glm::vec3 newPos(newPos4.x, newPos4.y, newPos4.z);
 
-        glm::vec4 lookAtPt(camPos.x + camera.dir_x,
-                           camPos.y + camera.dir_y,
-                           camPos.z + camera.dir_z, 1.0f);
-        glm::vec4 newLookAt4 = transform * lookAtPt;
-        glm::vec3 newLookAt(newLookAt4.x, newLookAt4.y, newLookAt4.z);
-        glm::vec3 newDir = glm::normalize(newLookAt - newPos);
+        glm::vec3 newDir = glm::normalize(glm::mat3(transform) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
         float newYaw   = glm::degrees(atan2f(newDir.x, newDir.z));
         float newPitch = glm::degrees(asinf(newDir.y));
 
