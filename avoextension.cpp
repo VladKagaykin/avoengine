@@ -47,7 +47,7 @@ void update_ticks() {
 // поставить иконку
 void set_icon(const char* path) {
     int width, height, channels;
-    unsigned char* image = stbi_load(path, &width, &height, &channels, 4); // принудительно RGBA
+    unsigned char* image = stbi_load(path, &width, &height, &channels, 4); 
     if (!image) return;
 
     GLFWimage icon;
@@ -151,28 +151,15 @@ void set_mouse_capture(GLFWwindow* window, bool capture) {
 }
 //          простые 3д примитивы
 // плоскость
-void plane(float cx, float cy, float cz,double r, double g, double b,const char* tex,const std::vector<float>& vertices){
-    if (vertices.size() < 12) return;
-    std::vector<int> indices = { 
-        0,1,4, 
-        1,2,4,  
-        2,3,4,  
-        3,0,4  
-    };
-    std::vector<float> texcoords = { 
-        0,0, 
-        1,0,  
-        1,1,  
-        0,1,  
-        0.5f,0.5f 
-    };
-    std::vector<float> normals;
-    for (int i = 0; i < 5; ++i) {
-        normals.push_back(0.0f);  
-        normals.push_back(1.0f); 
-        normals.push_back(0.0f); 
-    }
-    draw3DObject(cx, cy, cz, r, g, b, tex,vertices, indices, texcoords, normals);
+void plane(float cx, float cy, float cz, double r, double g, double b,
+           const char* tex, const std::vector<float>& vertices) {
+    if (vertices.size() != 12) return;
+
+    std::vector<int> indices = { 0, 1, 2, 0, 2, 3 };
+    std::vector<float> texcoords = { 0,0, 1,0, 1,1, 0,1 };
+    std::vector<float> normals = { 0,1,0, 0,1,0, 0,1,0, 0,1,0 };
+
+    draw3DObject(cx, cy, cz, r, g, b, tex, vertices, indices, texcoords, normals);
 }
 
 //              hud

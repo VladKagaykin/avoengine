@@ -50,10 +50,7 @@ void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
 
 void triangle(float scale,float cx,float cy,double r,double g,double b,float rotate,const float* vertices,const char* texture_file=nullptr);
 
-void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex);
-void light_square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* texture_file=nullptr);
-
-void circle(float scale,float cx,float cy,double r,double g,double b,float radius,float in_radius,float rotate,int slices,int loops,const char* texture_file=nullptr);
+void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex=nullptr);
 
 void draw_text(const char* text,float x,float y,void* font,float r,float g,float b,float a=1.0f);
 

@@ -134,8 +134,15 @@ GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode) {
     checkShaderErrors(fragment, "FRAGMENT");
 
     GLuint ID = glCreateProgram();
+    
     glAttachShader(ID, vertex);
     glAttachShader(ID, fragment);
+
+    glBindAttribLocation(ID, 0, "aVertex");
+    glBindAttribLocation(ID, 2, "aNormal");
+    glBindAttribLocation(ID, 3, "aColor");
+    glBindAttribLocation(ID, 8, "aTexCoord");
+
     glLinkProgram(ID);
     checkShaderErrors(ID, "PROGRAM");
 
@@ -159,6 +166,11 @@ GLuint defaultLightingShader = 0;
 
 static const char* defaultVertexShader = R"(
 #version 120
+attribute vec4 aVertex;    
+attribute vec3 aNormal;   
+attribute vec4 aColor;    
+attribute vec2 aTexCoord;  
+
 varying vec3 vN;
 varying vec3 vP;
 varying vec4 vColor;
@@ -167,15 +179,13 @@ varying vec3 vWorldPos;
 varying vec4 vClipPos;
 
 void main() {
-    vN = normalize(gl_NormalMatrix * gl_Normal);
-    vec4 mvPos = gl_ModelViewMatrix * gl_Vertex;
+    vN = normalize(gl_NormalMatrix * aNormal);
+    vec4 mvPos = gl_ModelViewMatrix * aVertex;
     vP = mvPos.xyz;
-    vColor = gl_Color;
-    vTexCoord = gl_MultiTexCoord0.st;
-    
-    vWorldPos = vec3(gl_Vertex); 
-    
-    gl_Position = ftransform();
+    vColor = aColor;
+    vTexCoord = aTexCoord;
+    vWorldPos = aVertex.xyz;   
+    gl_Position = gl_ModelViewProjectionMatrix * aVertex;
     vClipPos = gl_Position;
 }
 )";
@@ -243,7 +253,6 @@ void main() {
     vec3 N = normalize(vN);
     vec3 totalLight = ambientLight;
 
-    // Исправлено: замена min(int, int) на безопасный цикл
     int activeLightsCount = numLights;
     if (activeLightsCount > MAX_LIGHTS) activeLightsCount = MAX_LIGHTS;
 
@@ -270,7 +279,6 @@ void main() {
     vec3 finalColor = texColor.rgb * vColor.rgb * totalLight;
 
     if (receiveShadows && numShadowCasters > 0) {
-        // Исправлено: замена min(int, int) для теней
         int activeShadows = numShadowCasters;
         if (activeShadows > MAX_SHADOW_CASTERS) activeShadows = MAX_SHADOW_CASTERS;
 
@@ -314,6 +322,38 @@ static void initDefaultShader() {
     if (defaultLightingShader == 0) {
         defaultLightingShader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
     }
+}
+
+static const char* simple2DVertexShader = R"(
+#version 120
+attribute vec4 aVertex;    
+attribute vec4 aColor;     
+attribute vec2 aTexCoord;  
+
+varying vec4 vColor;
+varying vec2 vTexCoord;
+
+void main() {
+    vColor = aColor;
+    vTexCoord = aTexCoord;
+    gl_Position = gl_ModelViewProjectionMatrix * aVertex;
+}
+)";
+
+static const char* simple2DFragmentShader = R"(
+#version 120
+varying vec4 vColor;
+varying vec2 vTexCoord;
+uniform sampler2D tex;
+void main() {
+    gl_FragColor = texture2D(tex, vTexCoord) * vColor;
+}
+)";
+
+static GLuint simple2DShader = 0;
+static void initSimple2DShader() {
+    if (!simple2DShader)
+        simple2DShader = createShaderProgram(simple2DVertexShader, simple2DFragmentShader);
 }
 
 //              текстуры
@@ -433,128 +473,219 @@ static void enableTex(const char* file){
 }
 
 //              простые 2д фигуры
+static GLuint whiteTex = 0;
+
+static void ensureWhiteTex() {
+    if (whiteTex == 0) {
+        unsigned char white[4] = {255,255,255,255};
+        glGenTextures(1, &whiteTex);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+}
+
 // треугольник
-void triangle(float scale,float cx,float cy,double r,double g,double b,float rotate,const float* vertices,const char* tex){
-    // задаём цвет
-    glColor3f(float(r), float(g), float(b));
-    // задаём/не задаём текстуру
-    enableTex(tex);
-    // преобразуем поворот в радианы
-    const float ar=rotate*float(M_PI)/-180.0f;
-    // задаём координаты текстуры
-    const float tc[6]={0,1, 1,1, 0,0};
-    // задаём что фигура-треугольник
-    glBegin(GL_TRIANGLES);
+void triangle(float scale, float cx, float cy, double r, double g, double b,
+              float rotate, const float* vertices, const char* tex) {
+    static GLuint vao = 0, vbo = 0;
+    static bool init = false;
+    if (!init) {
+        init = true;
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, 21 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
+                              (void*)(2 * sizeof(float)));
+
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
+                              (void*)(5 * sizeof(float)));
+
+        glBindVertexArray(0);
+        ensureWhiteTex();
+    }
+
+    const float ar = rotate * float(M_PI) / -180.0f;
+    const float tc[6] = {0,1, 1,1, 0,0};
+
+    float data[21];
     for (int i = 0; i < 3; ++i) {
-        // берём координаты вершины и рассчитываем их поворот
-        float px=vertices[i*2], py=vertices[i*2+1];
-        rotatePoint(px,py,0,0,ar);
-        // отправляем координату текстуры
-        if(tex)glTexCoord2f(tc[i*2],tc[i*2+1]);
-        // отправляем вершину в opengl
-        glVertex2f(cx+px*scale,cy+py*scale);
+        float px = vertices[i*2], py = vertices[i*2+1];
+        rotatePoint(px, py, 0, 0, ar);
+        float x = cx + px * scale;
+        float y = cy + py * scale;
+
+        data[i*7 + 0] = x;
+        data[i*7 + 1] = y;
+        data[i*7 + 2] = (float)r;
+        data[i*7 + 3] = (float)g;
+        data[i*7 + 4] = (float)b;
+        data[i*7 + 5] = tc[i*2];
+        data[i*7 + 6] = tc[i*2+1];
     }
-    // объявляем что рисовка фигуры завершена
-    glEnd();
-    // выключаем текстуру
-    if(tex)glDisable(GL_TEXTURE_2D);
-}
-// всё тоже самое, только квадрат
-void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex){
-    glColor3f(float(r),float(g),float(b));
-    enableTex(tex);
-    const float ar=rotate*float(M_PI)/-180.0f;
-    const float tc[8]={0,1, 1,1, 1,0, 0,0};
-    glBegin(GL_QUADS);
-    for (int i=0;i<4;++i){
-        float px=vertices[i*2],py=vertices[i*2+1];
-        rotatePoint(px,py,0,0,ar);
-        if(tex)glTexCoord2f(tc[i*2],tc[i*2+1]);
-        glVertex2f(x+px*local_size,y+py*local_size);
-    }
-    glEnd();
-    if(tex)glDisable(GL_TEXTURE_2D);
-}
-void light_square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex){
-    glColor3f(float(r),float(g),float(b));
-    enableTex(tex);
-    const float ar=rotate*float(M_PI)/-180.0f;
-    const float tc[10] = {
-                            0,1,
-                            1,1, 
-                            1,0, 
-                            0,0, 
-                            0.5f,0.5f
-                            };
-    
-    float center_x = (vertices[0] + vertices[2] + vertices[4] + vertices[6]) / 4.0f;
-    float center_y = (vertices[1] + vertices[3] + vertices[5] + vertices[7]) / 4.0f;
-    
-    float all_vertices[10] = {
-                                vertices[0], vertices[1],
-                                vertices[2], vertices[3],
-                                vertices[4], vertices[5],
-                                vertices[6], vertices[7],
-                                center_x, center_y
-                            };
-    
-    const int triangles[4][3] = {
-                                    {0, 1, 4},
-                                    {1, 2, 4},
-                                    {2, 3, 4},
-                                    {3, 0, 4}
-                                };
-    
-    glBegin(GL_TRIANGLES);
-    for (int tri = 0; tri < 4; ++tri) {
-        for (int i = 0; i < 3; ++i) {
-            int vidx = triangles[tri][i];
-            float px = all_vertices[vidx * 2];
-            float py = all_vertices[vidx * 2 + 1];
-            rotatePoint(px, py, 0, 0, ar);
-            if(tex) glTexCoord2f(tc[vidx * 2], tc[vidx * 2 + 1]);
-            glVertex2f(x + px * local_size, y + py * local_size);
+
+    glActiveTexture(GL_TEXTURE0);
+    if (tex) {
+        GLuint texID = loadTextureFromFile(tex);
+        if (texID) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, texID);
+        } else {
+            ensureWhiteTex();
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, whiteTex);
         }
+    } else {
+        ensureWhiteTex();
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
     }
-    glEnd();
-    if(tex) glDisable(GL_TEXTURE_2D);
+
+    if (currentShaderProg) {
+        GLint loc = glGetUniformLocation(currentShaderProg, "tex");
+        if (loc != -1) glUniform1i(loc, 0);
+    }
+
+    if (currentShaderProg) {
+        glDisableVertexAttribArray(2);          
+        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+    }
+
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+
+    if (tex) {
+        glDisable(GL_TEXTURE_2D);
+    } else {
+        glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
-// круг
-void circle(float scale,float cx,float cy,double r,double g,double b,float radius,float in_radius,float rotate,int slices,int loops,const char* tex){
-    // уже было
-    glColor3f(float(r),float(g),float(b));
-    enableTex(tex);
-    // как я понял мы делаем круг в отдельной матрице(квадрика), а потом прибавляем к основной
-    glPushMatrix();
-    glTranslatef(cx,cy,0);
-    glRotatef(-rotate,0,0,1);
-    glScalef(scale,scale,1);
-    static GLUquadric* q=nullptr;
-    if (!q){
-        q=gluNewQuadric();
-        gluQuadricTexture(q,GL_TRUE);
-        gluQuadricDrawStyle(q,GLU_FILL);
+// квадрат
+void square(float local_size, float x, float y, double r, double g, double b,
+            float rotate, const float* vertices, const char* tex) {
+    static GLuint vao = 0, vbo = 0, ibo = 0;
+    static bool init = false;
+    if (!init) {
+        init = true;
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glGenBuffers(1, &ibo);
+
+        glBindVertexArray(vao);
+
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
+                              (void*)(2 * sizeof(float)));
+
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
+                              (void*)(5 * sizeof(float)));
+
+        GLuint indices[6] = {0, 1, 2, 0, 2, 3};
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+        glBindVertexArray(0);
+        ensureWhiteTex();
     }
-    glMatrixMode(GL_TEXTURE);
-    glPushMatrix();
-    glScalef(1,-1,1);
-    gluDisk(q,in_radius,radius,slices,loops);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
-    if(tex)glDisable(GL_TEXTURE_2D);
+
+    const float ar = rotate * float(M_PI) / -180.0f;
+    const float tc[8] = {0,1, 1,1, 1,0, 0,0};
+
+    float data[28];   // 4 * 7
+    for (int i = 0; i < 4; ++i) {
+        float px = vertices[i*2], py = vertices[i*2+1];
+        rotatePoint(px, py, 0, 0, ar);
+        float vx = x + px * local_size;
+        float vy = y + py * local_size;
+
+        data[i*7 + 0] = vx;
+        data[i*7 + 1] = vy;
+        data[i*7 + 2] = (float)r;
+        data[i*7 + 3] = (float)g;
+        data[i*7 + 4] = (float)b;
+        data[i*7 + 5] = tc[i*2];
+        data[i*7 + 6] = tc[i*2+1];
+    }
+
+    glActiveTexture(GL_TEXTURE0);
+    if (tex) {
+        GLuint texID = loadTextureFromFile(tex);
+        if (texID) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, texID);
+        } else {
+            ensureWhiteTex();
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, whiteTex);
+        }
+    } else {
+        ensureWhiteTex();
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
+    }
+
+    if (currentShaderProg) {
+        GLint loc = glGetUniformLocation(currentShaderProg, "tex");
+        if (loc != -1) glUniform1i(loc, 0);
+    }
+
+    if (currentShaderProg) {
+        glDisableVertexAttribArray(2);
+        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+    }
+
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+
+    if (tex) {
+        glDisable(GL_TEXTURE_2D);
+    } else {
+        glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 }
 // рисовка текста
-void draw_text(const char* text,float x,float y,void* font,float r,float g,float b,float a){
-    glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-    // задаём цвет
-    glColor4f(r,g,b,a);
-    // задаём позицию
-    glRasterPos2f(x,y);
-    // рисуем текст по символам
-    for(const char* c=text;*c;++c){
-        glutBitmapCharacter(font,*c);
+void draw_text(const char* text, float x, float y, void* font, float r, float g, float b, float a) {
+    GLuint prevShader = currentShaderProg;
+    if (prevShader) stopShader();
+
+    GLboolean texEnabled = glIsEnabled(GL_TEXTURE_2D);
+    if (texEnabled) glDisable(GL_TEXTURE_2D); 
+
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(r, g, b, a);
+    glRasterPos2f(x, y);
+    for (const char* c = text; *c; ++c) {
+        glutBitmapCharacter(font, *c);
     }
+
+    if (texEnabled) glEnable(GL_TEXTURE_2D);
+    if (prevShader) useShader(prevShader);
 }
 
 //              класс для рисовки псевдо 3д существ
@@ -723,7 +854,7 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     glTranslatef(x, y, z);
     glMultMatrixf(mat);
     glRotatef(total_roll + 180.0f, 0, 0, 1);
-    light_square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
+    square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
     glPopMatrix();
 
     if (currentShaderProg) {
@@ -1156,46 +1287,127 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 
 //              3д(может быть потом ещё что-то будет)
 // рисуем 3д объект, указывая вершины треугольников
-void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices,const std::vector<int>& indices,const std::vector<float>& texcoords,const std::vector<float>& normals){
-    // цвет
-    glColor3f(float(r),float(g),float(b));
-    // текстура
-    if(tex){
-        GLuint id=loadTextureFromFile(tex);
-        if(id){
+// Вспомогательная функция для пересоздания GL-буфера, если его размер меньше требуемого
+static GLuint vao3D = 0;
+static GLuint vbo_pos = 0, vbo_norm = 0, vbo_uv = 0, ibo = 0;
+static size_t cap_pos = 0, cap_norm = 0, cap_uv = 0, cap_idx = 0;
+
+static void ensureBuffer(GLuint &buf, size_t &currentSize, size_t requiredSize, GLenum target) {
+    if (requiredSize > currentSize) {
+        size_t newSize = std::max(requiredSize, currentSize * 2);
+        if (buf) glDeleteBuffers(1, &buf);
+        glGenBuffers(1, &buf);
+        glBindBuffer(target, buf);
+        glBufferData(target, newSize, nullptr, GL_DYNAMIC_DRAW);
+        currentSize = newSize;
+    } else {
+        glBindBuffer(target, buf);
+    }
+}
+
+void draw3DObject(float cx, float cy, float cz,
+                  double r, double g, double b,
+                  const char* tex,
+                  const std::vector<float>& vertices,
+                  const std::vector<int>& indices,
+                  const std::vector<float>& texcoords,
+                  const std::vector<float>& normals)
+{
+    if (vao3D == 0) {
+        glGenVertexArrays(1, &vao3D);
+    }
+
+    size_t numVerts = vertices.size() / 3;
+    if (numVerts == 0 || indices.empty()) return;
+
+    const bool hasTex = (tex != nullptr && !texcoords.empty());
+    std::vector<float> uv;
+    const float* uvPtr;
+    if (hasTex) {
+        uvPtr = texcoords.data();
+    } else {
+        uv.assign(numVerts * 2, 0.0f);
+        uvPtr = uv.data();
+    }
+
+    size_t posBytes = vertices.size() * sizeof(float);
+    ensureBuffer(vbo_pos, cap_pos, posBytes, GL_ARRAY_BUFFER);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, posBytes, vertices.data());
+
+    bool hasNormals = !normals.empty();
+    if (hasNormals) {
+        size_t normBytes = normals.size() * sizeof(float);
+        ensureBuffer(vbo_norm, cap_norm, normBytes, GL_ARRAY_BUFFER);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, normBytes, normals.data());
+    }
+
+    size_t uvBytes = numVerts * 2 * sizeof(float);
+    ensureBuffer(vbo_uv, cap_uv, uvBytes, GL_ARRAY_BUFFER);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, uvBytes, uvPtr);
+
+    size_t idxBytes = indices.size() * sizeof(int);
+    ensureBuffer(ibo, cap_idx, idxBytes, GL_ELEMENT_ARRAY_BUFFER);
+    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, indices.data());
+
+    glBindVertexArray(vao3D);
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    if (hasNormals) {
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    } else {
+        glDisableVertexAttribArray(2);
+        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f); 
+    }
+
+    glDisableVertexAttribArray(3);
+    glVertexAttrib3f(3, (float)r, (float)g, (float)b);
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_uv);
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+
+    ensureWhiteTex(); 
+    if (tex) {
+        GLuint texID = loadTextureFromFile(tex);
+        if (texID) {
             glEnable(GL_TEXTURE_2D);
-            bindTexture(id);
-            glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-        }else{
-            glDisable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, texID);
+        } else {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, whiteTex);
         }
-    }else{
-        glDisable(GL_TEXTURE_2D);
+    } else {
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
     }
-    // позиционирование
+
+    if (currentShaderProg) {
+        GLint locTex = glGetUniformLocation(currentShaderProg, "tex");
+        if (locTex != -1) glUniform1i(locTex, 0);
+    }
+
     glPushMatrix();
-    glTranslatef(cx,cy,cz);
-    // делаем объект
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glVertexPointer(3,GL_FLOAT,0,vertices.data());
-    // делаем текстуру
-    const bool hasTex=(!texcoords.empty()&&tex);
-    if(hasTex){
-        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-        glTexCoordPointer(2,GL_FLOAT,0,texcoords.data());
-    }
-    // рендерим
-    if (!normals.empty()) {
-        glEnableClientState(GL_NORMAL_ARRAY);
-        glNormalPointer(GL_FLOAT, 0, normals.data());
-    }
-    glDrawElements(GL_TRIANGLES,int(indices.size()),GL_UNSIGNED_INT,indices.data());
-    if (!normals.empty()) glDisableClientState(GL_NORMAL_ARRAY);
-    // очищаем память
-    glDisableClientState(GL_VERTEX_ARRAY);
-    if(hasTex)glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glTranslatef(cx, cy, cz);
+
+    glDrawElements(GL_TRIANGLES, (GLsizei)indices.size(), GL_UNSIGNED_INT, nullptr);
+
     glPopMatrix();
-    if(tex)glDisable(GL_TEXTURE_2D);
+
+    if (tex) {
+        glDisable(GL_TEXTURE_2D);
+    } else {
+        glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    glBindVertexArray(0);
 }
 // свет
 static bool lighting_global = false;
@@ -1470,7 +1682,9 @@ void set_fog_range(float start, float end) {
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
 void begin_2d(int w, int h) {
-    stopShader();                  
+    initSimple2DShader();                
+    useShader(simple2DShader);              
+
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
@@ -1481,10 +1695,11 @@ void begin_2d(int w, int h) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_LIGHTING);
     glDisable(GL_FOG);
-    glDisable(GL_TEXTURE_2D);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    GLint loc = glGetUniformLocation(simple2DShader, "tex");
+    if (loc != -1) glUniform1i(loc, 0);
 }
 // переключаем матрицу на 3д(невероятно)
 void end_2d() {
@@ -1502,7 +1717,7 @@ void end_2d() {
     changeSize3D(window_w, window_h);
 
     if (lighting_global) {
-        useShader(currentShaderProg);
+        useShader(defaultLightingShader);
         if (fog.enabled) {
             glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"),
                         fog.color[0], fog.color[1], fog.color[2]);
@@ -1510,6 +1725,8 @@ void end_2d() {
             glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), fog.end);
         }
         applyAllLights();
+    } else {
+        useShader(simple2DShader);
     }
 }
 
