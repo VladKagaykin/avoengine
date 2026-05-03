@@ -982,17 +982,6 @@ void changeSize2D(int w,int h){
     window_w=w;
     window_h=h;
 }
-// переключение изменения размеров
-static bool is3D = false;
-void framebuffer_size_callback(GLFWwindow* /*window*/, int w, int h){
-    if (is3D) {
-        changeSize3D(w, h);
-    } else {
-        changeSize2D(w, h);
-    }
-    window_w = w;
-    window_h = h;
-}
 // инициализация окна
 void setup_display(int* argc, char** argv, float r, float g, float b, float a, const char* name, int w, int h) {
     // glutInit(argc,argv);
@@ -1027,14 +1016,6 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
         cerr << "Failed to initialize GLEW\n";
     }
 
-    // Колбэк изменения размера (замена glutReshapeFunc)
-    glfwSetFramebufferSizeCallback(window, [](GLFWwindow*, int width, int height) {
-        window_w = width;
-        window_h = height;
-        // Логика выбора changeSize2D / changeSize3D остаётся за вами (вы уже исправили)
-    });
-
-    // Системная информация (как раньше)
     auto cpus = hwinfo::getAllCPUs();
     cpu_name = cpus.empty() ? "Unknown" : cpus[0].modelName();
     hwinfo::Memory mem = hwinfo::Memory();
@@ -1489,7 +1470,6 @@ void set_fog_range(float start, float end) {
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
 void begin_2d(int w, int h) {
-    is3D = false;
     stopShader();                  
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
@@ -1508,7 +1488,6 @@ void begin_2d(int w, int h) {
 }
 // переключаем матрицу на 3д(невероятно)
 void end_2d() {
-    is3D = true;
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_LIGHTING);
