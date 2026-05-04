@@ -2,22 +2,12 @@ sudo apt install build-essential
 
 sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev
 
-git clone https://github.com/lfreist/hwinfo.git
-cd hwinfo
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install
-sudo ldconfig
-
 cd /your/path
 
 compile game:
 
-g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp(if it neded) -I/usr/include/stb -lGLEW -lglfw -lGLU -lGL
- -lSOIL -lglut -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram -fopenmp -lassimp
-
-
+g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp -I./src -I./src/hwinfo -I/usr/include/stb -lGLEW -lglfw -lGLU -lGL 
+-lSOIL -lglut -L. -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram -fopenmp -lassimp
 
 
 ./output

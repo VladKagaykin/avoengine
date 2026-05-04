@@ -2,11 +2,13 @@
 // указываем что здесь реализация библиотеки, т.к. miniaudio это только заголовочный файл и даём понять что
 // это главная программа
 #define MINIAUDIO_IMPLEMENTATION
-// указываем что пользуемся только указанным api для воспроизведения звука(pulseaudio и прочая шняга), если они не указаны,
-// то программа компилируется для всех api
+// указываем что пользуемся только указанным api для воспроизведения звука(pulseaudio и прочая шняга)(шиндовс или линукс)
+#ifdef _WIN32
+  #define MA_ENABLE_WASAPI
+#else
+  #define MA_ENABLE_ALSA
+#endif
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
-// указываем что api некий alsa(встроенный в линукс)
-#define MA_ENABLE_ALSA
 // импортируем сам miniaudio
 #include "miniaudio.h"
 
