@@ -1188,10 +1188,16 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
     ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 
-    if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
+    bool is_inverted = (norm_pitch > 90.0f && norm_pitch < 270.0f);
+
+    if (is_inverted != camera.was_inverted) {
+        yaw += 180.0f; 
+    }
+    camera.was_inverted = is_inverted;
+
+    if (is_inverted) {
         adj_pitch = 180.0f - norm_pitch; 
         up_y = -1.0f;                    
-        yaw += 180.0f;
         ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f); 
     } else {
         if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
@@ -1246,10 +1252,16 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
     ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
     ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
 
-    if (norm_pitch > 90.0f && norm_pitch < 270.0f) {
+    bool is_inverted = (norm_pitch > 90.0f && norm_pitch < 270.0f);
+
+    if (is_inverted != camera.was_inverted) {
+        yaw += 180.0f; 
+    }
+    camera.was_inverted = is_inverted;
+
+    if (is_inverted) {
         adj_pitch = 180.0f - norm_pitch; 
         up_y = -1.0f;                    
-        yaw += 180.0f;
         ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f); 
     } else {
         if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
@@ -1311,8 +1323,7 @@ void draw3DObject(float cx, float cy, float cz,
                   const std::vector<float>& vertices,
                   const std::vector<int>& indices,
                   const std::vector<float>& texcoords,
-                  const std::vector<float>& normals)
-{
+                  const std::vector<float>& normals){
     if (vao3D == 0) {
         glGenVertexArrays(1, &vao3D);
     }

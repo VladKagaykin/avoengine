@@ -42,6 +42,7 @@ struct CameraParams{
     float pitch=0.0f;
     float yaw=0.0f;
     float roll=0.0f;
+    bool was_inverted = false;
 };
 
 extern CameraParams camera;
