@@ -18,23 +18,10 @@
 ### Зависимости (Debian/Ubuntu)
 
 ```bash
-sudo apt install build-essential cmake
+sudo apt install build-essential
 sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev libglfw3-dev
 sudo apt install libglew-dev libsoil-dev libglm-dev libstb-dev libassimp-dev
 ```
-
-Для получения информации о системе (hwinfo):
-```bash
-git clone https://github.com/lfreist/hwinfo.git
-cd hwinfo
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install
-sudo ldconfig
-```
-
-Библиотека `miniaudio` — один заголовочный файл. Скачайте `miniaudio.h` и положите в папку проекта или в системный include‑путь.
 
 ### Компиляция проекта
 
@@ -537,23 +524,10 @@ LGPL-3.0 (см. файл `LICENSE.md`).
 ### Dependencies (Debian/Ubuntu)
 
 ```bash
-sudo apt install build-essential cmake
+sudo apt install build-essential
 sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev libglfw3-dev
 sudo apt install libglew-dev libsoil-dev libglm-dev libstb-dev libassimp-dev
 ```
-
-For system information (hwinfo):
-```bash
-git clone https://github.com/lfreist/hwinfo.git
-cd hwinfo
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-sudo make install
-sudo ldconfig
-```
-
-The `miniaudio` library is a single header; place `miniaudio.h` in your project or include directory.
 
 ### Compilation
 
