@@ -6,10 +6,10 @@
 
 ## <a name="русский"></a>Русская версия
 
-**AVOEngine** — игровой движок на C++ с OpenGL и GLFW. Он предоставляет всё необходимое для создания 2D/3D-приложений: рисование примитивов, камеру, звук, загрузку текстур, псевдо-3D-спрайты, освещение, туман, тени, порталы, карты, а также дополнительные эффекты через расширение. Движок разделён на две части:
+**AVOEngine** — игровой движок на C++ (OpenGL + GLFW). Он предоставляет всё необходимое для создания 2D/3D-приложений: рисование примитивов, камеру, звук, загрузку текстур, псевдо-3D-спрайты, освещение, туман, тени, порталы, карты, а также дополнительные эффекты через расширение. Движок разделён на две части:
 
 * **Ядро (avoengine)** – базовые возможности.
-* **Расширение (avoextension)** – опциональные функции: текстовые эффекты, белый шум, обработка ввода, иконка окна, плоскость. Без расширения тоже можно создавать игры.
+* **Расширение (avoextension)** – опциональные функции: текстовые эффекты, белый шум, обработка ввода, иконка окна, плоскость, сохранение/загрузка карт с порталами.
 
 ---
 
@@ -20,8 +20,7 @@
 ```bash
 sudo apt install build-essential cmake
 sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev libglfw3-dev
-sudo apt install libglew-dev libsoil-dev libglm-dev
-sudo apt install libstb-dev   # для stb_image.h (обычно уже есть)
+sudo apt install libglew-dev libsoil-dev libglm-dev libstb-dev libassimp-dev
 ```
 
 Для получения информации о системе (hwinfo):
@@ -35,7 +34,7 @@ sudo make install
 sudo ldconfig
 ```
 
-Библиотеку `miniaudio` достаточно скачать как заголовочный файл (`miniaudio.h`) и положить в папку с проектом или в системный include‑путь.
+Библиотека `miniaudio` — один заголовочный файл. Скачайте `miniaudio.h` и положите в папку проекта или в системный include‑путь.
 
 ### Компиляция проекта
 
@@ -47,13 +46,15 @@ g++ -o output your_program.cpp avoengine.cpp \
     -fopenmp -lm -lpthread -ldl
 ```
 
-**С расширением:**
+**С расширением (рекомендуется):**
 ```bash
 g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
-    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL \
+    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL -lassimp \
     -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram \
     -fopenmp -lm -lpthread -ldl
 ```
+
+При необходимости добавьте пути к `miniaudio.h` и `glm` через `-I`.
 
 Запуск:
 ```bash
@@ -80,23 +81,22 @@ g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
 
 ### Инициализация и главный цикл
 
-Движок использует **GLFW** для создания окна и обработки событий. Шрифты для текста по‑прежнему берутся из GLUT (заголовочный файл `glut.h`).
+Движок использует **GLFW** для окна и событий. Шрифты для текста берутся из GLUT (требуется заголовок `GL/glut.h`). Окно движка недоступно напрямую, поэтому для главного цикла получите контекст:
 
 ```cpp
 #include "avoengine.h"
 
 int main(int argc, char** argv) {
-    // Инициализация окна и аудио (argc/argv больше не используются)
     setup_display(nullptr, nullptr, 0.1f, 0.1f, 0.2f, 1.0f, "My Game", 800, 600);
     setup_camera(60.0f, 0.0f, 1.7f, 5.0f, 0.0f, 0.0f);
 
-    // Главный цикл GLFW
-    while (!glfwWindowShouldEnd(g_window)) {   // g_window объявлен в avoengine
+    GLFWwindow* window = glfwGetCurrentContext();
+    while (!glfwWindowShouldClose(window)) {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         // ... отрисовка сцены ...
 
-        glfwSwapBuffers(g_window);
+        glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
 }
 ```
 
-Функции `reshape` теперь обрабатываются через колбэк GLFW, установленный в `setup_display`.
+Если возникают проблемы с `glutBitmapCharacter`, добавьте `glutInit(&argc, argv);` перед `setup_display`.
 
 ### 2D-фигуры
 
@@ -140,33 +140,9 @@ void square(float local_size, float x, float y, double r, double g, double b, fl
 
 - `vertices` – массив из 8 чисел: координаты четырёх точек (x1,y1 … x4,y4).
 
-#### light_square()
-
-```c
-void light_square(float local_size, float x, float y, double r, double g, double b, float rotate,
-                  const float* vertices, const char* texture_file = nullptr);
-```
-
-Аналогична `square`, но использует разбивку на треугольники (веер из центра). Применяется внутри псевдо-3D сущностей для корректного освещения; при необходимости можно использовать и самостоятельно.
-
-#### circle()
-
-```c
-void circle(float scale, float x, float y, double r, double g, double b,
-            float radius, float in_radius, float rotate,
-            int slices, int loops, const char* texture_file = nullptr);
-```
-
-Рисует круг или кольцо.
-
-- `radius` – внешний радиус.
-- `in_radius` – внутренний радиус (0 – сплошной круг).
-- `slices` – количество сегментов.
-- `loops` – количество концентрических колец.
-
 ### Псевдо-3D сущности
 
-Класс `pseudo_3d_entity` создаёт спрайты, которые всегда обращены к камере, и выбирает текстуру в зависимости от угла обзора. Это даёт иллюзию объёмного объекта.
+Класс `pseudo_3d_entity` создаёт спрайты, всегда обращённые лицом к камере; текстура выбирается по направлению взгляда, что даёт иллюзию объёма.
 
 ```c
 class pseudo_3d_entity {
@@ -193,7 +169,7 @@ public:
 ```
 
 - `x, y, z` – позиция в мире.
-- `g_angle, v_angle, r_angle` – углы поворота модели (горизонтальный, вертикальный, крен) в градусах. Позволяют анимировать вращение.
+- `g_angle, v_angle, r_angle` – углы поворота модели в градусах (горизонтальный, вертикальный, крен). Позволяют анимировать вращение.
 - `textures` – список путей к текстурам для разных ракурсов (обычно упорядочены по горизонтали, затем по вертикали).
 - `v_angles` – количество вертикальных слоёв (например, 1 для плоской модели).
 - `vertices` – координаты 2D-квадрата (4 точки, 8 чисел).
@@ -242,11 +218,11 @@ void draw3DObject(float cx, float cy, float cz,
 struct CameraParams { ... };   // (внутренняя структура)
 extern CameraParams camera;
 
-void setup_camera(float fov, float eye_x, float eye_y, float eye_z, float pitch, float yaw);
-void move_camera(float eye_x, float eye_y, float eye_z, float pitch, float yaw);
+void setup_camera(float fov, float eye_x, float eye_y, float eye_z, float pitch, float yaw, float roll = 0.0f);
+void move_camera(float eye_x, float eye_y, float eye_z, float pitch, float yaw, float roll = 0.0f);
 ```
 
-Обе функции автоматически корректируют вектор `up` при перевороте камеры (pitch > 90°), а также обновляют позицию слушателя аудиодвижка.
+Обе функции автоматически корректируют вектор `up` при перевороте камеры (pitch > 90°) и обновляют позицию слушателя аудиодвижка.
 
 #### Переключение между 2D и 3D
 
@@ -259,7 +235,7 @@ void end_2d();                 // восстанавливает 3D-проекц
 
 ### Шейдеры и освещение
 
-Движок использует программируемые шейдеры (OpenGL 2.1 / GLSL 1.20) для расчёта освещения и теней. По умолчанию создаётся встроенная шейдерная программа `defaultLightingShader`, которая включается функциями `enable_light()` / `disable_light()`.
+Движок использует программируемые шейдеры (OpenGL 2.1 / GLSL 1.20) для расчёта освещения и теней. Встроенная программа `defaultLightingShader` включается функциями `enable_light()` / `disable_light()`.
 
 #### Шейдеры
 
@@ -268,12 +244,6 @@ GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
 void useShader(GLuint id);
 void stopShader();
 ```
-
-- `createShaderProgram` компилирует вершинный и фрагментный шейдеры, возвращает ID программы.
-- `useShader` активирует программу (автоматически запоминает текущую).
-- `stopShader` возвращает фиксированный конвейер.
-
-Необязательно вызывать вручную, если используете стандартную систему освещения.
 
 #### Источники света
 
@@ -298,19 +268,26 @@ public:
 
 **Глобальные функции:**
 ```c
-void enable_light();               // включает шейдер, вычисляет и передаёт все активные источники
+void enable_light();               // включает шейдер, вычисляет и передаёт активные источники
 void disable_light();              // отключает шейдер
-void applyAllLights();             // принудительно обновляет uniform-переменные света
+void applyAllLights();             // принудительно обновляет uniform-переменные освещения
 void set_ambient_light(float r, float g, float b);
 void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
 ```
 
-- `set_ambient_light` задаёт глобальную фоновую подсветку.
-- `apply_material` управляет свойствами материала (через `glMaterial`), работает только при отключённом шейдере; при включённом шейдере используйте цвет вершины или текстуру.
+- `apply_material` работает только при отключённом шейдере; при включённом шейдере используйте цвет вершины или текстуру.
 
 #### Тени от псевдо-3D сущностей
 
-Если для псевдо-3D сущности вызван `setCastShadow(true)`, она будет отбрасывать тени на другие объекты, использующие тот же шейдер. Тени рассчитываются в шейдере на основе текущего активного освещения. Максимальное количество одновременно рисующих тень объектов – 8.
+Если для псевдо-3D сущности вызван `setCastShadow(true)`, она будет отбрасывать тени на другие объекты, использующие тот же шейдер. **Для активации теней необходимо каждый кадр вызывать `applyAllShadows()` после настройки освещения** (максимум 8 одновременно отбрасывающих тень объектов). Тени работают только для источников света с ограниченным радиусом (`setRadius`).
+
+```cpp
+enable_light();
+// ... настройка камеры ...
+applyAllLights();
+applyAllShadows();   // <-- обязательно
+// ... отрисовка объектов ...
+```
 
 ### Туман
 
@@ -323,12 +300,10 @@ void set_fog_color(float r, float g, float b);
 ```
 
 - Туман работает только при активном шейдере (т.е. после `enable_light()`).
-- `density` – плотность (используется для автоматического подбора start/end при вызове `set_fog_density`).
-- `start, end` – расстояния начала и конца тумана в мировых единицах.
 
 ### Порталы
 
-Класс `Portal` создаёт два связанных портала, которые визуализируют вид с противоположной стороны и могут телепортировать камеру при пересечении.
+Класс `Portal` создаёт два связанных портала, которые визуализируют вид с противоположной стороны и могут телепортировать камеру. Для работы порталов требуется активный шейдер (вызовите `enable_light()`).
 
 ```c
 class Portal {
@@ -347,10 +322,10 @@ public:
 
 - `ax,ay,az` и `bx,by,bz` – мировые координаты двух сторон портала.
 - `vertices` – локальные координаты полигона (обычно прямоугольник в плоскости XY).
-- `yawA, pitchA, rollA` / `yawB, pitchB, rollB` – ориентация каждой стороны в пространстве.
-- `setSceneDrawCallback` – задаёт функцию, которая рисует всю сцену (она будет вызвана для рендера текстуры портала).
-- `draw(recursion_depth)` – выполняет рендеринг портала с учётом рекурсии.
-- `checkTeleport()` – нужно вызывать каждый кадр; если камера пересекает полигон, она мгновенно переносится к другой стороне с правильной ориентацией.
+- `yawA, pitchA, rollA` / `yawB, pitchB, rollB` – ориентация каждой стороны.
+- `setSceneDrawCallback` – задаёт функцию, рисующую всю сцену (она вызывается для рендера текстуры портала).
+- `draw(recursion_depth)` – выполняет рендеринг портала.
+- `checkTeleport()` – вызывайте каждый кадр; если камера пересекает полигон, она переносится к другой стороне с правильной ориентацией.
 
 **Пример:**
 ```cpp
@@ -367,23 +342,16 @@ portal.draw(2);  // после отрисовки остальной сцены
 
 ### Карты (avomap)
 
-Формат `.avomap` позволяет сохранять и загружать сцены: псевдо-3D сущности, источники света, настройки тумана, камеры, панорамы и глобального освещения, а также произвольные пользовательские данные. Формат бинарный, с версионированием.
+Формат `.avomap` позволяет сохранять и загружать сцены: псевдо-3D сущности, источники света, порталы (только при использовании расширения), настройки тумана, камеры, панорамы и глобального освещения, а также произвольные пользовательские данные.
 
-**Основные структуры:**
+**Основные структуры (расширение):**
 
 ```cpp
-struct MapEntity {
-    float x, y, z;
-    float g_angle, v_angle, r_angle;
-    int v_angles;
-    std::vector<std::string> textures;
-    std::vector<float> vertices;
-    bool castShadow;
-};
-
+struct MapEntity { ... };
 struct MapData {
     std::vector<MapEntity> entities;
-    std::vector<LightData> lights;   // LightData повторяет поля Light
+    std::vector<LightData> lights;
+    std::vector<PortalData> portals;   // только с расширением
     bool fog_enabled;
     float fog_density, fog_color[3], fog_start, fog_end;
     float camera_eye[3], camera_pitch, camera_yaw;
@@ -399,13 +367,14 @@ bool save_map(const char* filename, const MapData& map);
 bool load_map(const char* filename, MapData& map);
 MapEntity entityToMapData(const pseudo_3d_entity& ent);
 pseudo_3d_entity* mapDataToEntity(const MapEntity& data);
+MapData::PortalData portalToMapData(const Portal& p);
+Portal* mapDataToPortal(const MapData::PortalData& data);
 void save_current_scene(const char* filename);
 void registerEntity(pseudo_3d_entity* e);
 void unregisterEntity(pseudo_3d_entity* e);
 ```
 
-- `save_current_scene` автоматически собирает все зарегистрированные сущности, освещение, туман и параметры камеры и сохраняет в файл.
-- `registerEntity` / `unregisterEntity` – для ведения глобального списка объектов.
+- `save_current_scene` автоматически собирает все зарегистрированные сущности, порталы, освещение, туман и параметры камеры и сохраняет в файл.
 - Пользовательские данные (`userData`) позволяют сохранить произвольные бинарные блоки под строковыми ключами.
 
 ### Звук
@@ -420,8 +389,6 @@ void play_sound_3d_loop(const char* filename, float x, float y, float z, float v
 void stop_all_looping_sounds();                                            // остановить все зацикленные
 ```
 
-Пространственные звуки используют позицию и направление камеры, обновляемые через `move_camera`.
-
 ### Текстуры
 
 ```c
@@ -433,12 +400,12 @@ void clearTextureCache();                               // удаляет все
 ### Панорама
 
 ```c
-void set_panorama(const char* path);  // путь к файлу текстуры неба (equirectangular)
+void set_panorama(const char* path);  // путь к текстуре неба (equirectangular)
 void remove_panorama();
 void draw_panorama(float camX, float camY, float camZ); // рисует сферу позади всего
 ```
 
-Панорама отключает запись в буфер глубины и освещение, поэтому её следует рисовать последней (или первой с `glClear(GL_DEPTH_BUFFER_BIT)`).
+Панораму следует рисовать после очистки буфера глубины, например последней, или самой первой с `glClear(GL_DEPTH_BUFFER_BIT)`.
 
 ### HUD и отладка
 
@@ -453,25 +420,25 @@ void draw_performance_hud(int win_w, int win_h);  // FPS, координаты, 
 
 ## Расширение (avoextension)
 
-Подключается файлами `avoextension.h`/`avoextension.cpp`. Добавляет удобные обёртки ввода, систему тиков, эффекты текста, белый шум и простую плоскость.
+Расширение добавляет удобные обёртки ввода, систему тиков, текстовые эффекты, белый шум, простую плоскость и поддержку порталов в картах.
 
 ### Система тиков
 
-Тик – логическая единица времени (50 мс), обновляемая в главном цикле. Используется для анимаций и текстовых эффектов.
+Тик – логическая единица времени (50 мс), обновляемая в главном цикле.
 
 ```c
 extern int tick;            // циклический счётчик 0..max_tick
 extern const int max_tick;  // равно 20
 extern int absolute_tick;   // абсолютный счётчик (никогда не сбрасывается)
 
-void init_tick_system();    // сбрасывает таймер (вызвать один раз после setup_display)
+void init_tick_system();    // сброс таймера (после setup_display)
 void update_ticks();        // вызывать каждый кадр перед использованием tick/absolute_tick
 ```
 
 **Пример:**
 ```cpp
 init_tick_system();
-while (!glfwWindowShouldClose(g_window)) {
+while (!glfwWindowShouldClose(window)) {
     update_ticks();
     // использование absolute_tick...
 }
@@ -490,9 +457,9 @@ void disappearing_text(const char* text, float x, float y, void* font,
 ```
 
 - `delay_text` – появление текста по буквам за `ticks` тиков.
-- `disappearing_text` – плавное затухание текста за `ticks` тиков.
+- `disappearing_text` – плавное затухание за `ticks` тиков.
 - Если `loop == true`, анимация повторяется.
-- **Важно:** предварительно вызвать `update_ticks()`. Обе функции используют `absolute_tick`.
+- **Важно:** предварительно вызывать `update_ticks()`.
 
 ### Белый шум
 
@@ -500,36 +467,35 @@ void disappearing_text(const char* text, float x, float y, void* font,
 void play_white_noise_3d(float x, float y, float z, float volume);
 ```
 
-Создаёт пространственный источник белого шума. Звук зациклен; останавливается функцией `stop_all_looping_sounds()`.
+Создаёт пространственный источник белого шума (зациклен). Останавливается функцией `stop_all_looping_sounds()`.
 
 ### Обработка ввода
 
-Расширение автоматически настраивает колбэки GLFW для клавиатуры и мыши. Вызовы нужно сделать один раз после создания окна:
+После создания окна настройте ввод:
 
 ```c
-GLFWwindow* win = ...; // можно получить через glfwGetCurrentContext()
-init_keyboard(win);
-init_mouse(win);
+GLFWwindow* window = glfwGetCurrentContext();
+init_keyboard(window);
+init_mouse(window);
 ```
 
-После этого становятся доступны глобальные переменные:
+Становятся доступны глобальные переменные:
 
 ```c
-extern bool keys[256];            // состояние основных клавиш (нажата/отпущена)
+extern bool keys[256];            // основные клавиши (нажата/отпущена)
 extern bool skeys[512];           // специальные клавиши (стрелки, F1…)
 extern std::map<std::string, bool> mouse; // "left", "right", "middle", "wheel_up", "wheel_down", "_click" варианты
 extern int mouse_x, mouse_y;      // координаты мыши (в пикселях окна)
 extern bool mouse_captured;       // флаг захвата мыши
 ```
 
-- `_click` версии (например, `mouse["left_click"]`) устанавливаются в `true` только на один кадр после нажатия.
-- В каждом кадре после обработки событий необходимо вызывать `update_mouse()`, чтобы сбросить флаги `_click` и колёсико.
+- `_click` версии (`mouse["left_click"]`) устанавливаются в `true` только на один кадр после нажатия.
+- В каждом кадре после обработки событий вызывайте `update_mouse()`.
 
 **Захват мыши:**
 ```c
 void set_mouse_capture(GLFWwindow* window, bool capture);
 ```
-Переключает режим невидимого курсора с бесконечным движением (подходит для FPS-камер).
 
 ### Плоскость
 
@@ -538,7 +504,7 @@ void plane(float cx, float cy, float cz, double r, double g, double b,
            const char* tex, const std::vector<float>& vertices);
 ```
 
-Рисует прямоугольник по четырём вершинам (x,y,z). Удобна для быстрых поверхностей пола/стен.
+Рисует прямоугольник по четырём вершинам (x,y,z).
 
 ### Иконка окна
 
@@ -547,6 +513,10 @@ void set_icon(const char* path);   // загружает PNG и устанавл
 ```
 
 ---
+
+## Сообщество
+
+Discord-сервер: [https://discord.gg/QZe2s9r4u](https://discord.gg/QZe2s9r4u)
 
 ## Лицензия
 
@@ -558,7 +528,7 @@ LGPL-3.0 (см. файл `LICENSE.md`).
 **AVOEngine** is a C++ game engine using OpenGL and GLFW. It provides everything needed for 2D/3D applications: primitive drawing, camera, audio, texture loading, pseudo‑3D sprites, lighting, fog, shadows, portals, maps, plus optional effects via the extension. The engine consists of two parts:
 
 * **Core (avoengine)** – basic features.
-* **Extension (avoextension)** – optional features: text effects, white noise, input handling, window icon, plane primitive.
+* **Extension (avoextension)** – optional features: text effects, white noise, input handling, window icon, plane primitive, map save/load with portals.
 
 ---
 
@@ -569,7 +539,7 @@ LGPL-3.0 (см. файл `LICENSE.md`).
 ```bash
 sudo apt install build-essential cmake
 sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev libglfw3-dev
-sudo apt install libglew-dev libsoil-dev libglm-dev libstb-dev
+sudo apt install libglew-dev libsoil-dev libglm-dev libstb-dev libassimp-dev
 ```
 
 For system information (hwinfo):
@@ -595,10 +565,10 @@ g++ -o output your_program.cpp avoengine.cpp \
     -fopenmp -lm -lpthread -ldl
 ```
 
-**With extension:**
+**With extension (recommended):**
 ```bash
 g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
-    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL \
+    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL -lassimp \
     -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram \
     -fopenmp -lm -lpthread -ldl
 ```
@@ -625,7 +595,7 @@ Run:
 
 ### Initialization and Main Loop
 
-The engine uses **GLFW** for windowing and events. Glut is still required for bitmap fonts. A typical main function:
+The engine uses GLFW for windowing and events. Glut is still required for bitmap fonts. Obtain the window context for the main loop:
 
 ```cpp
 #include "avoengine.h"
@@ -634,10 +604,11 @@ int main(int argc, char** argv) {
     setup_display(nullptr, nullptr, 0.1f, 0.1f, 0.2f, 1.0f, "My Game", 800, 600);
     setup_camera(60.0f, 0.0f, 1.7f, 5.0f, 0.0f, 0.0f);
 
-    while (!glfwWindowShouldClose(g_window)) {
+    GLFWwindow* window = glfwGetCurrentContext();
+    while (!glfwWindowShouldClose(window)) {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         // ... draw scene ...
-        glfwSwapBuffers(g_window);
+        glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
@@ -648,14 +619,14 @@ int main(int argc, char** argv) {
 }
 ```
 
+If text rendering fails, try adding `glutInit(&argc, argv);` before `setup_display`.
+
 ### 2D Shapes
 
-All shapes are drawn in the current 2D projection.
+All shapes are drawn in the current 2D projection (active after `setup_display`).
 
 - `triangle(scale, x, y, r, g, b, rotate, vertices, tex)`
 - `square(local_size, x, y, r, g, b, rotate, vertices, tex)`
-- `light_square(local_size, x, y, r, g, b, rotate, vertices, tex)` – triangle-fan version for correct lighting.
-- `circle(scale, x, y, r, g, b, radius, in_radius, rotate, slices, loops, tex)`
 
 ### Pseudo‑3D Entities
 
@@ -675,7 +646,7 @@ pseudo_3d_entity(float x, float y, float z,
 
 ```c
 void draw3DObject(cx, cy, cz, r, g, b, tex, vertices, indices, texcoords, normals);
-void setup_camera(fov, eye_x, eye_y, eye_z, pitch, yaw);
+void setup_camera(fov, eye_x, eye_y, eye_z, pitch, yaw, roll = 0);
 void move_camera(...);   // also updates audio listener
 ```
 
@@ -703,13 +674,22 @@ light.enable();
 
 Global functions:
 ```c
-void enable_light();   // activates shader and uploads all enabled lights
+void enable_light();   // activates shader and uploads enabled lights
 void disable_light();
 void set_ambient_light(r, g, b);
 void apply_material(r, g, b, a, shininess);
 ```
 
-Shadows: pseudo‑3D entities with `setCastShadow(true)` cast shadows onto other objects (up to 8 simultaneously).
+#### Shadows
+
+Entities with `setCastShadow(true)` cast shadows. **Call `applyAllShadows()` every frame** after updating lights (max 8 shadow casters):
+
+```cpp
+enable_light();
+applyAllLights();
+applyAllShadows();
+// ... render scene ...
+```
 
 ### Fog
 
@@ -724,7 +704,7 @@ Fog is only applied when the lighting shader is active.
 
 ### Portals
 
-`Portal` creates two connected polygons that render a view of the other side and can teleport the camera.
+`Portal` creates two connected polygons that render the other side and can teleport the camera. The lighting shader must be active.
 
 ```c
 Portal portal(ax,ay,az, bx,by,bz, vertices,
@@ -737,7 +717,7 @@ portal.draw(recursion_depth);
 
 ### Maps (avomap)
 
-Binary file format for saving/loading whole scenes.
+Binary format for saving/loading scenes. With the extension, portals are also saved/loaded.
 
 ```c
 struct MapEntity { ... };
@@ -748,9 +728,10 @@ bool load_map(filename, map);
 void save_current_scene(filename);
 void registerEntity(entity);
 void unregisterEntity(entity);
+// portal support (extension):
+MapData::PortalData portalToMapData(const Portal& p);
+Portal* mapDataToPortal(const MapData::PortalData& data);
 ```
-
-Custom binary blobs can be stored in `MapData::userData`.
 
 ### Audio
 
@@ -775,7 +756,7 @@ void clearTextureCache();
 ```c
 set_panorama("sky.jpg");
 remove_panorama();
-draw_panorama(camX, camY, camZ);   // draw after clearing depth
+draw_panorama(camX, camY, camZ);
 ```
 
 ### HUD & Debug
@@ -791,12 +772,12 @@ draw_performance_hud(win_w, win_h);
 
 ### Tick System
 
-A 50 ms logical tick, updated each frame.
+50 ms logical tick.
 
 ```c
 extern int tick, absolute_tick;
-void init_tick_system();   // call once after setup_display
-void update_ticks();       // call every frame
+void init_tick_system();
+void update_ticks();  // call every frame
 ```
 
 ### Text Effects
@@ -817,11 +798,11 @@ void play_white_noise_3d(x, y, z, volume);
 ```c
 init_keyboard(window);
 init_mouse(window);
-// then use:
+// use:
 extern bool keys[256], skeys[512];
 extern std::map<std::string, bool> mouse;
 extern int mouse_x, mouse_y;
-void update_mouse();                 // reset per‑frame flags
+void update_mouse();
 void set_mouse_capture(window, bool);
 ```
 
@@ -838,6 +819,10 @@ void set_icon("icon.png");
 ```
 
 ---
+
+## Community
+
+Discord server: [https://discord.gg/QZe2s9r4u](https://discord.gg/QZe2s9r4u)
 
 ## License
 
