@@ -21,6 +21,9 @@ extern std::string ram_v;
 
 extern GLuint currentShaderProg; 
 
+class Light;
+extern std::vector<Light*> activeLights;
+
 GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
 void useShader(GLuint id);
 void stopShader();
@@ -178,56 +181,6 @@ void set_panorama(const char* path);
 void remove_panorama();
 void draw_panorama(float camX, float camY, float camZ);
 
-struct MapEntity {
-    float x, y, z;
-    float g_angle, v_angle, r_angle;
-    int v_angles;
-    std::vector<std::string> textures;
-    std::vector<float> vertices;
-    bool castShadow = false;
-};
-
-struct MapData {
-    std::vector<MapEntity> entities;
-
-    struct LightData {
-        bool enabled = false;
-        float pos[3] = {0,0,0};
-        float dir[3] = {0,0,-1};
-        float color[3] = {1,1,1};
-        float intensity = 1.0f;
-        float cutoff = 180.0f;
-        float constAtt = 1.0f;
-        float linearAtt = 0.0f;
-        float quadAtt = 0.0f;
-    };
-    std::vector<LightData> lights;
-
-    bool fog_enabled = false;
-    float fog_density = 0.05f;
-    float fog_color[3] = {0.7f, 0.8f, 0.9f};
-    float fog_start = 5.0f;
-    float fog_end = 30.0f;
-
-    float camera_eye[3] = {0,0,0};
-    float camera_pitch = 0.0f;
-    float camera_yaw = 0.0f;
-
-    std::string panorama_path;
-    float ambient[3] = {0.05f, 0.05f, 0.05f};
-
-    std::unordered_map<std::string, std::vector<uint8_t>> userData;
-};
-
-bool save_map(const char* filename, const MapData& map);
-bool load_map(const char* filename, MapData& map);
-
-MapEntity entityToMapData(const pseudo_3d_entity& ent);
-pseudo_3d_entity* mapDataToEntity(const MapEntity& data);
-
-MapData::LightData lightToMapData(const Light& light);
-void mapDataToLight(const MapData::LightData& data, Light& out);
-
 struct fog_params {
     bool enabled = false;
     float density = 0.05f;
@@ -238,12 +191,6 @@ struct fog_params {
 extern fog_params fog;
 
 extern float global_ambient[3];
-
-extern std::vector<pseudo_3d_entity*> allEntities;
-void registerEntity(pseudo_3d_entity* e);
-void unregisterEntity(pseudo_3d_entity* e);
-void save_current_scene(const char* filename);
-
 
 #include <functional>
 #include <glm/glm.hpp>
@@ -331,5 +278,5 @@ private:
     };
     SideState sideA, sideB;
 };
-
+extern std::vector<Portal*> allPortals;
 #endif
