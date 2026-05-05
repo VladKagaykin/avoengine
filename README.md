@@ -23,22 +23,9 @@ sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev libglfw3-dev
 sudo apt install libglew-dev libsoil-dev libglm-dev libstb-dev libassimp-dev
 ```
 
-### Компиляция проекта
-
-**Только ядро:**
+### Компиляция 
 ```bash
-g++ -o output your_program.cpp avoengine.cpp \
-    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL \
-    -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram \
-    -fopenmp -lm -lpthread -ldl
-```
-
-**С расширением (рекомендуется):**
-```bash
-g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
-    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL -lassimp \
-    -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram \
-    -fopenmp -lm -lpthread -ldl
+g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp(if it need) -I./src -I./src/hwinfo -I/usr/include/stb -lGLEW -lglfw -lGLU -lGL -lSOIL -lglut -L. -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram -fopenmp -lassimp
 ```
 
 При необходимости добавьте пути к `miniaudio.h` и `glm` через `-I`.
@@ -531,20 +518,8 @@ sudo apt install libglew-dev libsoil-dev libglm-dev libstb-dev libassimp-dev
 
 ### Compilation
 
-**Core only:**
 ```bash
-g++ -o output your_program.cpp avoengine.cpp \
-    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL \
-    -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram \
-    -fopenmp -lm -lpthread -ldl
-```
-
-**With extension (recommended):**
-```bash
-g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
-    -I/usr/include/stb -lglfw -lGLEW -lglut -lGLU -lGL -lSOIL -lassimp \
-    -L/usr/local/lib -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram \
-    -fopenmp -lm -lpthread -ldl
+g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp(if it need) -I./src -I./src/hwinfo -I/usr/include/stb -lGLEW -lglfw -lGLU -lGL -lSOIL -lglut -L. -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram -fopenmp -lassimp
 ```
 
 Run:
