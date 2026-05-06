@@ -10,7 +10,22 @@
 #endif
 #define MA_ENABLE_ONLY_SPECIFIC_BACKENDS
 // импортируем сам miniaudio
-#include "miniaudio.h"
+#include "src/miniaudio.h"
+
+#include <glm/glm.hpp>
+
+#ifdef _WIN32
+extern "C" {
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+#ifdef __linux__
+extern "C" {
+    int NvOptimusEnablement = 1;
+    int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
 
 //              движок
 // указываем заголовочный файл движка
@@ -320,9 +335,74 @@ void main() {
 }
 )";
 
+const int MAX_SHADOW_CASTERS = 8;
+
+// кэш uniform-локаций для основного шейдера
+static GLint loc_tex = -1;
+static GLint loc_numLights = -1;
+static GLint loc_ambientLight = -1;
+static GLint loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
+static GLint loc_numShadowCasters = -1, loc_receiveShadows = -1;
+static GLint loc_portalMode = -1, loc_portalDepthOnly = -1, loc_portalTex = -1;
+static GLint loc_lightEnabled[MAX_LIGHTS];
+static GLint loc_lightPosition[MAX_LIGHTS];
+static GLint loc_lightDirection[MAX_LIGHTS];
+static GLint loc_lightDiffuse[MAX_LIGHTS];
+static GLint loc_lightCutoff[MAX_LIGHTS];
+static GLint loc_lightAttenuation[MAX_LIGHTS];
+static GLint loc_shadowMatrix[MAX_SHADOW_CASTERS];
+static GLint loc_shadowDarkness[MAX_SHADOW_CASTERS];
+static GLint loc_shadowLightPos[MAX_SHADOW_CASTERS];
+static GLint loc_shadowLightDir[MAX_SHADOW_CASTERS];
+static GLint loc_shadowLightCutoff[MAX_SHADOW_CASTERS];
+static GLint loc_shadowLightObjDist[MAX_SHADOW_CASTERS];
+static GLint loc_shadowMap[MAX_SHADOW_CASTERS];
+
 static void initDefaultShader() {
     if (defaultLightingShader == 0) {
         defaultLightingShader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
+        loc_tex = glGetUniformLocation(defaultLightingShader, "tex");
+        loc_numLights = glGetUniformLocation(defaultLightingShader, "numLights");
+        loc_ambientLight = glGetUniformLocation(defaultLightingShader, "ambientLight");
+        loc_fogColor = glGetUniformLocation(defaultLightingShader, "fogColor");
+        loc_fogStart = glGetUniformLocation(defaultLightingShader, "fogStart");
+        loc_fogEnd = glGetUniformLocation(defaultLightingShader, "fogEnd");
+        loc_numShadowCasters = glGetUniformLocation(defaultLightingShader, "numShadowCasters");
+        loc_receiveShadows = glGetUniformLocation(defaultLightingShader, "receiveShadows");
+        loc_portalMode = glGetUniformLocation(defaultLightingShader, "portalMode");
+        loc_portalDepthOnly = glGetUniformLocation(defaultLightingShader, "portalDepthOnly");
+        loc_portalTex = glGetUniformLocation(defaultLightingShader, "portalTex");
+        char buf[64];
+        for (int i = 0; i < MAX_LIGHTS; ++i) {
+            snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
+            loc_lightEnabled[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "lights[%d].position", i);
+            loc_lightPosition[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "lights[%d].direction", i);
+            loc_lightDirection[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
+            loc_lightDiffuse[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
+            loc_lightCutoff[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
+            loc_lightAttenuation[i] = glGetUniformLocation(defaultLightingShader, buf);
+        }
+        for (int i = 0; i < MAX_SHADOW_CASTERS; ++i) {
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].shadowMatrix", i);
+            loc_shadowMatrix[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
+            loc_shadowDarkness[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].lightPos", i);
+            loc_shadowLightPos[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].lightDirection", i);
+            loc_shadowLightDir[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].lightCutoff", i);
+            loc_shadowLightCutoff[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].lightObjDist", i);
+            loc_shadowLightObjDist[i] = glGetUniformLocation(defaultLightingShader, buf);
+            snprintf(buf, sizeof(buf), "shadowCasters[%d].shadowMap", i);
+            loc_shadowMap[i] = glGetUniformLocation(defaultLightingShader, buf);
+        }
     }
 }
 
@@ -368,9 +448,9 @@ GLuint loadTextureFromFile(const char* filename){
         if(it!=textureCache.end()) return it->second;
     }
     // загружаем изображение и записываем ей ширину и высоту в w и h
-    int w,h;
+    int w,h,channels;
     // название текстуры / w / h / сюда можно записать сколько каналов у изображения / принудительно указываем что 4 канала, чтобы была прозрачность
-    unsigned char* img=SOIL_load_image(filename,&w,&h,nullptr,SOIL_LOAD_RGBA);
+    unsigned char* img=SOIL_load_image(filename,&w,&h,&channels,SOIL_LOAD_AUTO);
     if(!img){
         cerr<<"Cannot load texture: "<<filename<<" ("<<SOIL_last_result()<<")"<<endl;
         // закрываем замок и записываем что текстуры нет
@@ -390,9 +470,11 @@ GLuint loadTextureFromFile(const char* filename){
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     // передаём текстуру в видеопамять
     // формат / детализация(хз что это значит) / формат хранения / ширина / высота / граница(также хз) / входной формат / тип данных / изображение
-    glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,w,h,0,GL_RGBA,GL_UNSIGNED_BYTE,img);
+    GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
+    glTexImage2D(GL_TEXTURE_2D,0,format,w,h,0,format,GL_UNSIGNED_BYTE,img);
     // освобождаем текстуру из памяти
     SOIL_free_image_data(img);
     // закрываем замок и возвращаем id текстуры
@@ -402,7 +484,7 @@ GLuint loadTextureFromFile(const char* filename){
 // загружаем много текстур параллельно
 void preloadTextures(const vector<string>& filenames){
     // структура для хранения загруженных с диска данных до передачи в видеопамять
-    struct RawTex{string name;unsigned char* data;int w,h;};
+    struct RawTex{string name;unsigned char* data;int w,h,channels;};
     vector<RawTex> loaded(filenames.size());
     // параллельно грузим файлы с диска
     // schedule(dynamic) значит что потоки берут задачи по одной по мере освобождения, а не поровну сразу
@@ -413,13 +495,13 @@ void preloadTextures(const vector<string>& filenames){
         {
             lock_guard<mutex> lock(textureCacheMutex);
             if(textureCache.count(filenames[i])){
-                loaded[i]={filenames[i],nullptr,0,0};
+                loaded[i]={filenames[i],nullptr,0,0,0};
                 continue;
             }
         }
-        int w,h;
-        unsigned char* img=SOIL_load_image(filenames[i].c_str(),&w,&h,nullptr,SOIL_LOAD_RGBA);
-        loaded[i]={filenames[i],img,w,h};
+        int w,h,channels;
+        unsigned char* img=SOIL_load_image(filenames[i].c_str(),&w,&h,&channels,SOIL_LOAD_AUTO);
+        loaded[i]={filenames[i],img,w,h,channels};
     }
     // передаём в видеопамять строго из одного потока т.к. opengl однопоточный
     for(auto& t:loaded){
@@ -432,7 +514,8 @@ void preloadTextures(const vector<string>& filenames){
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,t.w,t.h,0,GL_RGBA,GL_UNSIGNED_BYTE,t.data);
+        GLenum format = (t.channels == 4) ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_2D,0,format,t.w,t.h,0,format,GL_UNSIGNED_BYTE,t.data);
         SOIL_free_image_data(t.data);
         // закрываем замок и записываем текстуру в таблицу
         lock_guard<mutex> lock(textureCacheMutex);
@@ -554,10 +637,7 @@ void triangle(float scale, float cx, float cy, double r, double g, double b,
         glBindTexture(GL_TEXTURE_2D, whiteTex);
     }
 
-    if (currentShaderProg) {
-        GLint loc = glGetUniformLocation(currentShaderProg, "tex");
-        if (loc != -1) glUniform1i(loc, 0);
-    }
+    if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
 
     if (currentShaderProg) {
         glDisableVertexAttribArray(2);          
@@ -648,10 +728,7 @@ void square(float local_size, float x, float y, double r, double g, double b,
         glBindTexture(GL_TEXTURE_2D, whiteTex);
     }
 
-    if (currentShaderProg) {
-        GLint loc = glGetUniformLocation(currentShaderProg, "tex");
-        if (loc != -1) glUniform1i(loc, 0);
-    }
+    if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
 
     if (currentShaderProg) {
         glDisableVertexAttribArray(2);
@@ -693,13 +770,16 @@ void draw_text(const char* text, float x, float y, void* font, float r, float g,
 //              класс для рисовки псевдо 3д существ
 pseudo_3d_entity::pseudo_3d_entity(float x, float y, float z,
                                    float g_angle, float v_angle, float r_angle,
-                                   std::vector<std::string> textures, int v_angles,
+                                   const std::vector<std::string>& textures, int v_angles,
                                    const std::vector<float>& vertices)
     : x(x), y(y), z(z),
       g_angle(g_angle), v_angle(v_angle), r_angle(r_angle),
-      textures(std::move(textures)), v_angles(v_angles),
+      textureFiles(textures), v_angles(v_angles),
       vertices_(vertices) {
     computeRadius();
+    textureIDs.resize(textureFiles.size());
+    for (size_t i = 0; i < textureFiles.size(); ++i)
+        textureIDs[i] = loadTextureFromFile(textureFiles[i].c_str());
 }
 // проверяем есть ли на экране
 bool pseudo_3d_entity::isVisible(float cam_x, float cam_y, float cam_z) const{
@@ -735,12 +815,12 @@ int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) con
     cachedDirY = dir_y;
     cachedDirZ = dir_z;
 
-    if (textures.empty()) {
+    if (textureFiles.empty()) {
         cachedTexIdx = -1;
         return -1;
     }
 
-    const int total = int(textures.size());
+    const int total = int(textureFiles.size());
     const int h_count = total / v_angles;
     if (h_count <= 0) {
         cachedTexIdx = -1;
@@ -782,6 +862,7 @@ int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) con
     if (cachedTexIdx >= total) cachedTexIdx = total - 1;
     return cachedTexIdx;
 }
+
 // рисуем сущность
 void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     if (!isVisible(cam_x, cam_y, cam_z)) return;
@@ -792,7 +873,6 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
 
     const int tidx = getTextureIndex(dx, dy, dz);
-    const char* tex = (tidx >= 0 && tidx < (int)textures.size()) ? textures[tidx].c_str() : nullptr;
 
     const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
     const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
@@ -846,11 +926,10 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     float total_roll = billboard_roll + r_angle;
 
     const bool mirror = (tidx == 0);
+    const char* tex = (tidx >= 0 && tidx < (int)textureFiles.size()) ? textureFiles[tidx].c_str() : nullptr;
 
-    if (currentShaderProg) {
-        GLint loc = glGetUniformLocation(currentShaderProg, "receiveShadows");
-        if (loc != -1) glUniform1i(loc, 0);
-    }
+    if (currentShaderProg && loc_receiveShadows != -1)
+        glUniform1i(loc_receiveShadows, 0);
 
     glPushMatrix();
     glTranslatef(x, y, z);
@@ -859,10 +938,8 @@ void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
     glPopMatrix();
 
-    if (currentShaderProg) {
-        GLint loc = glGetUniformLocation(currentShaderProg, "receiveShadows");
-        if (loc != -1) glUniform1i(loc, 1);
-    }
+    if (currentShaderProg && loc_receiveShadows != -1)
+        glUniform1i(loc_receiveShadows, 1);
 }
 
 void pseudo_3d_entity::computeRadius() {
@@ -889,14 +966,12 @@ void pseudo_3d_entity::setCastShadow(bool enable) {
 
 GLuint pseudo_3d_entity::getTextureFromDirection(float lx, float ly, float lz) const {
     int idx = getTextureIndex(lx, ly, lz);
-    if (idx < 0 || idx >= (int)textures.size()) return 0;
-    return loadTextureFromFile(textures[idx].c_str());
+    if (idx < 0 || idx >= (int)textureIDs.size()) return 0;
+    return textureIDs[idx];
 }
 
 GLuint pseudo_3d_entity::getShadowTexture(float lx, float ly, float lz) const {
-    int idx = getTextureIndex(lx, ly, lz);
-    if (idx < 0 || idx >= (int)textures.size()) return 0;
-    return loadTextureFromFile(textures[idx].c_str());
+    return getTextureFromDirection(lx, ly, lz);
 }
 
 std::vector<pseudo_3d_entity*> shadowCasters;
@@ -904,8 +979,6 @@ std::vector<pseudo_3d_entity*> shadowCasters;
 void applyAllShadows() {
     GLuint prog = currentShaderProg;
     if (!prog) return;
-
-    const int MAX_SHADOW_CASTERS = 8;
 
     std::vector<std::tuple<float, pseudo_3d_entity*, Light*>> casters;
     for (pseudo_3d_entity* ent : shadowCasters) {
@@ -937,14 +1010,11 @@ void applyAllShadows() {
               [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
 
     int totalCasters = std::min((int)casters.size(), MAX_SHADOW_CASTERS);
-    glUniform1i(glGetUniformLocation(prog, "numShadowCasters"), totalCasters);
+    if (loc_numShadowCasters != -1) glUniform1i(loc_numShadowCasters, totalCasters);
 
     if (totalCasters == 0) {
-        for (int i = 0; i < MAX_SHADOW_CASTERS; ++i) {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
-            glUniform1f(glGetUniformLocation(prog, buf), 0.0f);
-        }
+        for (int i = 0; i < MAX_SHADOW_CASTERS; ++i)
+            if (loc_shadowDarkness[i] != -1) glUniform1f(loc_shadowDarkness[i], 0.0f);
         return;
     }
 
@@ -1028,17 +1098,11 @@ void applyAllShadows() {
         glGetFloatv(GL_MODELVIEW_MATRIX, shadowMat);
         glPopMatrix();
 
-        char buf[64];
-
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].shadowMatrix", i);
-        glUniformMatrix4fv(glGetUniformLocation(prog, buf), 1, GL_FALSE, shadowMat);
-
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
-        glUniform1f(glGetUniformLocation(prog, buf), 0.8f);
+        if (loc_shadowMatrix[i] != -1) glUniformMatrix4fv(loc_shadowMatrix[i], 1, GL_FALSE, shadowMat);
+        if (loc_shadowDarkness[i] != -1) glUniform1f(loc_shadowDarkness[i], 0.8f);
 
         GLfloat lightPos[3] = { lightCamX, lightCamY, lightCamZ };
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].lightPos", i);
-        glUniform3fv(glGetUniformLocation(prog, buf), 1, lightPos);
+        if (loc_shadowLightPos[i] != -1) glUniform3fv(loc_shadowLightPos[i], 1, lightPos);
 
         float lightDirView[3];
         for (int k = 0; k < 3; ++k) {
@@ -1046,34 +1110,31 @@ void applyAllShadows() {
                               cameraView[4+k] * light->dir[1] +
                               cameraView[8+k] * light->dir[2];
         }
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].lightDirection", i);
-        glUniform3fv(glGetUniformLocation(prog, buf), 1, lightDirView);
-
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].lightCutoff", i);
-        glUniform1f(glGetUniformLocation(prog, buf), cosf(light->cutoff * M_PI / 180.0f));
-
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].lightObjDist", i);
-        glUniform1f(glGetUniformLocation(prog, buf), objDist);
+        if (loc_shadowLightDir[i] != -1) glUniform3fv(loc_shadowLightDir[i], 1, lightDirView);
+        if (loc_shadowLightCutoff[i] != -1) glUniform1f(loc_shadowLightCutoff[i], cosf(light->cutoff * M_PI / 180.0f));
+        if (loc_shadowLightObjDist[i] != -1) glUniform1f(loc_shadowLightObjDist[i], objDist);
 
         glActiveTexture(GL_TEXTURE1 + i);
         bindTexture(texID);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].shadowMap", i);
-        glUniform1i(glGetUniformLocation(prog, buf), 1 + i);
+        if (loc_shadowMap[i] != -1) glUniform1i(loc_shadowMap[i], 1 + i);
     }
 
-    for (int i = totalCasters; i < MAX_SHADOW_CASTERS; ++i) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "shadowCasters[%d].darkness", i);
-        glUniform1f(glGetUniformLocation(prog, buf), 0.0f);
-    }
+    for (int i = totalCasters; i < MAX_SHADOW_CASTERS; ++i)
+        if (loc_shadowDarkness[i] != -1) glUniform1f(loc_shadowDarkness[i], 0.0f);
 
     glActiveTexture(GL_TEXTURE0);
 }
 
+static void sound_end_callback(void* pUserData, ma_sound* pSound) {
+    ma_sound_uninit(pSound);
+    delete pSound;
+}
+
 //              opengl
+static bool currentIs2D = false;
 // настройка изменения размеров в 3д режиме
 void changeSize3D(int w,int h){
     // проверка чтобы избежать деления на 0
@@ -1114,6 +1175,15 @@ void changeSize2D(int w,int h){
     // выводим размеры окна в переменные, чтобы разработчик игры их мог использовать
     window_w=w;
     window_h=h;
+}
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    window_w = width;
+    window_h = height;
+    if (currentIs2D) {
+        changeSize2D(width, height);
+    } else {
+        changeSize3D(width, height);
+    }
 }
 // инициализация окна
 void setup_display(int* argc, char** argv, float r, float g, float b, float a, const char* name, int w, int h) {
@@ -1167,6 +1237,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     initDefaultShader();
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     changeSize2D(w, h);
 }
 //                                                                                      КОЛХОЗ!!! ПОТОМ СРОЧНО ИСПРАВИТЬ!!!
@@ -1401,10 +1472,7 @@ void draw3DObject(float cx, float cy, float cz,
         glBindTexture(GL_TEXTURE_2D, whiteTex);
     }
 
-    if (currentShaderProg) {
-        GLint locTex = glGetUniformLocation(currentShaderProg, "tex");
-        if (locTex != -1) glUniform1i(locTex, 0);
-    }
+    if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
 
     glPushMatrix();
     glTranslatef(cx, cy, cz);
@@ -1434,10 +1502,9 @@ void enable_light() {
         glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
         set_ambient_light(0.05f, 0.05f, 0.05f);
         if (fog.enabled) {
-            glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"),
-                        fog.color[0], fog.color[1], fog.color[2]);
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), fog.start);
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), fog.end);
+            if (loc_fogColor != -1) glUniform3f(loc_fogColor, fog.color[0], fog.color[1], fog.color[2]);
+            if (loc_fogStart != -1) glUniform1f(loc_fogStart, fog.start);
+            if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
         }
         applyAllLights();
     }
@@ -1497,30 +1564,10 @@ void Light::disable() {
     }
 }
 
-void Light::applyToShader(int index, GLuint prog) const {
-    char buf[64];
-    snprintf(buf, sizeof(buf), "lights[%d].enabled", index);
-    glUniform1i(glGetUniformLocation(prog, buf), enabled ? 1 : 0);
-    if (!enabled) return;
-
-    snprintf(buf, sizeof(buf), "lights[%d].position", index);
-    glUniform3fv(glGetUniformLocation(prog, buf), 1, pos);
-
-    snprintf(buf, sizeof(buf), "lights[%d].direction", index);
-    glUniform3fv(glGetUniformLocation(prog, buf), 1, dir);
-
-    float diff[3] = { color[0]*intensity, color[1]*intensity, color[2]*intensity };
-    snprintf(buf, sizeof(buf), "lights[%d].diffuse", index);
-    glUniform3fv(glGetUniformLocation(prog, buf), 1, diff);
-
-    snprintf(buf, sizeof(buf), "lights[%d].cutoff", index);
-    glUniform1f(glGetUniformLocation(prog, buf), cosf(cutoff * M_PI / 180.0f));
-
-    snprintf(buf, sizeof(buf), "lights[%d].attenuation", index);
-    glUniform3f(glGetUniformLocation(prog, buf), constAtt, linearAtt, quadAtt);
-}
-
 void applyAllLights() {
+    static float lastCamPos[3] = {0,0,0};
+    static float lastCamDir[3] = {0,0,0};
+    static int lastActiveCount = -1;
     GLuint prog = currentShaderProg;
     if (prog == 0) return;
 
@@ -1532,7 +1579,7 @@ void applyAllLights() {
     }
 
     if (candidates.empty()) {
-        glUniform1i(glGetUniformLocation(prog, "numLights"), 0);
+        if (loc_numLights != -1) glUniform1i(loc_numLights, 0);
         return;
     }
 
@@ -1568,7 +1615,7 @@ void applyAllLights() {
         });
 
     int count = std::min((int)candidates.size(), MAX_LIGHTS);
-    glUniform1i(glGetUniformLocation(prog, "numLights"), count);
+    if (loc_numLights != -1) glUniform1i(loc_numLights, count);
 
     GLfloat mv[16];
     glGetFloatv(GL_MODELVIEW_MATRIX, mv);
@@ -1598,27 +1645,16 @@ void applyAllLights() {
                          mv3[r+6] * worldDir[2];
         }
 
-        char buf[64];
-        snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
-        glUniform1i(glGetUniformLocation(prog, buf), 1);
-
-        snprintf(buf, sizeof(buf), "lights[%d].position", i);
-        glUniform3fv(glGetUniformLocation(prog, buf), 1, viewPos);
-
-        snprintf(buf, sizeof(buf), "lights[%d].direction", i);
-        glUniform3fv(glGetUniformLocation(prog, buf), 1, viewDir);
+        if (loc_lightEnabled[i] != -1) glUniform1i(loc_lightEnabled[i], 1);
+        if (loc_lightPosition[i] != -1) glUniform3fv(loc_lightPosition[i], 1, viewPos);
+        if (loc_lightDirection[i] != -1) glUniform3fv(loc_lightDirection[i], 1, viewDir);
 
         float diff[3] = { light->color[0] * light->intensity,
                           light->color[1] * light->intensity,
                           light->color[2] * light->intensity };
-        snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
-        glUniform3fv(glGetUniformLocation(prog, buf), 1, diff);
-
-        snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
-        glUniform1f(glGetUniformLocation(prog, buf), cosf(light->cutoff * M_PI / 180.0f));
-
-        snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
-        glUniform3f(glGetUniformLocation(prog, buf), light->constAtt, light->linearAtt, light->quadAtt);
+        if (loc_lightDiffuse[i] != -1) glUniform3fv(loc_lightDiffuse[i], 1, diff);
+        if (loc_lightCutoff[i] != -1) glUniform1f(loc_lightCutoff[i], cosf(light->cutoff * M_PI / 180.0f));
+        if (loc_lightAttenuation[i] != -1) glUniform3f(loc_lightAttenuation[i], light->constAtt, light->linearAtt, light->quadAtt);
     }
 }
 
@@ -1626,9 +1662,7 @@ void set_ambient_light(float r, float g, float b) {
     global_ambient[0] = r;
     global_ambient[1] = g;
     global_ambient[2] = b;
-    if (currentShaderProg) {
-        glUniform3f(glGetUniformLocation(currentShaderProg, "ambientLight"), r, g, b);
-    }
+    if (loc_ambientLight != -1) glUniform3f(loc_ambientLight, r, g, b);
 }
 
 void apply_material(float r, float g, float b, float alpha, float shininess){
@@ -1650,9 +1684,9 @@ void enable_fog(float density, float r, float g, float b, float start, float end
     fog.end = end;
 
     if (currentShaderProg) {
-        glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"), r, g, b);
-        glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), start);
-        glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), end);
+        if (loc_fogColor != -1) glUniform3f(loc_fogColor, r, g, b);
+        if (loc_fogStart != -1) glUniform1f(loc_fogStart, start);
+        if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, end);
     }
 }
 
@@ -1666,8 +1700,8 @@ void set_fog_density(float density) {
         fog.start = 2.0f / density;
         fog.end = 15.0f / density;
         if (currentShaderProg) {
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), fog.start);
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), fog.end);
+            if (loc_fogStart != -1) glUniform1f(loc_fogStart, fog.start);
+            if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
         }
     }
 }
@@ -1676,7 +1710,7 @@ void set_fog_color(float r, float g, float b) {
     fog.color[0] = r; fog.color[1] = g; fog.color[2] = b;
     if (fog.enabled) {
         if (currentShaderProg) {
-            glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"), r, g, b);
+            if (loc_fogColor != -1) glUniform3f(loc_fogColor, r, g, b);
         }
     }
 }
@@ -1686,8 +1720,8 @@ void set_fog_range(float start, float end) {
     fog.end = end;
     if (fog.enabled) {
         if (currentShaderProg) {
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), start);
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), end);
+            if (loc_fogStart != -1) glUniform1f(loc_fogStart, start);
+            if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, end);
         }
     }
 }
@@ -1695,6 +1729,7 @@ void set_fog_range(float start, float end) {
 //              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
 // переключаем матрицу на 2д
 void begin_2d(int w, int h) {
+    currentIs2D = true;
     initSimple2DShader();                
     useShader(simple2DShader);              
 
@@ -1716,6 +1751,7 @@ void begin_2d(int w, int h) {
 }
 // переключаем матрицу на 3д(невероятно)
 void end_2d() {
+    currentIs2D = 0;
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_LIGHTING);
@@ -1732,10 +1768,9 @@ void end_2d() {
     if (lighting_global) {
         useShader(defaultLightingShader);
         if (fog.enabled) {
-            glUniform3f(glGetUniformLocation(currentShaderProg, "fogColor"),
-                        fog.color[0], fog.color[1], fog.color[2]);
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogStart"), fog.start);
-            glUniform1f(glGetUniformLocation(currentShaderProg, "fogEnd"), fog.end);
+            if (loc_fogColor != -1) glUniform3f(loc_fogColor, fog.color[0], fog.color[1], fog.color[2]);
+            if (loc_fogStart != -1) glUniform1f(loc_fogStart, fog.start);
+            if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
         }
         applyAllLights();
     } else {
@@ -1764,6 +1799,7 @@ void play_sound(const char* filename,float volume){
     ma_sound_set_spatialization_enabled(sound, MA_FALSE);
     // звук
     ma_sound_set_volume(sound, volume);
+    
     // проигрывание
     ma_sound_start(sound);
 }
@@ -1798,6 +1834,7 @@ void play_sound_3d(const char* filename,float x,float y,float z,float volume){
     ma_sound_set_position(sound,x,y,z);
     ma_sound_set_spatialization_enabled(sound,MA_TRUE);
     ma_sound_set_volume(sound,volume);
+    
     // проигрываем звук
     ma_sound_start(sound);
 }
@@ -1836,6 +1873,7 @@ void draw_performance_hud(int win_w,int win_h){
     static int frame_cnt=0;
     static double fps=0.0;
     static auto prev_time=chrono::steady_clock::now();
+    static float last_gpu_usage = -1.0f;
     // счётчик кадров
     ++frame_cnt;
     auto now=chrono::steady_clock::now();
@@ -1877,11 +1915,28 @@ void draw_performance_hud(int win_w,int win_h){
         cpu_pct=(cur_cpu-prev_cpu)/(double)sysconf(_SC_CLK_TCK)/elapsed*10.0;
         prev_cpu=cur_cpu;
         prev_time=now;
+        {
+            FILE* gf = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits", "r");
+            if (gf) {
+                float current_gpu = -1.0f;
+                if (fscanf(gf, "%f", &current_gpu) == 1)
+                    last_gpu_usage = current_gpu;
+                pclose(gf);
+            }
+        }
     }
     // вывод статистики в левом верхнем углу
     char buf[256];
-    snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%",fps,ram_kb / 1024,cpu_pct);
+    snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%  GPU: ", fps, ram_kb / 1024, cpu_pct);
     begin_2d(win_w,win_h);
+    if (last_gpu_usage >= 0.0f) {
+        char gpu_str[32];
+        snprintf(gpu_str, sizeof(gpu_str), "%.1f%%", last_gpu_usage);
+        strcat(buf, gpu_str);
+    } else {
+        strcat(buf, "N/A");
+    }
+    draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     snprintf(buf,sizeof(buf),"X: %.10f  Y: %.10f  Z: %.10f",camera.eye_x,camera.eye_y,camera.eye_z);
     draw_text(buf,10.0f,float(win_h)-32.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
@@ -2115,17 +2170,17 @@ glm::mat4 Portal::getPortalTransform(float fx, float fy, float fz,
 
 static void portalSetUniforms(GLuint prog, GLuint tex, bool depthOnly) {
     glUseProgram(prog);
-    glUniform1i(glGetUniformLocation(prog, "portalMode"),      1);
-    glUniform1i(glGetUniformLocation(prog, "portalDepthOnly"), depthOnly ? 1 : 0);
-    glUniform1i(glGetUniformLocation(prog, "portalTex"),       1);
+    if (loc_portalMode != -1) glUniform1i(loc_portalMode, 1);
+    if (loc_portalDepthOnly != -1) glUniform1i(loc_portalDepthOnly, depthOnly ? 1 : 0);
+    if (loc_portalTex != -1) glUniform1i(loc_portalTex, 1);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, tex);
     glActiveTexture(GL_TEXTURE0);
 }
 
 static void portalClearUniforms(GLuint prog) {
-    glUniform1i(glGetUniformLocation(prog, "portalMode"),      0);
-    glUniform1i(glGetUniformLocation(prog, "portalDepthOnly"), 0);
+    if (loc_portalMode != -1) glUniform1i(loc_portalMode, 0);
+    if (loc_portalDepthOnly != -1) glUniform1i(loc_portalDepthOnly, 0);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);

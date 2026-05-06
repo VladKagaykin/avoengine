@@ -6,7 +6,8 @@
 #include <vector>
 #include <cmath>
 #include <unordered_map>
-#include "miniaudio.h"
+#include "src/miniaudio.h"
+#include <glm/glm.hpp>
 
 struct GLFWwindow;
 
@@ -62,7 +63,7 @@ class pseudo_3d_entity {
 public:
     pseudo_3d_entity(float x, float y, float z,
                      float g_angle, float v_angle, float r_angle,
-                     std::vector<std::string> textures, int v_angles,
+                     const std::vector<std::string>& textures, int v_angles,
                      const std::vector<float>& vertices);
 
     void draw(float cam_x, float cam_y, float cam_z) const;
@@ -86,19 +87,23 @@ public:
 
     GLuint getShadowTexture(float dir_x, float dir_y, float dir_z) const;
     GLuint getTextureFromDirection(float dir_x, float dir_y, float dir_z) const;
-    const std::vector<std::string>& getTextures() const { return textures; }
+    const std::vector<std::string>& getTextures() const { return textureFiles; }
     const std::vector<float>& getVertices() const { return vertices_; }
+    const std::vector<GLuint>& getTextureIDs() const { return textureIDs; }
     int getVAngles() const { return v_angles; }
-private:
-    void computeRadius();
+
     int getTextureIndex(float dir_x, float dir_y, float dir_z) const;
     bool isVisible(float cam_x, float cam_y, float cam_z) const;
+
+private:
+    void computeRadius();
 
     float x, y, z;
     float g_angle, v_angle, r_angle;
     float radius;
 
-    std::vector<std::string> textures;
+    std::vector<std::string> textureFiles;
+    std::vector<GLuint> textureIDs;
     int v_angles;
     std::vector<float> vertices_;
 
