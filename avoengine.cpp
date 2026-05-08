@@ -2866,7 +2866,6 @@ void Portal::draw(int recursion_depth) {
 }
 
 void Portal::checkTeleport() {
-
     glm::vec3 camPos(camera.eye_x, camera.eye_y, camera.eye_z);
 
     auto computeWorldMatrix = [&](float px, float py, float pz,
@@ -2937,12 +2936,19 @@ void Portal::checkTeleport() {
         float newPitch = glm::degrees(asinf(newForward.y));
         float newYaw   = glm::degrees(atan2f(newForward.x, newForward.z));
 
+        const float epsilon = 0.001f;
+        if (newUp.y < -epsilon) {
+            newPitch = 180.0f - newPitch;
+            newYaw   = newYaw + 180.0f;
+            newYaw = fmod(newYaw, 360.0f)+180;
+            if (newYaw < 0.0f) newYaw += 360.0f;
+        }
+
         float np = fmod(newPitch, 360.0f);
         if (np < 0) np += 360.0f;
         glm::vec3 defUp = (np > 90.0f && np < 270.0f)
                             ? glm::vec3(0.0f, -1.0f, 0.0f)
                             : glm::vec3(0.0f,  1.0f, 0.0f);
-
         glm::vec3 right = glm::normalize(glm::cross(newUp, newForward));
         glm::vec3 correctedUp = glm::cross(newForward, right);
         float cosRoll = glm::dot(defUp, correctedUp);
@@ -2951,7 +2957,7 @@ void Portal::checkTeleport() {
 
         glm::mat4 worldDst = computeWorldMatrix(dx, dy, dz, dyaw, dpitch, droll);
         glm::vec3 pushNormal = glm::mat3(worldDst) * (-localNormal);
-        const float push = 0.1f;
+        const float push = 0.1f;  
         if (prevDist > 0.0f) {
             newPos += pushNormal * push;
         } else {
