@@ -29,6 +29,8 @@ GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
 void useShader(GLuint id);
 void stopShader();
 
+void flushDrawQueue();
+
 GLuint loadTextureFromFile(const char* filename);
 void clearTextureCache();
 void preloadTextures(const std::vector<std::string>& filenames);
@@ -52,8 +54,6 @@ struct CameraParams{
 extern CameraParams camera;
 
 void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
-
-void triangle(float scale,float cx,float cy,double r,double g,double b,float rotate,const float* vertices,const char* texture_file=nullptr);
 
 void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex=nullptr);
 
@@ -165,8 +165,6 @@ void disable_fog();
 void set_fog_range(float start, float end);
 void set_fog_color(float r, float g, float b);
 void set_fog_density(float density);
-void begin_2d(int w,int h);
-void end_2d();
 void init_audio();
 void play_sound(const char* filename,float volume=1.0f);
 void play_sound_loop(const char* filename,float volume=1.0f);

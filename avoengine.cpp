@@ -118,6 +118,7 @@ static inline void bindTexture(GLuint id){
 }
 
 //              шейдеры
+static bool lighting_global = false;
 // Переменная для хранения текущей программы шейдеров
 GLuint currentShaderProg = 0;
 // Функция для проверки ошибок компиляции
@@ -437,89 +438,741 @@ static void initSimple2DShader() {
     if (!simple2DShader)
         simple2DShader = createShaderProgram(simple2DVertexShader, simple2DFragmentShader);
 }
+//              вэбэо
+enum DrawCommandType : int {
+    CMD_TRIANGLE,
+    CMD_SQUARE,
+    CMD_TEXT,
+    CMD_3DOBJECT,
+    CMD_PSEUDO3D
+};
 
+struct DrawCommand {
+    DrawCommandType type;
+
+    float scale, cx, cy, r, g, b, rotate;
+    float verts[8];
+    int vertCount;
+    std::string tex;
+
+    std::string text;
+    float x, y;
+    void* font;
+    float a;
+
+    float obj_cx, obj_cy, obj_cz;
+    float obj_r, obj_g, obj_b;
+    std::string obj_tex;
+    std::vector<float> obj_vertices;
+    std::vector<int> obj_indices;
+    std::vector<float> obj_texcoords;
+    std::vector<float> obj_normals;
+    float radius = 0.0f;             
+
+    const pseudo_3d_entity* entity;
+    float cam_x, cam_y, cam_z;
+
+    GLuint shaderID = 0;
+};
+
+bool g_useDrawQueue = true;
+
+static std::vector<DrawCommand> drawQueue;
+static std::mutex drawQueueMutex;
+
+static GLuint whiteTex = 0;
+
+static void ensureWhiteTex() {
+    if (whiteTex == 0) {
+        unsigned char white[4] = {255,255,255,255};
+        glGenTextures(1, &whiteTex);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+}
+
+// Вспомогательная функция для пересоздания GL-буфера, если его размер меньше требуемого
+static GLuint vao3D = 0;
+static GLuint vbo_pos = 0, vbo_norm = 0, vbo_uv = 0, ibo = 0;
+static size_t cap_pos = 0, cap_norm = 0, cap_uv = 0, cap_idx = 0;
+
+static void ensureBuffer(GLuint &buf, size_t &currentSize, size_t requiredSize, GLenum target) {
+    if (requiredSize > currentSize) {
+        size_t newSize = std::max(requiredSize, currentSize * 2);
+        if (buf) glDeleteBuffers(1, &buf);
+        glGenBuffers(1, &buf);
+        glBindBuffer(target, buf);
+        glBufferData(target, newSize, nullptr, GL_DYNAMIC_DRAW);
+        currentSize = newSize;
+    } else {
+        glBindBuffer(target, buf);
+    }
+}
+
+static float frustumPlanes[6][4]; 
+
+bool sphereInFrustum(float x, float y, float z, float radius) {
+    for (int i = 0; i < 6; i++) {
+        float dist = frustumPlanes[i][0] * x +
+                     frustumPlanes[i][1] * y +
+                     frustumPlanes[i][2] * z +
+                     frustumPlanes[i][3];
+        if (dist <= -radius)
+            return false;
+    }
+    return true;
+} 
+
+void extractFrustumPlanes() {
+    float proj[16], modl[16], clip[16];
+    glGetFloatv(GL_PROJECTION_MATRIX, proj);
+    glGetFloatv(GL_MODELVIEW_MATRIX, modl);
+
+   
+    clip[ 0] = modl[ 0]*proj[ 0] + modl[ 1]*proj[ 4] + modl[ 2]*proj[ 8] + modl[ 3]*proj[12];
+    clip[ 1] = modl[ 0]*proj[ 1] + modl[ 1]*proj[ 5] + modl[ 2]*proj[ 9] + modl[ 3]*proj[13];
+    clip[ 2] = modl[ 0]*proj[ 2] + modl[ 1]*proj[ 6] + modl[ 2]*proj[10] + modl[ 3]*proj[14];
+    clip[ 3] = modl[ 0]*proj[ 3] + modl[ 1]*proj[ 7] + modl[ 2]*proj[11] + modl[ 3]*proj[15];
+    clip[ 4] = modl[ 4]*proj[ 0] + modl[ 5]*proj[ 4] + modl[ 6]*proj[ 8] + modl[ 7]*proj[12];
+    clip[ 5] = modl[ 4]*proj[ 1] + modl[ 5]*proj[ 5] + modl[ 6]*proj[ 9] + modl[ 7]*proj[13];
+    clip[ 6] = modl[ 4]*proj[ 2] + modl[ 5]*proj[ 6] + modl[ 6]*proj[10] + modl[ 7]*proj[14];
+    clip[ 7] = modl[ 4]*proj[ 3] + modl[ 5]*proj[ 7] + modl[ 6]*proj[11] + modl[ 7]*proj[15];
+    clip[ 8] = modl[ 8]*proj[ 0] + modl[ 9]*proj[ 4] + modl[10]*proj[ 8] + modl[11]*proj[12];
+    clip[ 9] = modl[ 8]*proj[ 1] + modl[ 9]*proj[ 5] + modl[10]*proj[ 9] + modl[11]*proj[13];
+    clip[10] = modl[ 8]*proj[ 2] + modl[ 9]*proj[ 6] + modl[10]*proj[10] + modl[11]*proj[14];
+    clip[11] = modl[ 8]*proj[ 3] + modl[ 9]*proj[ 7] + modl[10]*proj[11] + modl[11]*proj[15];
+    clip[12] = modl[12]*proj[ 0] + modl[13]*proj[ 4] + modl[14]*proj[ 8] + modl[15]*proj[12];
+    clip[13] = modl[12]*proj[ 1] + modl[13]*proj[ 5] + modl[14]*proj[ 9] + modl[15]*proj[13];
+    clip[14] = modl[12]*proj[ 2] + modl[13]*proj[ 6] + modl[14]*proj[10] + modl[15]*proj[14];
+    clip[15] = modl[12]*proj[ 3] + modl[13]*proj[ 7] + modl[14]*proj[11] + modl[15]*proj[15];
+
+    
+    frustumPlanes[0][0] = clip[ 3] - clip[ 0];
+    frustumPlanes[0][1] = clip[ 7] - clip[ 4];
+    frustumPlanes[0][2] = clip[11] - clip[ 8];
+    frustumPlanes[0][3] = clip[15] - clip[12];
+   
+    frustumPlanes[1][0] = clip[ 3] + clip[ 0];
+    frustumPlanes[1][1] = clip[ 7] + clip[ 4];
+    frustumPlanes[1][2] = clip[11] + clip[ 8];
+    frustumPlanes[1][3] = clip[15] + clip[12];
+   
+    frustumPlanes[2][0] = clip[ 3] + clip[ 1];
+    frustumPlanes[2][1] = clip[ 7] + clip[ 5];
+    frustumPlanes[2][2] = clip[11] + clip[ 9];
+    frustumPlanes[2][3] = clip[15] + clip[13];
+    
+    frustumPlanes[3][0] = clip[ 3] - clip[ 1];
+    frustumPlanes[3][1] = clip[ 7] - clip[ 5];
+    frustumPlanes[3][2] = clip[11] - clip[ 9];
+    frustumPlanes[3][3] = clip[15] - clip[13];
+  
+    frustumPlanes[4][0] = clip[ 3] - clip[ 2];
+    frustumPlanes[4][1] = clip[ 7] - clip[ 6];
+    frustumPlanes[4][2] = clip[11] - clip[10];
+    frustumPlanes[4][3] = clip[15] - clip[14];
+ 
+    frustumPlanes[5][0] = clip[ 3] + clip[ 2];
+    frustumPlanes[5][1] = clip[ 7] + clip[ 6];
+    frustumPlanes[5][2] = clip[11] + clip[10];
+    frustumPlanes[5][3] = clip[15] + clip[14];
+
+    for (int i = 0; i < 6; i++) {
+        float len = sqrtf(frustumPlanes[i][0]*frustumPlanes[i][0] +
+                          frustumPlanes[i][1]*frustumPlanes[i][1] +
+                          frustumPlanes[i][2]*frustumPlanes[i][2]);
+        frustumPlanes[i][0] /= len;
+        frustumPlanes[i][1] /= len;
+        frustumPlanes[i][2] /= len;
+        frustumPlanes[i][3] /= len;
+    }
+}
+
+static bool currentIs2D = false;
+
+void flushDrawQueue() {
+    if (drawQueue.empty()) return;
+
+    extractFrustumPlanes();
+
+    std::sort(drawQueue.begin(), drawQueue.end(), [](const DrawCommand& a, const DrawCommand& b) {
+        if (a.type != b.type) return (int)a.type > (int)b.type;
+        const char* texA = nullptr, *texB = nullptr;
+        switch (a.type) {
+            case CMD_TRIANGLE: texA = a.tex.empty() ? nullptr : a.tex.c_str(); break;
+            case CMD_SQUARE:   texA = a.tex.empty() ? nullptr : a.tex.c_str(); break;
+            case CMD_3DOBJECT: texA = a.obj_tex.empty() ? nullptr : a.obj_tex.c_str(); break;
+            case CMD_PSEUDO3D:
+                texA = (a.entity->getTextures().empty() ? nullptr : a.entity->getTextures()[0].c_str());
+                texB = (b.entity->getTextures().empty() ? nullptr : b.entity->getTextures()[0].c_str());
+                break;
+            default: break;
+        }
+        return texA < texB;
+    });
+
+    GLuint currentShader = 0;
+    const char* currentTexName = nullptr;
+    int currentDimension = 1;   // 1 = 3D (начальное состояние – камера уже установлена)
+    bool defaultLightingPrepared = false; // единый флаг для освещения/теней
+
+    static GLuint tri_vao = 0, tri_vbo = 0;
+    static bool tri_init = false;
+    if (!tri_init) {
+        tri_init = true;
+        glGenVertexArrays(1, &tri_vao);
+        glGenBuffers(1, &tri_vbo);
+        glBindVertexArray(tri_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, tri_vbo);
+        glBufferData(GL_ARRAY_BUFFER, 21 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
+        glBindVertexArray(0);
+        ensureWhiteTex();
+    }
+
+    static GLuint sq_vao = 0, sq_vbo = 0, sq_ibo = 0;
+    static bool sq_init = false;
+    if (!sq_init) {
+        sq_init = true;
+        glGenVertexArrays(1, &sq_vao);
+        glGenBuffers(1, &sq_vbo);
+        glGenBuffers(1, &sq_ibo);
+        glBindVertexArray(sq_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+        glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
+        GLuint indices[6] = {0, 1, 2, 0, 2, 3};
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sq_ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+        glBindVertexArray(0);
+        ensureWhiteTex();
+    }
+
+    static GLuint vao3D = 0, vbo_pos = 0, vbo_norm = 0, vbo_uv = 0, ibo3d = 0;
+    static size_t cap_pos = 0, cap_norm = 0, cap_uv = 0, cap_idx = 0;
+    if (vao3D == 0) {
+        glGenVertexArrays(1, &vao3D);
+    }
+
+    for (const auto& cmd : drawQueue) {
+        int dim = (cmd.type == CMD_TRIANGLE || cmd.type == CMD_SQUARE || cmd.type == CMD_TEXT) ? 0 : 1;
+        if (dim != currentDimension) {
+            if (dim == 0) {   // переход 3D → 2D
+                currentIs2D = true;
+                initSimple2DShader();
+                glUseProgram(simple2DShader);
+                currentShader = simple2DShader;   // синхронизация отслеживания шейдера
+
+                glMatrixMode(GL_PROJECTION);
+                glPushMatrix();
+                glLoadIdentity();
+                glOrtho(0, window_w, 0, window_h, -1, 1);
+                glMatrixMode(GL_MODELVIEW);
+                glPushMatrix();
+                glLoadIdentity();
+
+                glDisable(GL_DEPTH_TEST);
+                glDisable(GL_LIGHTING);
+                glDisable(GL_FOG);
+                glDisable(GL_CULL_FACE);
+                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+                // Настройка текстуры для 2D‑шейдера
+                GLint loc = glGetUniformLocation(simple2DShader, "tex");
+                if (loc != -1) glUniform1i(loc, 0);
+
+                currentTexName = nullptr;
+                defaultLightingPrepared = false;
+            } else {           // переход 2D → 3D
+                currentIs2D = false;
+
+                glEnable(GL_DEPTH_TEST);
+                glEnable(GL_TEXTURE_2D);
+                glEnable(GL_CULL_FACE);
+
+                glMatrixMode(GL_MODELVIEW);
+                glPopMatrix();
+                glMatrixMode(GL_PROJECTION);
+                glPopMatrix();
+                glMatrixMode(GL_MODELVIEW);
+
+                changeSize3D(window_w, window_h);   // восстанавливает перспективу и lookAt
+
+                if (lighting_global) {
+                    useShader(currentShaderProg);
+                    if (fog.enabled) {
+                        if (loc_fogColor != -1) glUniform3f(loc_fogColor, fog.color[0], fog.color[1], fog.color[2]);
+                        if (loc_fogStart != -1) glUniform1f(loc_fogStart, fog.start);
+                        if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
+                    }
+                    applyAllLights();
+                } else {
+                    // useShader(simple2DShader);
+                }
+
+                currentTexName = nullptr;
+                defaultLightingPrepared = false;
+            }
+            currentDimension = dim;
+        }
+
+        // Frustum culling для 3D-объектов
+        if (cmd.type == CMD_3DOBJECT && cmd.radius > 0.0f) {
+            if (!sphereInFrustum(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius))
+                continue;
+        }
+
+        switch (cmd.type) {
+            case CMD_SQUARE: {
+                GLuint shaderToUse = cmd.shaderID ? cmd.shaderID : simple2DShader;
+                if (currentShader != shaderToUse) {
+                    useShader(shaderToUse);
+                    currentShader = shaderToUse;
+                }
+                const char* texName = cmd.tex.empty() ? nullptr : cmd.tex.c_str();
+                if (texName != currentTexName) {
+                    glActiveTexture(GL_TEXTURE0);
+                    GLuint texID = texName ? loadTextureFromFile(texName) : 0;
+                    if (texID) {
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, texID);
+                    } else {
+                        ensureWhiteTex();
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, whiteTex);
+                    }
+                    if (currentShader && loc_tex != -1) glUniform1i(loc_tex, 0);
+                    currentTexName = texName;
+                }
+                if (currentShader) {
+                    glDisableVertexAttribArray(2);
+                    glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+                }
+
+                const float ar = cmd.rotate * float(M_PI) / -180.0f;
+                const float tc[8] = {0,1, 1,1, 1,0, 0,0};
+                float data[28];
+                for (int i = 0; i < 4; ++i) {
+                    float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
+                    rotatePoint(px, py, 0, 0, ar);
+                    float vx = cmd.cx + px * cmd.scale;
+                    float vy = cmd.cy + py * cmd.scale;
+                    data[i*7+0] = vx;
+                    data[i*7+1] = vy;
+                    data[i*7+2] = cmd.r;
+                    data[i*7+3] = cmd.g;
+                    data[i*7+4] = cmd.b;
+                    data[i*7+5] = tc[i*2];
+                    data[i*7+6] = tc[i*2+1];
+                }
+                glBindVertexArray(sq_vao);
+                glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                glBindVertexArray(0);
+                break;
+            }
+
+            // case CMD_TEXT: {
+            //     GLuint prevShader = currentShader;
+            //     if (prevShader) stopShader();   // уход в фиксированный конвейер
+
+            //     if (glIsEnabled(GL_TEXTURE_2D)) glDisable(GL_TEXTURE_2D);
+            //     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            //     glColor4f(cmd.r, cmd.g, cmd.b, cmd.a);
+            //     glRasterPos2f(cmd.x, cmd.y);
+            //     for (const char* c = cmd.text.c_str(); *c; ++c)
+            //         glutBitmapCharacter(cmd.font, *c);
+
+            //     currentTexName = nullptr;
+
+            //     if (prevShader) {
+            //         useShader(prevShader);
+            //         currentShader = prevShader;   // синхронизация
+            //     }
+            //     break;
+            // }
+
+            case CMD_TEXT: {
+                if (currentShader != 0) {
+                    stopShader();
+                    currentShader = 0;
+                }
+                if (glIsEnabled(GL_TEXTURE_2D)) glDisable(GL_TEXTURE_2D);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glColor4f(cmd.r, cmd.g, cmd.b, cmd.a);
+                glRasterPos2f(cmd.x, cmd.y);
+                for (const char* c = cmd.text.c_str(); *c; ++c)
+                    glutBitmapCharacter(cmd.font, *c);
+                currentTexName = nullptr;
+                break;
+            }
+
+            case CMD_3DOBJECT: {
+                GLuint shaderToUse = cmd.shaderID ? cmd.shaderID : defaultLightingShader;
+                if (currentShader != shaderToUse) {
+                    useShader(shaderToUse);
+                    currentShader = shaderToUse;
+                    if (shaderToUse == defaultLightingShader)
+                        defaultLightingPrepared = false; // переустановим при следующей команде
+                }
+                if (shaderToUse == defaultLightingShader && !defaultLightingPrepared) {
+                    applyAllLights();
+                    applyAllShadows();
+                    defaultLightingPrepared = true;
+                }
+                // … (отрисовка 3D‑объекта без изменений)
+                // (весь код отрисовки остаётся тем же, что и раньше)
+                const char* texName = cmd.obj_tex.empty() ? nullptr : cmd.obj_tex.c_str();
+                if (texName != currentTexName) {
+                    glActiveTexture(GL_TEXTURE0);
+                    GLuint texID = texName ? loadTextureFromFile(texName) : 0;
+                    if (texID) {
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, texID);
+                    } else {
+                        ensureWhiteTex();
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, whiteTex);
+                    }
+                    if (currentShader && loc_tex != -1) glUniform1i(loc_tex, 0);
+                    currentTexName = texName;
+                }
+
+                size_t numVerts = cmd.obj_vertices.size() / 3;
+                if (numVerts == 0 || cmd.obj_indices.empty()) break;
+
+                const bool hasTex = (texName && !cmd.obj_texcoords.empty());
+                std::vector<float> uv;
+                const float* uvPtr;
+                if (hasTex) {
+                    uvPtr = cmd.obj_texcoords.data();
+                } else {
+                    uv.assign(numVerts * 2, 0.0f);
+                    uvPtr = uv.data();
+                }
+
+                size_t posBytes = cmd.obj_vertices.size() * sizeof(float);
+                ensureBuffer(vbo_pos, cap_pos, posBytes, GL_ARRAY_BUFFER);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, posBytes, cmd.obj_vertices.data());
+
+                bool hasNormals = !cmd.obj_normals.empty();
+                if (hasNormals) {
+                    size_t normBytes = cmd.obj_normals.size() * sizeof(float);
+                    ensureBuffer(vbo_norm, cap_norm, normBytes, GL_ARRAY_BUFFER);
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, normBytes, cmd.obj_normals.data());
+                }
+
+                size_t uvBytes = numVerts * 2 * sizeof(float);
+                ensureBuffer(vbo_uv, cap_uv, uvBytes, GL_ARRAY_BUFFER);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, uvBytes, uvPtr);
+
+                size_t idxBytes = cmd.obj_indices.size() * sizeof(int);
+                ensureBuffer(ibo3d, cap_idx, idxBytes, GL_ELEMENT_ARRAY_BUFFER);
+                glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, cmd.obj_indices.data());
+
+                glBindVertexArray(vao3D);
+
+                glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
+                glEnableVertexAttribArray(0);
+                glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+                if (hasNormals) {
+                    glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
+                    glEnableVertexAttribArray(2);
+                    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+                } else {
+                    glDisableVertexAttribArray(2);
+                    glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+                }
+
+                glDisableVertexAttribArray(3);
+                glVertexAttrib3f(3, cmd.obj_r, cmd.obj_g, cmd.obj_b);
+
+                glBindBuffer(GL_ARRAY_BUFFER, vbo_uv);
+                glEnableVertexAttribArray(8);
+                glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo3d);
+
+                glPushMatrix();
+                glTranslatef(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz);
+                glDrawElements(GL_TRIANGLES, (GLsizei)cmd.obj_indices.size(), GL_UNSIGNED_INT, nullptr);
+                glPopMatrix();
+
+                glBindVertexArray(0);
+                break;
+            }
+
+            case CMD_PSEUDO3D: {
+                GLuint shaderToUse = cmd.shaderID ? cmd.shaderID : defaultLightingShader;
+                if (currentShader != shaderToUse) {
+                    useShader(shaderToUse);
+                    currentShader = shaderToUse;
+                    if (shaderToUse == defaultLightingShader)
+                        defaultLightingPrepared = false;
+                }
+                if (shaderToUse == defaultLightingShader && !defaultLightingPrepared) {
+                    applyAllLights();
+                    applyAllShadows();
+                    defaultLightingPrepared = true;
+                }
+
+                // … (отрисовка псевдо‑3D без изменений)
+                const pseudo_3d_entity* ent = cmd.entity;
+                if (!sphereInFrustum(ent->getX(), ent->getY(), ent->getZ(), ent->getRadius()))
+                    break;
+
+                const float dx = cmd.cam_x - ent->getX();
+                const float dy = cmd.cam_y - ent->getY();
+                const float dz = cmd.cam_z - ent->getZ();
+                const int tidx = ent->getTextureIndex(dx, dy, dz);
+                const char* texName = (tidx >= 0 && tidx < (int)ent->getTextures().size()) ?
+                                       ent->getTextures()[tidx].c_str() : nullptr;
+
+                if (texName != currentTexName) {
+                    glActiveTexture(GL_TEXTURE0);
+                    GLuint texID = texName ? loadTextureFromFile(texName) : 0;
+                    if (texID) {
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, texID);
+                    } else {
+                        ensureWhiteTex();
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, whiteTex);
+                    }
+                    if (currentShader && loc_tex != -1) glUniform1i(loc_tex, 0);
+                    currentTexName = texName;
+                }
+
+                if (currentShader && loc_receiveShadows != -1)
+                    glUniform1i(loc_receiveShadows, 0);
+
+                const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
+                const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
+                const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
+
+                float wx = 0, wy = 1, wz = 0;
+                if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+                float rx = wy * fz - wz * fy;
+                float ry = wz * fx - wx * fz;
+                float rz = wx * fy - wy * fx;
+                const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+                if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+
+                const float ux = fy * rz - fz * ry;
+                const float uy = fz * rx - fx * rz;
+                const float uz = fx * ry - fy * rx;
+
+                const float mat[16] = {
+                    rx, ry, rz, 0,
+                    ux, uy, uz, 0,
+                    fx, fy, fz, 0,
+                    0,  0,  0,  1
+                };
+
+                const float ga = ent->getGAngle() * float(M_PI) / 180.0f;
+                const float va = ent->getVAngle() * float(M_PI) / 180.0f;
+
+                float eu_x = -sinf(ga) * sinf(va);
+                float eu_y = -cosf(va);
+                float eu_z = -cosf(ga) * sinf(va);
+                float dot = eu_x * fx + eu_y * fy + eu_z * fz;
+                float pu_x = eu_x - dot * fx;
+                float pu_y = eu_y - dot * fy;
+                float pu_z = eu_z - dot * fz;
+                float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
+
+                if (plen < 0.01f) {
+                    const float ef_x = cosf(va) * sinf(ga);
+                    const float ef_y = -sinf(va);
+                    const float ef_z = cosf(va) * cosf(ga);
+                    const float d2 = ef_x * fx + ef_y * fy + ef_z * fz;
+                    pu_x = ef_x - d2 * fx;
+                    pu_y = ef_y - d2 * fy;
+                    pu_z = ef_z - d2 * fz;
+                }
+
+                float billboard_roll = atan2f(-(pu_x * rx + pu_y * ry + pu_z * rz),
+                                               pu_x * ux + pu_y * uy + pu_z * uz) * 180.0f / float(M_PI);
+                float total_roll = billboard_roll + ent->getRAngle();
+
+                const bool mirror = (tidx == 0);
+                const std::vector<float>& verts = ent->getVertices();
+
+                const float ar2 = (mirror ? -180.0f : 0.0f) * float(M_PI) / -180.0f;
+                const float tc2[8] = {0,1, 1,1, 1,0, 0,0};
+                float data2[28];
+                for (int i = 0; i < 4; ++i) {
+                    float px = verts[i*2], py = verts[i*2+1];
+                    rotatePoint(px, py, 0, 0, ar2);
+                    data2[i*7 + 0] = px;
+                    data2[i*7 + 1] = py;
+                    data2[i*7 + 2] = 1.0f;
+                    data2[i*7 + 3] = 1.0f;
+                    data2[i*7 + 4] = 1.0f;
+                    data2[i*7 + 5] = tc2[i*2];
+                    data2[i*7 + 6] = tc2[i*2+1];
+                }
+
+                glPushMatrix();
+                glTranslatef(ent->getX(), ent->getY(), ent->getZ());
+                glMultMatrixf(mat);
+                glRotatef(total_roll + 180.0f, 0, 0, 1);
+
+                glBindVertexArray(sq_vao);
+                glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data2), data2);
+                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                glBindVertexArray(0);
+                glPopMatrix();
+
+                if (currentShader && loc_receiveShadows != -1)
+                    glUniform1i(loc_receiveShadows, 1);
+                break;
+            }
+
+            default: break;
+        }
+    }
+
+    // Восстанавливаем 3D-состояние, если закончили на 2D
+    if (currentDimension == 0) {
+        currentIs2D = false;
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_TEXTURE_2D);
+        glEnable(GL_CULL_FACE);
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
+
+        changeSize3D(window_w, window_h);
+
+        if (lighting_global) {
+            useShader(defaultLightingShader);
+            if (fog.enabled) {
+                if (loc_fogColor != -1) glUniform3f(loc_fogColor, fog.color[0], fog.color[1], fog.color[2]);
+                if (loc_fogStart != -1) glUniform1f(loc_fogStart, fog.start);
+                if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
+            }
+            applyAllLights();
+        } else {
+            useShader(simple2DShader);   // fallback при необходимости
+        }
+    }
+
+    drawQueue.clear();
+}
 //              текстуры
 // функция для загрузки текстуры
-GLuint loadTextureFromFile(const char* filename){
-    // проверяем загружена ли текстура, закрываем замок чтобы другой поток не лез одновременно
+GLuint loadTextureFromFile(const char* filename) {
     {
         lock_guard<mutex> lock(textureCacheMutex);
-        auto it=textureCache.find(filename);
-        if(it!=textureCache.end()) return it->second;
+        auto it = textureCache.find(filename);
+        if (it != textureCache.end()) return it->second;
     }
-    // загружаем изображение и записываем ей ширину и высоту в w и h
-    int w,h,channels;
-    // название текстуры / w / h / сюда можно записать сколько каналов у изображения / принудительно указываем что 4 канала, чтобы была прозрачность
-    unsigned char* img=SOIL_load_image(filename,&w,&h,&channels,SOIL_LOAD_AUTO);
-    if(!img){
-        cerr<<"Cannot load texture: "<<filename<<" ("<<SOIL_last_result()<<")"<<endl;
-        // закрываем замок и записываем что текстуры нет
+
+    int w, h, channels;
+    unsigned char* img = SOIL_load_image(filename, &w, &h, &channels, SOIL_LOAD_AUTO);
+    if (!img) {
+        cerr << "Cannot load texture: " << filename << " (" << SOIL_last_result() << ")" << endl;
         lock_guard<mutex> lock(textureCacheMutex);
-        return textureCache[filename]=0;
+        return textureCache[filename] = 0;
     }
-    // создаём новый id для текстуры
+
     GLuint id;
-    // размер / записываем id
-    glGenTextures(1,&id);
-    // биндим эту текстуру как 2д
+    glGenTextures(1, &id);
     glBindTexture(GL_TEXTURE_2D, id);
-    boundTextureID=id;
-    // параметры текстуры
-    //      указываем цель / параметр который надо изменить/ его значение
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+    boundTextureID = id;
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    // передаём текстуру в видеопамять
-    // формат / детализация(хз что это значит) / формат хранения / ширина / высота / граница(также хз) / входной формат / тип данных / изображение
+
     GLenum format = (channels == 4) ? GL_RGBA : GL_RGB;
-    glTexImage2D(GL_TEXTURE_2D,0,format,w,h,0,format,GL_UNSIGNED_BYTE,img);
-    // освобождаем текстуру из памяти
+
+    GLint internalFormat = format;
+    if (channels == 4 && glewIsSupported("GL_EXT_texture_compression_s3tc")) {
+        internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    } else if (channels == 3 && glewIsSupported("GL_EXT_texture_compression_s3tc")) {
+        internalFormat = GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+    }
+
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, w, h, 0, format, GL_UNSIGNED_BYTE, img);
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
     SOIL_free_image_data(img);
-    // закрываем замок и возвращаем id текстуры
+
     lock_guard<mutex> lock(textureCacheMutex);
-    return textureCache[filename]=id;
+    return textureCache[filename] = id;
 }
 // загружаем много текстур параллельно
-void preloadTextures(const vector<string>& filenames){
-    // структура для хранения загруженных с диска данных до передачи в видеопамять
-    struct RawTex{string name;unsigned char* data;int w,h,channels;};
+void preloadTextures(const vector<string>& filenames) {
+    struct RawTex { string name; unsigned char* data; int w, h, channels; };
     vector<RawTex> loaded(filenames.size());
-    // параллельно грузим файлы с диска
-    // schedule(dynamic) значит что потоки берут задачи по одной по мере освобождения, а не поровну сразу
-    // это нужно т.к. текстуры разного размера и некоторые грузятся дольше
+
     #pragma omp parallel for schedule(dynamic)
-    for(int i=0;i<(int)filenames.size();++i){
-        // пропускаем если текстура уже загружена, закрываем замок чтобы проверить безопасно
+    for (int i = 0; i < (int)filenames.size(); ++i) {
         {
             lock_guard<mutex> lock(textureCacheMutex);
-            if(textureCache.count(filenames[i])){
-                loaded[i]={filenames[i],nullptr,0,0,0};
+            if (textureCache.count(filenames[i])) {
+                loaded[i] = {filenames[i], nullptr, 0, 0, 0};
                 continue;
             }
         }
-        int w,h,channels;
-        unsigned char* img=SOIL_load_image(filenames[i].c_str(),&w,&h,&channels,SOIL_LOAD_AUTO);
-        loaded[i]={filenames[i],img,w,h,channels};
+        int w, h, channels;
+        unsigned char* img = SOIL_load_image(filenames[i].c_str(), &w, &h, &channels, SOIL_LOAD_AUTO);
+        loaded[i] = {filenames[i], img, w, h, channels};
     }
-    // передаём в видеопамять строго из одного потока т.к. opengl однопоточный
-    for(auto& t:loaded){
-        if(!t.data) continue;
+
+    for (auto& t : loaded) {
+        if (!t.data) continue;
         GLuint id;
-        glGenTextures(1,&id);
-        glBindTexture(GL_TEXTURE_2D,id);
-        boundTextureID=id;
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D, id);
+        boundTextureID = id;
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
         GLenum format = (t.channels == 4) ? GL_RGBA : GL_RGB;
-        glTexImage2D(GL_TEXTURE_2D,0,format,t.w,t.h,0,format,GL_UNSIGNED_BYTE,t.data);
+        GLint internalFormat = format;
+        if (t.channels == 4 && glewIsSupported("GL_EXT_texture_compression_s3tc"))
+            internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+        else if (t.channels == 3 && glewIsSupported("GL_EXT_texture_compression_s3tc"))
+            internalFormat = GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, t.w, t.h, 0, format, GL_UNSIGNED_BYTE, t.data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+
         SOIL_free_image_data(t.data);
-        // закрываем замок и записываем текстуру в таблицу
+
         lock_guard<mutex> lock(textureCacheMutex);
-        textureCache[t.name]=id;
+        textureCache[t.name] = id;
     }
 }
 // удаляем все текстуры из памяти
@@ -558,213 +1211,118 @@ static void enableTex(const char* file){
 }
 
 //              простые 2д фигуры
-static GLuint whiteTex = 0;
 
-static void ensureWhiteTex() {
-    if (whiteTex == 0) {
-        unsigned char white[4] = {255,255,255,255};
-        glGenTextures(1, &whiteTex);
-        glBindTexture(GL_TEXTURE_2D, whiteTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-}
-
-// треугольник
-void triangle(float scale, float cx, float cy, double r, double g, double b,
-              float rotate, const float* vertices, const char* tex) {
-    static GLuint vao = 0, vbo = 0;
-    static bool init = false;
-    if (!init) {
-        init = true;
-        glGenVertexArrays(1, &vao);
-        glGenBuffers(1, &vbo);
-
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, 21 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
-
-        glEnableVertexAttribArray(3);
-        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                              (void*)(2 * sizeof(float)));
-
-        glEnableVertexAttribArray(8);
-        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                              (void*)(5 * sizeof(float)));
-
-        glBindVertexArray(0);
-        ensureWhiteTex();
-    }
-
-    const float ar = rotate * float(M_PI) / -180.0f;
-    const float tc[6] = {0,1, 1,1, 0,0};
-
-    float data[21];
-    for (int i = 0; i < 3; ++i) {
-        float px = vertices[i*2], py = vertices[i*2+1];
-        rotatePoint(px, py, 0, 0, ar);
-        float x = cx + px * scale;
-        float y = cy + py * scale;
-
-        data[i*7 + 0] = x;
-        data[i*7 + 1] = y;
-        data[i*7 + 2] = (float)r;
-        data[i*7 + 3] = (float)g;
-        data[i*7 + 4] = (float)b;
-        data[i*7 + 5] = tc[i*2];
-        data[i*7 + 6] = tc[i*2+1];
-    }
-
-    glActiveTexture(GL_TEXTURE0);
-    if (tex) {
-        GLuint texID = loadTextureFromFile(tex);
-        if (texID) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, texID);
-        } else {
-            ensureWhiteTex();
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, whiteTex);
-        }
-    } else {
-        ensureWhiteTex();
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, whiteTex);
-    }
-
-    if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
-
-    if (currentShaderProg) {
-        glDisableVertexAttribArray(2);          
-        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
-    }
-
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-
-    if (tex) {
-        glDisable(GL_TEXTURE_2D);
-    } else {
-        glDisable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-}
 // квадрат
 void square(float local_size, float x, float y, double r, double g, double b,
             float rotate, const float* vertices, const char* tex) {
-    static GLuint vao = 0, vbo = 0, ibo = 0;
-    static bool init = false;
-    if (!init) {
-        init = true;
-        glGenVertexArrays(1, &vao);
-        glGenBuffers(1, &vbo);
-        glGenBuffers(1, &ibo);
+    if (!g_useDrawQueue) {
+        static GLuint vao = 0, vbo = 0, ibo = 0;
+        static bool init = false;
+        if (!init) {
+            init = true;
+            glGenVertexArrays(1, &vao);
+            glGenBuffers(1, &vbo);
+            glGenBuffers(1, &ibo);
 
-        glBindVertexArray(vao);
+            glBindVertexArray(vao);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
 
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(3);
+            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
+            glEnableVertexAttribArray(8);
+            glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
 
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+            GLuint indices[6] = {0, 1, 2, 0, 2, 3};
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+            glBindVertexArray(0);
+            ensureWhiteTex();
+        }
 
-        glEnableVertexAttribArray(3);
-        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                              (void*)(2 * sizeof(float)));
+        const float ar = rotate * float(M_PI) / -180.0f;
+        const float tc[8] = {0,1, 1,1, 1,0, 0,0};
 
-        glEnableVertexAttribArray(8);
-        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
-                              (void*)(5 * sizeof(float)));
+        float data[28];
+        for (int i = 0; i < 4; ++i) {
+            float px = vertices[i*2], py = vertices[i*2+1];
+            rotatePoint(px, py, 0, 0, ar);
+            float vx = x + px * local_size;
+            float vy = y + py * local_size;
+            data[i*7 + 0] = vx;
+            data[i*7 + 1] = vy;
+            data[i*7 + 2] = (float)r;
+            data[i*7 + 3] = (float)g;
+            data[i*7 + 4] = (float)b;
+            data[i*7 + 5] = tc[i*2];
+            data[i*7 + 6] = tc[i*2+1];
+        }
 
-        GLuint indices[6] = {0, 1, 2, 0, 2, 3};
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-
-        glBindVertexArray(0);
-        ensureWhiteTex();
-    }
-
-    const float ar = rotate * float(M_PI) / -180.0f;
-    const float tc[8] = {0,1, 1,1, 1,0, 0,0};
-
-    float data[28];   // 4 * 7
-    for (int i = 0; i < 4; ++i) {
-        float px = vertices[i*2], py = vertices[i*2+1];
-        rotatePoint(px, py, 0, 0, ar);
-        float vx = x + px * local_size;
-        float vy = y + py * local_size;
-
-        data[i*7 + 0] = vx;
-        data[i*7 + 1] = vy;
-        data[i*7 + 2] = (float)r;
-        data[i*7 + 3] = (float)g;
-        data[i*7 + 4] = (float)b;
-        data[i*7 + 5] = tc[i*2];
-        data[i*7 + 6] = tc[i*2+1];
-    }
-
-    glActiveTexture(GL_TEXTURE0);
-    if (tex) {
-        GLuint texID = loadTextureFromFile(tex);
-        if (texID) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, texID);
+        glActiveTexture(GL_TEXTURE0);
+        if (tex) {
+            GLuint texID = loadTextureFromFile(tex);
+            if (texID) {
+                glEnable(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, texID);
+            } else {
+                ensureWhiteTex();
+                glEnable(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, whiteTex);
+            }
         } else {
             ensureWhiteTex();
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, whiteTex);
         }
-    } else {
-        ensureWhiteTex();
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, whiteTex);
+
+        if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
+        if (currentShaderProg) {
+            glDisableVertexAttribArray(2);
+            glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+        }
+
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+
+        if (tex) {
+            glDisable(GL_TEXTURE_2D);
+        } else {
+            glDisable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        return;
     }
 
-    if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
-
-    if (currentShaderProg) {
-        glDisableVertexAttribArray(2);
-        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
-    }
-
-    glBindVertexArray(vao);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-    glBindVertexArray(0);
-
-    if (tex) {
-        glDisable(GL_TEXTURE_2D);
-    } else {
-        glDisable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
+    DrawCommand cmd;
+    cmd.type = CMD_SQUARE;
+    cmd.scale = local_size;
+    cmd.cx = x;
+    cmd.cy = y;
+    cmd.r = (float)r;
+    cmd.g = (float)g;
+    cmd.b = (float)b;
+    cmd.rotate = rotate;
+    cmd.vertCount = 4;
+    for (int i = 0; i < 8; i++) cmd.verts[i] = vertices[i];
+    if (tex) cmd.tex = tex;
+    cmd.shaderID = simple2DShader;
+    drawQueue.push_back(cmd);
 }
 // рисовка текста
 void draw_text(const char* text, float x, float y, void* font, float r, float g, float b, float a) {
-    GLuint prevShader = currentShaderProg;
-    if (prevShader) stopShader();
-
-    GLboolean texEnabled = glIsEnabled(GL_TEXTURE_2D);
-    if (texEnabled) glDisable(GL_TEXTURE_2D); 
-
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glColor4f(r, g, b, a);
-    glRasterPos2f(x, y);
-    for (const char* c = text; *c; ++c) {
-        glutBitmapCharacter(font, *c);
-    }
-
-    if (texEnabled) glEnable(GL_TEXTURE_2D);
-    if (prevShader) useShader(prevShader);
+    DrawCommand cmd;
+    cmd.type = CMD_TEXT;
+    cmd.text = text;
+    cmd.x = x;  cmd.y = y;
+    cmd.font = font;
+    cmd.r = r;  cmd.g = g;  cmd.b = b;  cmd.a = a;
+    cmd.shaderID = simple2DShader;
+    drawQueue.push_back(cmd);
 }
 
 //              класс для рисовки псевдо 3д существ
@@ -867,79 +1425,90 @@ int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) con
 void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     if (!isVisible(cam_x, cam_y, cam_z)) return;
 
-    const float dx = cam_x - x;
-    const float dy = cam_y - y;
-    const float dz = cam_z - z;
-    const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+    if (!g_useDrawQueue) {
+        const float dx = cam_x - x;
+        const float dy = cam_y - y;
+        const float dz = cam_z - z;
+        const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
 
-    const int tidx = getTextureIndex(dx, dy, dz);
+        const int tidx = getTextureIndex(dx, dy, dz);
 
-    const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
-    const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
-    const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
+        const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
+        const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
+        const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
 
-    float wx = 0, wy = 1, wz = 0;
-    if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
-    float rx = wy * fz - wz * fy;
-    float ry = wz * fx - wx * fz;
-    float rz = wx * fy - wy * fx;
-    const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
-    if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+        float wx = 0, wy = 1, wz = 0;
+        if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+        float rx = wy * fz - wz * fy;
+        float ry = wz * fx - wx * fz;
+        float rz = wx * fy - wy * fx;
+        const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+        if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
 
-    const float ux = fy * rz - fz * ry;
-    const float uy = fz * rx - fx * rz;
-    const float uz = fx * ry - fy * rx;
+        const float ux = fy * rz - fz * ry;
+        const float uy = fz * rx - fx * rz;
+        const float uz = fx * ry - fy * rx;
 
-    const float mat[16] = {
-        rx, ry, rz, 0,
-        ux, uy, uz, 0,
-        fx, fy, fz, 0,
-        0,  0,  0,  1
-    };
+        const float mat[16] = {
+            rx, ry, rz, 0,
+            ux, uy, uz, 0,
+            fx, fy, fz, 0,
+            0,  0,  0,  1
+        };
 
-    const float ga = g_angle * float(M_PI) / 180.0f;
-    const float va = v_angle * float(M_PI) / 180.0f;
+        const float ga = g_angle * float(M_PI) / 180.0f;
+        const float va = v_angle * float(M_PI) / 180.0f;
 
-    float eu_x = -sinf(ga) * sinf(va);
-    float eu_y = -cosf(va);
-    float eu_z = -cosf(ga) * sinf(va);
+        float eu_x = -sinf(ga) * sinf(va);
+        float eu_y = -cosf(va);
+        float eu_z = -cosf(ga) * sinf(va);
 
-    float dot = eu_x * fx + eu_y * fy + eu_z * fz;
-    float pu_x = eu_x - dot * fx;
-    float pu_y = eu_y - dot * fy;
-    float pu_z = eu_z - dot * fz;
-    float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
+        float dot = eu_x * fx + eu_y * fy + eu_z * fz;
+        float pu_x = eu_x - dot * fx;
+        float pu_y = eu_y - dot * fy;
+        float pu_z = eu_z - dot * fz;
+        float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
 
-    if (plen < 0.01f) {
-        const float ef_x = cosf(va) * sinf(ga);
-        const float ef_y = -sinf(va);
-        const float ef_z = cosf(va) * cosf(ga);
-        const float d2 = ef_x * fx + ef_y * fy + ef_z * fz;
-        pu_x = ef_x - d2 * fx;
-        pu_y = ef_y - d2 * fy;
-        pu_z = ef_z - d2 * fz;
+        if (plen < 0.01f) {
+            const float ef_x = cosf(va) * sinf(ga);
+            const float ef_y = -sinf(va);
+            const float ef_z = cosf(va) * cosf(ga);
+            const float d2 = ef_x * fx + ef_y * fy + ef_z * fz;
+            pu_x = ef_x - d2 * fx;
+            pu_y = ef_y - d2 * fy;
+            pu_z = ef_z - d2 * fz;
+        }
+
+        float billboard_roll = atan2f(-(pu_x * rx + pu_y * ry + pu_z * rz),
+                                       pu_x * ux + pu_y * uy + pu_z * uz) * 180.0f / float(M_PI);
+
+        float total_roll = billboard_roll + r_angle;
+
+        const bool mirror = (tidx == 0);
+        const char* tex = (tidx >= 0 && tidx < (int)textureFiles.size()) ? textureFiles[tidx].c_str() : nullptr;
+
+        if (currentShaderProg && loc_receiveShadows != -1)
+            glUniform1i(loc_receiveShadows, 0);
+
+        glPushMatrix();
+        glTranslatef(x, y, z);
+        glMultMatrixf(mat);
+        glRotatef(total_roll + 180.0f, 0, 0, 1);
+        square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
+        glPopMatrix();
+
+        if (currentShaderProg && loc_receiveShadows != -1)
+            glUniform1i(loc_receiveShadows, 1);
+
+        return;
     }
 
-    float billboard_roll = atan2f(-(pu_x * rx + pu_y * ry + pu_z * rz),
-                                   pu_x * ux + pu_y * uy + pu_z * uz) * 180.0f / float(M_PI);
-
-    float total_roll = billboard_roll + r_angle;
-
-    const bool mirror = (tidx == 0);
-    const char* tex = (tidx >= 0 && tidx < (int)textureFiles.size()) ? textureFiles[tidx].c_str() : nullptr;
-
-    if (currentShaderProg && loc_receiveShadows != -1)
-        glUniform1i(loc_receiveShadows, 0);
-
-    glPushMatrix();
-    glTranslatef(x, y, z);
-    glMultMatrixf(mat);
-    glRotatef(total_roll + 180.0f, 0, 0, 1);
-    square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
-    glPopMatrix();
-
-    if (currentShaderProg && loc_receiveShadows != -1)
-        glUniform1i(loc_receiveShadows, 1);
+    DrawCommand cmd;
+    cmd.type = CMD_PSEUDO3D;
+    cmd.entity = this;
+    cmd.cam_x = cam_x; cmd.cam_y = cam_y; cmd.cam_z = cam_z;
+    cmd.shaderID = currentShaderProg;
+    drawQueue.push_back(cmd);
 }
 
 void pseudo_3d_entity::computeRadius() {
@@ -1134,7 +1703,6 @@ static void sound_end_callback(void* pUserData, ma_sound* pSound) {
 }
 
 //              opengl
-static bool currentIs2D = false;
 // настройка изменения размеров в 3д режиме
 void changeSize3D(int w,int h){
     // проверка чтобы избежать деления на 0
@@ -1237,6 +1805,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     initDefaultShader();
+    initSimple2DShader();
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     changeSize2D(w, h);
 }
@@ -1372,126 +1941,131 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 
 //              3д(может быть потом ещё что-то будет)
 // рисуем 3д объект, указывая вершины треугольников
-// Вспомогательная функция для пересоздания GL-буфера, если его размер меньше требуемого
-static GLuint vao3D = 0;
-static GLuint vbo_pos = 0, vbo_norm = 0, vbo_uv = 0, ibo = 0;
-static size_t cap_pos = 0, cap_norm = 0, cap_uv = 0, cap_idx = 0;
-
-static void ensureBuffer(GLuint &buf, size_t &currentSize, size_t requiredSize, GLenum target) {
-    if (requiredSize > currentSize) {
-        size_t newSize = std::max(requiredSize, currentSize * 2);
-        if (buf) glDeleteBuffers(1, &buf);
-        glGenBuffers(1, &buf);
-        glBindBuffer(target, buf);
-        glBufferData(target, newSize, nullptr, GL_DYNAMIC_DRAW);
-        currentSize = newSize;
-    } else {
-        glBindBuffer(target, buf);
-    }
-}
-
 void draw3DObject(float cx, float cy, float cz,
                   double r, double g, double b,
                   const char* tex,
                   const std::vector<float>& vertices,
                   const std::vector<int>& indices,
                   const std::vector<float>& texcoords,
-                  const std::vector<float>& normals){
-    if (vao3D == 0) {
-        glGenVertexArrays(1, &vao3D);
+                  const std::vector<float>& normals) {
+    // вычисляем радиус ограничивающей сферы
+    float maxDist = 0.0f;
+    for (size_t i = 0; i < vertices.size(); i += 3) {
+        float dx = vertices[i] - cx;
+        float dy = vertices[i+1] - cy;
+        float dz = vertices[i+2] - cz;
+        float d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 > maxDist) maxDist = d2;
     }
+    float radius = sqrtf(maxDist);
 
-    size_t numVerts = vertices.size() / 3;
-    if (numVerts == 0 || indices.empty()) return;
+    if (!g_useDrawQueue) {
+        // --- немедленный рендеринг (для порталов) ---
+        if (vao3D == 0) {
+            glGenVertexArrays(1, &vao3D);
+        }
+        size_t numVerts = vertices.size() / 3;
+        if (numVerts == 0 || indices.empty()) return;
 
-    const bool hasTex = (tex != nullptr && !texcoords.empty());
-    std::vector<float> uv;
-    const float* uvPtr;
-    if (hasTex) {
-        uvPtr = texcoords.data();
-    } else {
-        uv.assign(numVerts * 2, 0.0f);
-        uvPtr = uv.data();
-    }
+        const bool hasTex = (tex != nullptr && !texcoords.empty());
+        std::vector<float> uv;
+        const float* uvPtr;
+        if (hasTex) {
+            uvPtr = texcoords.data();
+        } else {
+            uv.assign(numVerts * 2, 0.0f);
+            uvPtr = uv.data();
+        }
 
-    size_t posBytes = vertices.size() * sizeof(float);
-    ensureBuffer(vbo_pos, cap_pos, posBytes, GL_ARRAY_BUFFER);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, posBytes, vertices.data());
+        size_t posBytes = vertices.size() * sizeof(float);
+        ensureBuffer(vbo_pos, cap_pos, posBytes, GL_ARRAY_BUFFER);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, posBytes, vertices.data());
 
-    bool hasNormals = !normals.empty();
-    if (hasNormals) {
-        size_t normBytes = normals.size() * sizeof(float);
-        ensureBuffer(vbo_norm, cap_norm, normBytes, GL_ARRAY_BUFFER);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, normBytes, normals.data());
-    }
+        bool hasNormals = !normals.empty();
+        if (hasNormals) {
+            size_t normBytes = normals.size() * sizeof(float);
+            ensureBuffer(vbo_norm, cap_norm, normBytes, GL_ARRAY_BUFFER);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, normBytes, normals.data());
+        }
 
-    size_t uvBytes = numVerts * 2 * sizeof(float);
-    ensureBuffer(vbo_uv, cap_uv, uvBytes, GL_ARRAY_BUFFER);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, uvBytes, uvPtr);
+        size_t uvBytes = numVerts * 2 * sizeof(float);
+        ensureBuffer(vbo_uv, cap_uv, uvBytes, GL_ARRAY_BUFFER);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, uvBytes, uvPtr);
 
-    size_t idxBytes = indices.size() * sizeof(int);
-    ensureBuffer(ibo, cap_idx, idxBytes, GL_ELEMENT_ARRAY_BUFFER);
-    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, indices.data());
+        size_t idxBytes = indices.size() * sizeof(int);
+        ensureBuffer(ibo, cap_idx, idxBytes, GL_ELEMENT_ARRAY_BUFFER);
+        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, indices.data());
 
-    glBindVertexArray(vao3D);
+        glBindVertexArray(vao3D);
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    if (hasNormals) {
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-    } else {
-        glDisableVertexAttribArray(2);
-        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f); 
-    }
+        if (hasNormals) {
+            glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+        } else {
+            glDisableVertexAttribArray(2);
+            glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+        }
 
-    glDisableVertexAttribArray(3);
-    glVertexAttrib3f(3, (float)r, (float)g, (float)b);
+        glDisableVertexAttribArray(3);
+        glVertexAttrib3f(3, (float)r, (float)g, (float)b);
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_uv);
-    glEnableVertexAttribArray(8);
-    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_uv);
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
 
-    ensureWhiteTex(); 
-    if (tex) {
-        GLuint texID = loadTextureFromFile(tex);
-        if (texID) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, texID);
+        ensureWhiteTex();
+        if (tex) {
+            GLuint texID = loadTextureFromFile(tex);
+            if (texID) {
+                glEnable(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, texID);
+            } else {
+                glEnable(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, whiteTex);
+            }
         } else {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, whiteTex);
         }
-    } else {
-        glEnable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, whiteTex);
+
+        if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
+
+        glPushMatrix();
+        glTranslatef(cx, cy, cz);
+        glDrawElements(GL_TRIANGLES, (GLsizei)indices.size(), GL_UNSIGNED_INT, nullptr);
+        glPopMatrix();
+
+        if (tex) {
+            glDisable(GL_TEXTURE_2D);
+        } else {
+            glDisable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+        glBindVertexArray(0);
+        return;
     }
 
-    if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
-
-    glPushMatrix();
-    glTranslatef(cx, cy, cz);
-
-    glDrawElements(GL_TRIANGLES, (GLsizei)indices.size(), GL_UNSIGNED_INT, nullptr);
-
-    glPopMatrix();
-
-    if (tex) {
-        glDisable(GL_TEXTURE_2D);
-    } else {
-        glDisable(GL_TEXTURE_2D);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-
-    glBindVertexArray(0);
+    DrawCommand cmd;
+    cmd.type = CMD_3DOBJECT;
+    cmd.obj_cx = cx; cmd.obj_cy = cy; cmd.obj_cz = cz;
+    cmd.obj_r = (float)r; cmd.obj_g = (float)g; cmd.obj_b = (float)b;
+    if (tex) cmd.obj_tex = tex;
+    cmd.obj_vertices = vertices;
+    cmd.obj_indices  = indices;
+    cmd.obj_texcoords = texcoords;
+    cmd.obj_normals   = normals;
+    cmd.radius = radius;
+    cmd.shaderID = currentShaderProg;
+    drawQueue.push_back(cmd);
 }
 // свет
-static bool lighting_global = false;
 
 void enable_light() {
     if (!lighting_global) {
@@ -1517,9 +2091,7 @@ void disable_light() {
     }
 }
 
-Light::Light() {
-    // По умолчанию источник выключен
-}
+Light::Light() {}
 
 void Light::setPosition(float x, float y, float z) {pos[0] = x; pos[1] = y; pos[2] = z;}
 
@@ -1726,57 +2298,6 @@ void set_fog_range(float start, float end) {
     }
 }
 
-//              включение/выключение 3д т.к. опенжиэль не может рисовать одновременно и так и так
-// переключаем матрицу на 2д
-void begin_2d(int w, int h) {
-    currentIs2D = true;
-    initSimple2DShader();                
-    useShader(simple2DShader);              
-
-    glMatrixMode(GL_PROJECTION);
-    glPushMatrix();
-    glLoadIdentity();
-    glOrtho(0, w, 0, h, -1, 1);
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_LIGHTING);
-    glDisable(GL_FOG);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    GLint loc = glGetUniformLocation(simple2DShader, "tex");
-    if (loc != -1) glUniform1i(loc, 0);
-}
-// переключаем матрицу на 3д(невероятно)
-void end_2d() {
-    currentIs2D = 0;
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_TEXTURE_2D);
-    glEnable(GL_LIGHTING);
-    glEnable(GL_FOG);
-
-    glMatrixMode(GL_MODELVIEW);
-    glPopMatrix();
-    glMatrixMode(GL_PROJECTION);
-    glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
-
-    changeSize3D(window_w, window_h);
-
-    if (lighting_global) {
-        useShader(defaultLightingShader);
-        if (fog.enabled) {
-            if (loc_fogColor != -1) glUniform3f(loc_fogColor, fog.color[0], fog.color[1], fog.color[2]);
-            if (loc_fogStart != -1) glUniform1f(loc_fogStart, fog.start);
-            if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
-        }
-        applyAllLights();
-    } else {
-        useShader(simple2DShader);
-    }
-}
 
 //              аудио
 // инициализация аудио
@@ -1928,7 +2449,6 @@ void draw_performance_hud(int win_w,int win_h){
     // вывод статистики в левом верхнем углу
     char buf[256];
     snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%  GPU: ", fps, ram_kb / 1024, cpu_pct);
-    begin_2d(win_w,win_h);
     if (last_gpu_usage >= 0.0f) {
         char gpu_str[32];
         snprintf(gpu_str, sizeof(gpu_str), "%.1f%%", last_gpu_usage);
@@ -1942,7 +2462,6 @@ void draw_performance_hud(int win_w,int win_h){
     draw_text(buf,10.0f,float(win_h)-32.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
     snprintf(buf,sizeof(buf),"CPU: %s  RAM: %s  GPU: %s",cpu_name.c_str(),ram_v.c_str(),gpu_name.c_str());
     draw_text(buf,10.0f,float(win_h)-44.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
-    end_2d();
 }
 // панорама
 sphere_panorama sphere_sky;
@@ -2191,7 +2710,7 @@ void Portal::drawPortalSurface(float px, float py, float pz, GLuint tex, bool si
     int n = (int)vertices.size() / 3;
     if (n < 3) return;
 
-    GLuint prog = currentShaderProg;
+    GLuint prog = currentShaderProg ? currentShaderProg : defaultLightingShader;
 
     glDisable(GL_CULL_FACE);
 
@@ -2307,7 +2826,19 @@ void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
     glEnable(GL_CLIP_PLANE0);
     glClipPlane(GL_CLIP_PLANE0, clipPlane);
 
+    bool prevQueue = g_useDrawQueue;
+    g_useDrawQueue = false;
+
+    GLuint shaderToUse = currentShaderProg ? currentShaderProg : defaultLightingShader;
+    useShader(shaderToUse);
+    applyAllLights();
+    applyAllShadows();
+
     sceneDraw();
+
+    stopShader();
+
+    g_useDrawQueue = prevQueue;
 
     glDisable(GL_CLIP_PLANE0);
     glPopMatrix();
