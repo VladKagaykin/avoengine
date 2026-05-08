@@ -1842,10 +1842,6 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
         up_y = 1.0f;
         ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
     }
-
-    camera.up_x = up_x;
-    camera.up_y = up_y;
-    camera.up_z = up_z;
     // вычисляем точку взгляда
     lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z,camera.dir_x, camera.dir_y, camera.dir_z);
 
@@ -1857,6 +1853,10 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
         glm::vec3 newUp = rot * up0;
         up_x = newUp.x; up_y = newUp.y; up_z = newUp.z;
     }
+
+    camera.up_x = up_x;
+    camera.up_y = up_y;
+    camera.up_z = up_z;
 
     // настройка матрицы на проекцию
     glMatrixMode(GL_PROJECTION);
@@ -1876,8 +1876,8 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
 }
 // перемещение камеры
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll){
-    // обновляем параметры камеры
-    camera.eye_x=eye_x;
+
+    camera.eye_x=eye_x; 
     camera.eye_y=eye_y;
     camera.eye_z=eye_z;
 
@@ -1907,10 +1907,6 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
         ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
     }
 
-    camera.up_x = up_x;
-    camera.up_y = up_y;
-    camera.up_z = up_z;
-
     // считаем направление взгляда
     lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z, camera.dir_x, camera.dir_y, camera.dir_z);
 
@@ -1922,6 +1918,10 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
         glm::vec3 newUp = rot * up0;
         up_x = newUp.x; up_y = newUp.y; up_z = newUp.z;
     }
+
+    camera.up_x = up_x;
+    camera.up_y = up_y;
+    camera.up_z = up_z;
 
     // обновляем матрицу
     glMatrixMode(GL_MODELVIEW);
