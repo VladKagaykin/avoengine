@@ -616,8 +616,7 @@ void flushDrawQueue() {
 
     GLuint currentShader = 0;
     const char* currentTexName = nullptr;
-    int currentDimension = 1;   // 1 = 3D (начальное состояние – камера уже установлена)
-    bool defaultLightingPrepared = false; // единый флаг для освещения/теней
+    int currentDimension = 1;
 
     static GLuint tri_vao = 0, tri_vbo = 0;
     static bool tri_init = false;
@@ -667,14 +666,18 @@ void flushDrawQueue() {
         glGenVertexArrays(1, &vao3D);
     }
 
+    GLuint boundTexUnit0 = 0;
+    bool lightsApplied = false;
+    bool shadowsApplied = false;
+
     for (const auto& cmd : drawQueue) {
         int dim = (cmd.type == CMD_TRIANGLE || cmd.type == CMD_SQUARE || cmd.type == CMD_TEXT) ? 0 : 1;
         if (dim != currentDimension) {
-            if (dim == 0) {   // переход 3D → 2D
+            if (dim == 0) {
                 currentIs2D = true;
                 initSimple2DShader();
                 glUseProgram(simple2DShader);
-                currentShader = simple2DShader;   // синхронизация отслеживания шейдера
+                currentShader = simple2DShader;
 
                 glMatrixMode(GL_PROJECTION);
                 glPushMatrix();
@@ -692,13 +695,14 @@ void flushDrawQueue() {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-                // Настройка текстуры для 2D‑шейдера
                 GLint loc = glGetUniformLocation(simple2DShader, "tex");
                 if (loc != -1) glUniform1i(loc, 0);
 
                 currentTexName = nullptr;
-                defaultLightingPrepared = false;
-            } else {           // переход 2D → 3D
+                boundTexUnit0 = 0;
+                lightsApplied = false;
+                shadowsApplied = false;
+            } else {
                 currentIs2D = false;
 
                 glEnable(GL_DEPTH_TEST);
@@ -711,7 +715,7 @@ void flushDrawQueue() {
                 glPopMatrix();
                 glMatrixMode(GL_MODELVIEW);
 
-                changeSize3D(window_w, window_h);   // восстанавливает перспективу и lookAt
+                changeSize3D(window_w, window_h);
 
                 if (lighting_global) {
                     useShader(currentShaderProg);
@@ -721,17 +725,17 @@ void flushDrawQueue() {
                         if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
                     }
                     applyAllLights();
-                } else {
-                    // useShader(simple2DShader);
+                    applyAllShadows();
+                    lightsApplied = true;
+                    shadowsApplied = true;
                 }
 
                 currentTexName = nullptr;
-                defaultLightingPrepared = false;
+                boundTexUnit0 = 0;
             }
             currentDimension = dim;
         }
 
-        // Frustum culling для 3D-объектов
         if (cmd.type == CMD_3DOBJECT && cmd.radius > 0.0f) {
             if (!sphereInFrustum(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius))
                 continue;
@@ -788,26 +792,6 @@ void flushDrawQueue() {
                 break;
             }
 
-            // case CMD_TEXT: {
-            //     GLuint prevShader = currentShader;
-            //     if (prevShader) stopShader();   // уход в фиксированный конвейер
-
-            //     if (glIsEnabled(GL_TEXTURE_2D)) glDisable(GL_TEXTURE_2D);
-            //     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            //     glColor4f(cmd.r, cmd.g, cmd.b, cmd.a);
-            //     glRasterPos2f(cmd.x, cmd.y);
-            //     for (const char* c = cmd.text.c_str(); *c; ++c)
-            //         glutBitmapCharacter(cmd.font, *c);
-
-            //     currentTexName = nullptr;
-
-            //     if (prevShader) {
-            //         useShader(prevShader);
-            //         currentShader = prevShader;   // синхронизация
-            //     }
-            //     break;
-            // }
-
             case CMD_TEXT: {
                 if (currentShader != 0) {
                     stopShader();
@@ -828,36 +812,47 @@ void flushDrawQueue() {
                 if (currentShader != shaderToUse) {
                     useShader(shaderToUse);
                     currentShader = shaderToUse;
-                    if (shaderToUse == defaultLightingShader)
-                        defaultLightingPrepared = false; // переустановим при следующей команде
+                    lightsApplied = false;
+                    shadowsApplied = false;
                 }
-                if (shaderToUse == defaultLightingShader && !defaultLightingPrepared) {
+                if (!lightsApplied || !shadowsApplied) {
                     applyAllLights();
                     applyAllShadows();
-                    defaultLightingPrepared = true;
+                    lightsApplied = true;
+                    shadowsApplied = true;
                 }
-                // … (отрисовка 3D‑объекта без изменений)
-                // (весь код отрисовки остаётся тем же, что и раньше)
-                const char* texName = cmd.obj_tex.empty() ? nullptr : cmd.obj_tex.c_str();
-                if (texName != currentTexName) {
-                    glActiveTexture(GL_TEXTURE0);
-                    GLuint texID = texName ? loadTextureFromFile(texName) : 0;
-                    if (texID) {
-                        glEnable(GL_TEXTURE_2D);
-                        glBindTexture(GL_TEXTURE_2D, texID);
-                    } else {
+
+                if (currentShader && loc_receiveShadows != -1) {
+                    glUniform1i(loc_receiveShadows, 1);
+                }
+
+                glActiveTexture(GL_TEXTURE0);
+
+                GLuint desiredTex = 0;
+                if (cmd.obj_tex.empty()) {
+                    ensureWhiteTex();
+                    desiredTex = whiteTex;
+                } else {
+                    desiredTex = loadTextureFromFile(cmd.obj_tex.c_str());
+                    if (!desiredTex) {
                         ensureWhiteTex();
-                        glEnable(GL_TEXTURE_2D);
-                        glBindTexture(GL_TEXTURE_2D, whiteTex);
+                        desiredTex = whiteTex;
                     }
-                    if (currentShader && loc_tex != -1) glUniform1i(loc_tex, 0);
-                    currentTexName = texName;
                 }
+
+                if (desiredTex != boundTexUnit0) {
+                    glEnable(GL_TEXTURE_2D);
+                    glBindTexture(GL_TEXTURE_2D, desiredTex);
+                    boundTexUnit0 = desiredTex;
+                    if (currentShader && loc_tex != -1) glUniform1i(loc_tex, 0);
+                }
+
+                currentTexName = cmd.obj_tex.empty() ? nullptr : cmd.obj_tex.c_str();
 
                 size_t numVerts = cmd.obj_vertices.size() / 3;
                 if (numVerts == 0 || cmd.obj_indices.empty()) break;
 
-                const bool hasTex = (texName && !cmd.obj_texcoords.empty());
+                const bool hasTex = (!cmd.obj_tex.empty() && !cmd.obj_texcoords.empty());
                 std::vector<float> uv;
                 const float* uvPtr;
                 if (hasTex) {
@@ -924,16 +919,16 @@ void flushDrawQueue() {
                 if (currentShader != shaderToUse) {
                     useShader(shaderToUse);
                     currentShader = shaderToUse;
-                    if (shaderToUse == defaultLightingShader)
-                        defaultLightingPrepared = false;
+                    lightsApplied = false;
+                    shadowsApplied = false;
                 }
-                if (shaderToUse == defaultLightingShader && !defaultLightingPrepared) {
+                if (!lightsApplied || !shadowsApplied) {
                     applyAllLights();
                     applyAllShadows();
-                    defaultLightingPrepared = true;
+                    lightsApplied = true;
+                    shadowsApplied = true;
                 }
 
-                // … (отрисовка псевдо‑3D без изменений)
                 const pseudo_3d_entity* ent = cmd.entity;
                 if (!sphereInFrustum(ent->getX(), ent->getY(), ent->getZ(), ent->getRadius()))
                     break;
@@ -958,6 +953,7 @@ void flushDrawQueue() {
                     }
                     if (currentShader && loc_tex != -1) glUniform1i(loc_tex, 0);
                     currentTexName = texName;
+                    boundTexUnit0 = 0;
                 }
 
                 if (currentShader && loc_receiveShadows != -1)
@@ -1045,6 +1041,7 @@ void flushDrawQueue() {
 
                 if (currentShader && loc_receiveShadows != -1)
                     glUniform1i(loc_receiveShadows, 1);
+                glActiveTexture(GL_TEXTURE0);
                 break;
             }
 
@@ -1052,7 +1049,6 @@ void flushDrawQueue() {
         }
     }
 
-    // Восстанавливаем 3D-состояние, если закончили на 2D
     if (currentDimension == 0) {
         currentIs2D = false;
         glEnable(GL_DEPTH_TEST);
@@ -1076,7 +1072,7 @@ void flushDrawQueue() {
             }
             applyAllLights();
         } else {
-            useShader(simple2DShader);   // fallback при необходимости
+            useShader(simple2DShader);
         }
     }
 
