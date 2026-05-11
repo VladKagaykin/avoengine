@@ -13,6 +13,8 @@
 #include "src/miniaudio.h"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <set>
 
 #ifdef _WIN32
 extern "C" {
@@ -96,6 +98,60 @@ std::vector<Light*> activeLights;
 float global_ambient[3] = {0.05f, 0.05f, 0.05f};
 std::vector<pseudo_3d_entity*> allEntities;
 std::vector<Portal*> allPortals;
+
+// Треугольник в мировом пространстве (для передачи в текстуру)
+struct WorldTriangle {
+    float v0[4];   // w=0
+    float v1[4];
+    float v2[4];
+    float normal[4]; // w = materialIndex (float)
+    float uv0[2], uv1[2], uv2[2];
+};
+
+// ---------- автоматический атлас ----------
+static GLuint autoAtlas = 0;                    // итоговая текстура атласа
+static int autoAtlasWidth = 0, autoAtlasHeight = 0;
+// карта соответствия GLuint исходной текстуры -> смещение в атласе (в пикселях)
+static std::unordered_map<GLuint, std::pair<int,int>> atlasOffsets; 
+// размеры всех текстур (нужны при упаковке) — заполним при загрузке
+static std::unordered_map<GLuint, std::pair<int,int>> textureSizes; 
+
+// Узел BVH (после сборки остаётся только для записи в текстуру)
+struct PackedBVHNode {
+    float bboxMin[3]; float pad0;
+    float bboxMax[3]; float pad1;
+    int left, right, leaf; float pad2;
+};
+std::vector<PackedBVHNode> packedBVH;   // временный, потом загружается в текстуру
+
+// ----------- Режим трассировки лучей -----------
+bool g_rayTraceMode = false;   // переключатель – когда true, flushDrawQueue делает трассировку
+
+// Геометрия в мировых координатах (собирается перед кадром, если сцена изменилась)
+static std::vector<WorldTriangle> worldTriangles;   // все треугольники (мировые координаты)
+static int portalTriStart = -1;                     // начало треугольников порталов в worldTriangles
+static int portalTriEnd = -1;
+static std::vector<glm::mat4> worldPortalMats;      // матрицы перехода порталов (пара A->B и B->A)
+
+// Текстуры для шейдера-трассировщика
+static GLuint sceneTriTex = 0;   // треугольники (формат RGBA32F, ширина = треугольники * 14, высота 1)
+static GLuint sceneBVHTex = 0;   // BVH-узлы (RGBA32F)
+static bool geometryDirty = true;   // флаг, что геометрию надо пересобрать
+
+// Шейдер трассировки
+static GLuint rayTraceShader = 0;
+// VAO для полноэкранного прямоугольника
+static GLuint fullscreenVAO = 0, fullscreenVBO = 0;
+
+// Константы упаковки текстур
+static const int PIX_PER_TRI = 7;    // 14 RGBA32F пикселей = 56 float на треугольник
+static const int PIX_PER_BVH = 3;     // 3 пикселя на узел
+
+static float g_sceneMin[3] = {0,0,0};
+static float g_sceneExtent = 1.0f;
+
+static float prevPitch = 0.0f, prevYaw = 0.0f, prevEyeX = 0.0f, prevEyeY = 0.0f, prevEyeZ = 0.0f;
+
 //              утилиты 
 // вычисляем то, куда смотрит центр камеры и прочее
 static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
@@ -336,6 +392,118 @@ void main() {
 }
 )";
 
+static const char* rayTraceVertexShader = R"(
+#version 120
+attribute vec4 aVertex;
+varying vec2 screenPos;
+void main() {
+    gl_Position = aVertex;
+    screenPos = aVertex.xy;
+}
+)";
+
+static const char* rayTraceFragmentShader = R"(
+#version 120
+
+uniform sampler2D triTex;
+uniform int triCount;
+uniform int pixPerTri;
+
+uniform vec3 cameraPos;
+uniform mat4 invViewProj;
+uniform vec2 screenSize;
+
+uniform vec3 sceneMin;
+uniform float sceneExtent;
+
+varying vec2 screenPos;
+
+void readTriangle(int idx, out vec3 v0, out vec3 v1, out vec3 v2,
+                  out vec3 nrm, out float matIdx) {
+    int base = idx * pixPerTri;
+    float w = float(triCount * pixPerTri);
+    float cx = (float(base) + 0.5) / w;
+    vec4 t0 = texture2D(triTex, vec2(cx, 0.5)); cx += 1.0/w;
+    vec4 t1 = texture2D(triTex, vec2(cx, 0.5)); cx += 1.0/w;
+    vec4 t2 = texture2D(triTex, vec2(cx, 0.5)); cx += 1.0/w;
+    vec4 t3 = texture2D(triTex, vec2(cx, 0.5)); // normal + matIdx
+    // Восстанавливаем мировые координаты
+    v0 = t0.xyz * sceneExtent + sceneMin;
+    v1 = t1.xyz * sceneExtent + sceneMin;
+    v2 = t2.xyz * sceneExtent + sceneMin;
+    nrm = t3.xyz;
+    matIdx = t3.w;
+}
+
+bool rayTriangleIntersect(vec3 orig, vec3 dir, vec3 v0, vec3 v1, vec3 v2,
+                          out float t) {
+    vec3 e1 = v1 - v0;
+    vec3 e2 = v2 - v0;
+    vec3 pvec = cross(dir, e2);
+    float det = dot(e1, pvec);
+    if (abs(det) < 0.000001) return false;
+    float invDet = 1.0 / det;
+    vec3 tvec = orig - v0;
+    float u = dot(tvec, pvec) * invDet;
+    if (u < 0.0 || u > 1.0) return false;
+    vec3 qvec = cross(tvec, e1);
+    float v = dot(dir, qvec) * invDet;
+    if (v < 0.0 || u + v > 1.0) return false;
+    t = dot(e2, qvec) * invDet;
+    return t > 0.001;
+}
+
+// Простой BVH-ускоритель: проверка пересечения с bounding box сцены
+bool intersectSceneBBox(vec3 orig, vec3 invDir, vec3 bboxMin, vec3 bboxMax) {
+    vec3 t0 = (bboxMin - orig) * invDir;
+    vec3 t1 = (bboxMax - orig) * invDir;
+    vec3 tmin = min(t0, t1);
+    vec3 tmax = max(t0, t1);
+    float tEnter = max(max(tmin.x, tmin.y), tmin.z);
+    float tExit  = min(min(tmax.x, tmax.y), tmax.z);
+    return tEnter <= tExit && tExit > 0.0;
+}
+
+void main() {
+    float x = (gl_FragCoord.x / screenSize.x) * 2.0 - 1.0;
+    float y = (gl_FragCoord.y / screenSize.y) * 2.0 - 1.0;
+    vec4 rayClip = vec4(x, y, -1.0, 1.0);
+    vec4 rayEye = invViewProj * rayClip;
+    rayEye /= rayEye.w;
+    vec3 dir = normalize(rayEye.xyz);
+
+    vec3 orig = cameraPos;
+    float tHit = 1e30;
+    bool found = false;
+
+    // Проверяем пересечение с bounding box всей сцены (ускоритель)
+    vec3 invDir = 1.0 / dir;
+    // Bounding box сцены вычисляется на CPU и передаётся в шейдер
+    // (временно используем фиксированный большой box)
+    vec3 sceneBBoxMin = vec3(-100.0, -100.0, -100.0);
+    vec3 sceneBBoxMax = vec3(100.0, 100.0, 100.0);
+    if (!intersectSceneBBox(orig, invDir, sceneBBoxMin, sceneBBoxMax)) {
+        gl_FragColor = vec4(0.2, 0.2, 0.2, 1.0);
+        return;
+    }
+
+    for (int i = 0; i < triCount; ++i) {
+        vec3 v0, v1, v2, nrm; float matIdx;
+        readTriangle(i, v0, v1, v2, nrm, matIdx);
+        float t;
+        if (rayTriangleIntersect(orig, dir, v0, v1, v2, t) && t < tHit) {
+            tHit = t;
+            found = true;
+        }
+    }
+
+    if (found)
+        gl_FragColor = vec4(1.0, 0.5, 0.0, 1.0); // оранжевый
+    else
+        gl_FragColor = vec4(0.2, 0.2, 0.2, 1.0);
+}
+)";
+
 const int MAX_SHADOW_CASTERS = 8;
 
 // кэш uniform-локаций для основного шейдера
@@ -360,6 +528,28 @@ static GLint loc_shadowLightObjDist[MAX_SHADOW_CASTERS];
 static GLint loc_shadowMap[MAX_SHADOW_CASTERS];
 
 static void initDefaultShader() {
+    // инициализация полноэкранного VAO, если ещё не сделано
+    if (fullscreenVAO == 0) {
+        float quadVerts[] = {
+            -1.0f, -1.0f,
+             1.0f, -1.0f,
+             1.0f,  1.0f,
+            -1.0f,  1.0f
+        };
+        glGenVertexArrays(1, &fullscreenVAO);
+        glGenBuffers(1, &fullscreenVBO);
+        glBindVertexArray(fullscreenVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, fullscreenVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quadVerts), quadVerts, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+        glBindVertexArray(0);
+    }
+
+    if (rayTraceShader == 0) {
+        rayTraceShader = createShaderProgram(rayTraceVertexShader, rayTraceFragmentShader);
+    }
+
     if (defaultLightingShader == 0) {
         defaultLightingShader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
         loc_tex = glGetUniformLocation(defaultLightingShader, "tex");
@@ -438,6 +628,7 @@ static void initSimple2DShader() {
     if (!simple2DShader)
         simple2DShader = createShaderProgram(simple2DVertexShader, simple2DFragmentShader);
 }
+
 //              вэбэо
 enum DrawCommandType : int {
     CMD_TRIANGLE,
@@ -494,7 +685,6 @@ static void ensureWhiteTex() {
     }
 }
 
-// Вспомогательная функция для пересоздания GL-буфера, если его размер меньше требуемого
 static GLuint vao3D = 0;
 static GLuint vbo_pos = 0, vbo_norm = 0, vbo_uv = 0, ibo = 0;
 static size_t cap_pos = 0, cap_norm = 0, cap_uv = 0, cap_idx = 0;
@@ -593,9 +783,474 @@ void extractFrustumPlanes() {
 
 static bool currentIs2D = false;
 
+//              рей трасинг
+static void buildAutoAtlas();   
+
+static void rebuildWorldGeometry() {
+    worldTriangles.clear();
+    worldPortalMats.clear();
+    portalTriStart = portalTriEnd = -1;
+
+    // buildAutoAtlas();   // теперь объявлена выше
+
+    // ----- порталы -----
+    if (!allPortals.empty()) {
+        portalTriStart = (int)worldTriangles.size();
+        for (Portal* prt : allPortals) {
+            if (!prt) continue;
+            int n = (int)prt->vertices.size() / 3;
+            if (n < 3) continue;
+
+            int matA = (int)worldPortalMats.size();
+            worldPortalMats.push_back(prt->getPortalTransform(prt->ax, prt->ay, prt->az,
+                                                              prt->bx, prt->by, prt->bz));
+            int matB = (int)worldPortalMats.size();
+            worldPortalMats.push_back(prt->getPortalTransform(prt->bx, prt->by, prt->bz,
+                                                              prt->ax, prt->ay, prt->az));
+
+            // Сторона A и сторона B
+            for (int side = 0; side < 2; ++side) {
+                float px = side ? prt->bx : prt->ax;
+                float py = side ? prt->by : prt->ay;
+                float pz = side ? prt->bz : prt->az;
+                int matIdx = side ? matB : matA;
+
+                for (int i = 1; i < n-1; ++i) {
+                    WorldTriangle tri;
+                    tri.v0[0] = px + prt->vertices[0];
+                    tri.v0[1] = py + prt->vertices[1];
+                    tri.v0[2] = pz + prt->vertices[2];
+                    tri.v1[0] = px + prt->vertices[i*3];
+                    tri.v1[1] = py + prt->vertices[i*3+1];
+                    tri.v1[2] = pz + prt->vertices[i*3+2];
+                    tri.v2[0] = px + prt->vertices[(i+1)*3];
+                    tri.v2[1] = py + prt->vertices[(i+1)*3+1];
+                    tri.v2[2] = pz + prt->vertices[(i+1)*3+2];
+                    tri.v0[3] = tri.v1[3] = tri.v2[3] = 0;
+
+                    glm::vec3 e1(tri.v1[0]-tri.v0[0], tri.v1[1]-tri.v0[1], tri.v1[2]-tri.v0[2]);
+                    glm::vec3 e2(tri.v2[0]-tri.v0[0], tri.v2[1]-tri.v0[1], tri.v2[2]-tri.v0[2]);
+                    glm::vec3 n = glm::normalize(glm::cross(e1, e2));
+                    tri.normal[0] = n.x; tri.normal[1] = n.y; tri.normal[2] = n.z;
+                    tri.normal[3] = (float)(portalTriStart + matIdx);
+
+                    tri.uv0[0] = tri.uv1[0] = tri.uv2[0] = 0;
+                    tri.uv0[1] = tri.uv1[1] = tri.uv2[1] = 0;
+                    worldTriangles.push_back(tri);
+                }
+            }
+        }
+        portalTriEnd = (int)worldTriangles.size();
+    }
+
+    // ----- 3D‑объекты и билборды -----
+    {
+        std::lock_guard<std::mutex> lock(drawQueueMutex);
+        for (auto& cmd : drawQueue) {
+            if (cmd.type == CMD_3DOBJECT) {
+                const size_t numVerts = cmd.obj_vertices.size() / 3;
+                if (numVerts < 3 || cmd.obj_indices.size() < 3) continue;
+
+                std::vector<glm::vec3> worldVerts(numVerts);
+                for (size_t i = 0; i < numVerts; ++i) {
+                    worldVerts[i] = glm::vec3(
+                        cmd.obj_vertices[i*3] + cmd.obj_cx,
+                        cmd.obj_vertices[i*3+1] + cmd.obj_cy,
+                        cmd.obj_vertices[i*3+2] + cmd.obj_cz
+                    );
+                }
+
+                float uScale = 1.0f, vScale = 1.0f, uOff = 0.0f, vOff = 0.0f;
+                if (!cmd.obj_tex.empty()) {
+                    GLuint texID = loadTextureFromFile(cmd.obj_tex.c_str());
+                    if (texID && atlasOffsets.count(texID)) {
+                        auto sz = textureSizes[texID];
+                        auto off = atlasOffsets[texID];
+                        uOff = (float)off.first / autoAtlasWidth;
+                        vOff = (float)off.second / autoAtlasHeight;
+                        uScale = (float)sz.first / autoAtlasWidth;
+                        vScale = (float)sz.second / autoAtlasHeight;
+                    }
+                }
+
+                for (size_t i = 0; i + 2 < cmd.obj_indices.size(); i += 3) {
+                    WorldTriangle tri;
+                    int i0 = cmd.obj_indices[i], i1 = cmd.obj_indices[i+1], i2 = cmd.obj_indices[i+2];
+                    glm::vec3 &w0 = worldVerts[i0], &w1 = worldVerts[i1], &w2 = worldVerts[i2];
+                    tri.v0[0]=w0.x; tri.v0[1]=w0.y; tri.v0[2]=w0.z; tri.v0[3]=0;
+                    tri.v1[0]=w1.x; tri.v1[1]=w1.y; tri.v1[2]=w1.z; tri.v1[3]=0;
+                    tri.v2[0]=w2.x; tri.v2[1]=w2.y; tri.v2[2]=w2.z; tri.v2[3]=0;
+
+                    if (!cmd.obj_normals.empty()) {
+                        tri.normal[0]=cmd.obj_normals[i0*3]; tri.normal[1]=cmd.obj_normals[i0*3+1]; tri.normal[2]=cmd.obj_normals[i0*3+2];
+                    } else {
+                        glm::vec3 e1 = w1-w0, e2 = w2-w0;
+                        glm::vec3 n = glm::normalize(glm::cross(e1, e2));
+                        tri.normal[0]=n.x; tri.normal[1]=n.y; tri.normal[2]=n.z;
+                    }
+                    tri.normal[3] = 0.0f;
+
+                    if (!cmd.obj_texcoords.empty()) {
+                        tri.uv0[0] = uOff + cmd.obj_texcoords[i0*2] * uScale;
+                        tri.uv0[1] = vOff + cmd.obj_texcoords[i0*2+1] * vScale;
+                        tri.uv1[0] = uOff + cmd.obj_texcoords[i1*2] * uScale;
+                        tri.uv1[1] = vOff + cmd.obj_texcoords[i1*2+1] * vScale;
+                        tri.uv2[0] = uOff + cmd.obj_texcoords[i2*2] * uScale;
+                        tri.uv2[1] = vOff + cmd.obj_texcoords[i2*2+1] * vScale;
+                    } else {
+                        tri.uv0[0]=uOff; tri.uv0[1]=vOff;
+                        tri.uv1[0]=uOff+uScale; tri.uv1[1]=vOff;
+                        tri.uv2[0]=uOff; tri.uv2[1]=vOff+vScale;
+                    }
+                    worldTriangles.push_back(tri);
+                }
+            }
+            else if (cmd.type == CMD_PSEUDO3D) {
+                const pseudo_3d_entity* ent = cmd.entity;
+                if (!ent) continue;
+                const float dx = camera.eye_x - ent->getX();
+                const float dy = camera.eye_y - ent->getY();
+                const float dz = camera.eye_z - ent->getZ();
+                const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                if (dist < 0.001f) continue;
+                const float fx = dx/dist, fy = dy/dist, fz = dz/dist;
+
+                float wx = 0, wy = 1, wz = 0;
+                if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+                float rx = wy*fz - wz*fy, ry = wz*fx - wx*fz, rz = wx*fy - wy*fx;
+                float rlen = sqrtf(rx*rx+ry*ry+rz*rz);
+                if (rlen > 1e-4f) { rx/=rlen; ry/=rlen; rz/=rlen; }
+                float ux = fy*rz - fz*ry, uy = fz*rx - fx*rz, uz = fx*ry - fy*rx;
+
+                const std::vector<float>& lv = ent->getVertices();
+                if (lv.size() < 8) continue;
+                glm::vec3 corners[4];
+                for (int i=0; i<4; ++i) {
+                    float lx = lv[i*2], ly = lv[i*2+1];
+                    corners[i] = glm::vec3(ent->getX(), ent->getY(), ent->getZ())
+                                 + rx*lx + ux*ly + ry*lx + uy*ly + rz*lx + uz*ly;
+                }
+                int tidx = ent->getTextureIndex(dx, dy, dz);
+                GLuint texID = 0;
+                if (tidx >= 0 && tidx < (int)ent->getTextureIDs().size())
+                    texID = ent->getTextureIDs()[tidx];
+
+                float uScale=1, vScale=1, uOff=0, vOff=0;
+                if (texID && atlasOffsets.count(texID)) {
+                    auto sz = textureSizes[texID];
+                    auto off = atlasOffsets[texID];
+                    uOff = (float)off.first / autoAtlasWidth;
+                    vOff = (float)off.second / autoAtlasHeight;
+                    uScale = (float)sz.first / autoAtlasWidth;
+                    vScale = (float)sz.second / autoAtlasHeight;
+                }
+                for (int t=0; t<2; ++t) {
+                    WorldTriangle tri;
+                    int a = 0, b = (t==0)?1:2, c = (t==0)?2:3;
+                    tri.v0[0]=corners[a].x; tri.v0[1]=corners[a].y; tri.v0[2]=corners[a].z; tri.v0[3]=0;
+                    tri.v1[0]=corners[b].x; tri.v1[1]=corners[b].y; tri.v1[2]=corners[b].z; tri.v1[3]=0;
+                    tri.v2[0]=corners[c].x; tri.v2[1]=corners[c].y; tri.v2[2]=corners[c].z; tri.v2[3]=0;
+                    tri.normal[0]=fx; tri.normal[1]=fy; tri.normal[2]=fz; tri.normal[3]=0.0f;
+                    // UV билборда
+                    if (t==0) {
+                        tri.uv0[0]=uOff; tri.uv0[1]=vOff;
+                        tri.uv1[0]=uOff+uScale; tri.uv1[1]=vOff;
+                        tri.uv2[0]=uOff; tri.uv2[1]=vOff+vScale;
+                    } else {
+                        tri.uv0[0]=uOff; tri.uv0[1]=vOff;
+                        tri.uv1[0]=uOff+uScale; tri.uv1[1]=vOff+vScale;
+                        tri.uv2[0]=uOff; tri.uv2[1]=vOff+vScale;
+                    }
+                    worldTriangles.push_back(tri);
+                }
+            }
+        }
+    }
+    geometryDirty = false;
+}
+
+static void uploadGeometryToGPU() {
+    if (worldTriangles.empty()) return;
+    int triCount = (int)worldTriangles.size();
+    int texWidth = triCount * PIX_PER_TRI;   // 7 пикселей на треугольник
+
+    // Вычисляем границы сцены
+    float sceneMin[3] = { 1e30f, 1e30f, 1e30f };
+    float sceneMax[3] = {-1e30f,-1e30f,-1e30f };
+    for (int i = 0; i < triCount; ++i) {
+        const WorldTriangle& tri = worldTriangles[i];
+        for (int k = 0; k < 3; ++k) {
+            sceneMin[k] = std::min({tri.v0[k], tri.v1[k], tri.v2[k], sceneMin[k]});
+            sceneMax[k] = std::max({tri.v0[k], tri.v1[k], tri.v2[k], sceneMax[k]});
+        }
+    }
+    float extent = std::max({sceneMax[0]-sceneMin[0], sceneMax[1]-sceneMin[1], sceneMax[2]-sceneMin[2]});
+    if (extent < 0.001f) extent = 1.0f;
+    float invExtent = 1.0f / extent;
+
+    std::vector<float> texData(texWidth * 4, 0.0f);
+
+    for (int i = 0; i < triCount; ++i) {
+        const WorldTriangle& tri = worldTriangles[i];
+        int base = i * PIX_PER_TRI * 4;
+
+        // v0
+        for (int k = 0; k < 3; ++k) texData[base + k] = (tri.v0[k] - sceneMin[k]) * invExtent;
+        texData[base+3] = 0.0f;
+        // v1
+        for (int k = 0; k < 3; ++k) texData[base + 4 + k] = (tri.v1[k] - sceneMin[k]) * invExtent;
+        texData[base+7] = 0.0f;
+        // v2
+        for (int k = 0; k < 3; ++k) texData[base + 8 + k] = (tri.v2[k] - sceneMin[k]) * invExtent;
+        texData[base+11] = 0.0f;
+        // normal
+        for (int k = 0; k < 3; ++k) texData[base + 12 + k] = tri.normal[k];
+        texData[base+15] = tri.normal[3];
+        // uv0
+        texData[base+16] = tri.uv0[0]; texData[base+17] = tri.uv0[1];
+        // uv1
+        texData[base+20] = tri.uv1[0]; texData[base+21] = tri.uv1[1];
+        // uv2
+        texData[base+24] = tri.uv2[0]; texData[base+25] = tri.uv2[1];
+    }
+
+    // Удаляем старую текстуру полностью
+    if (sceneTriTex) {
+        glDeleteTextures(1, &sceneTriTex);
+        sceneTriTex = 0;
+    }
+    glGenTextures(1, &sceneTriTex);
+    glBindTexture(GL_TEXTURE_2D, sceneTriTex);
+
+    // *** ВСЕГДА загружаем как float-текстуру (поддержка есть на GTX 1050) ***
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, texWidth, 1, 0, GL_RGBA, GL_FLOAT, texData.data());
+
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        std::cerr << "OpenGL error after uploading triangle texture: " << err << std::endl;
+    }
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    g_sceneMin[0] = sceneMin[0]; g_sceneMin[1] = sceneMin[1]; g_sceneMin[2] = sceneMin[2];
+    g_sceneExtent = extent;
+}
+
 void flushDrawQueue() {
     if (drawQueue.empty()) return;
 
+    // статические VAO для 2D (квадраты и текст) — инициализируются один раз
+    static GLuint sq_vao = 0, sq_vbo = 0, sq_ibo = 0;
+    static bool sq_init = false;
+    if (!sq_init) {
+        sq_init = true;
+        glGenVertexArrays(1, &sq_vao);
+        glGenBuffers(1, &sq_vbo);
+        glGenBuffers(1, &sq_ibo);
+        glBindVertexArray(sq_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+        glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
+        GLuint indices[6] = {0, 1, 2, 0, 2, 3};
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sq_ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+        glBindVertexArray(0);
+        ensureWhiteTex();
+    }
+
+    if (g_rayTraceMode) {
+        geometryDirty = true;   // временно: перестраиваем геометрию каждый кадр для стабильности
+        if (camera.pitch != prevPitch || camera.yaw != prevYaw || camera.eye_x != prevEyeX || camera.eye_y != prevEyeY || camera.eye_z != prevEyeZ) {
+            geometryDirty = true;
+            prevPitch = camera.pitch;
+            prevYaw = camera.yaw;
+            prevEyeX = camera.eye_x;
+            prevEyeY = camera.eye_y;
+            prevEyeZ = camera.eye_z;
+        }
+        // при первой необходимости собираем геометрию
+        if (geometryDirty) {
+            rebuildWorldGeometry();
+            uploadGeometryToGPU();
+            geometryDirty = false;
+        }
+
+        // ---- 3D трассировка лучей ----
+        glUseProgram(rayTraceShader);
+
+        // текстура треугольников
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, sceneTriTex);
+        glUniform1i(glGetUniformLocation(rayTraceShader, "triTex"), 0);
+
+        // атлас (или белый fallback)
+        // glActiveTexture(GL_TEXTURE1);
+        // if (autoAtlas != 0) {
+        //     glBindTexture(GL_TEXTURE_2D, autoAtlas);
+        // } else {
+        //     ensureWhiteTex();
+        //     glBindTexture(GL_TEXTURE_2D, whiteTex);
+        // }
+        // glUniform1i(glGetUniformLocation(rayTraceShader, "atlasTex"), 1);
+
+        GLuint prog = rayTraceShader;
+        glUniform1i(glGetUniformLocation(prog, "triCount"), (int)worldTriangles.size());
+        glUniform1i(glGetUniformLocation(prog, "pixPerTri"), PIX_PER_TRI);
+        glUniform3f(glGetUniformLocation(prog, "sceneMin"), g_sceneMin[0], g_sceneMin[1], g_sceneMin[2]);
+        glUniform1f(glGetUniformLocation(prog, "sceneExtent"), g_sceneExtent);
+        glUniform1i(glGetUniformLocation(prog, "portalTriStart"), portalTriStart);
+        glUniform1i(glGetUniformLocation(prog, "portalTriEnd"), portalTriEnd);
+        glUniform1i(glGetUniformLocation(prog, "portalMatCount"), (int)worldPortalMats.size());
+
+        std::vector<float> matData;
+        for (auto& m : worldPortalMats)
+            matData.insert(matData.end(), glm::value_ptr(m), glm::value_ptr(m) + 16);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "portalMats"),
+                           (GLsizei)worldPortalMats.size(), GL_FALSE, matData.data());
+
+        glUniform3f(glGetUniformLocation(prog, "cameraPos"),
+                    camera.eye_x, camera.eye_y, camera.eye_z);
+        glUniform2f(glGetUniformLocation(prog, "screenSize"),
+                    (float)window_w, (float)window_h);
+
+        float fovRad = camera.fov * M_PI / 180.0f;
+        float aspect = window_h > 0 ? (float)window_w / (float)window_h : 1.0f;
+        glm::mat4 proj = glm::perspective(fovRad, aspect, camera.znear, camera.zfar);
+        glm::mat4 view = glm::lookAt(glm::vec3(camera.eye_x, camera.eye_y, camera.eye_z),
+                                     glm::vec3(camera.ctr_x, camera.ctr_y, camera.ctr_z),
+                                     glm::vec3(camera.up_x, camera.up_y, camera.up_z));
+        glm::mat4 invVP = glm::inverse(proj * view);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "invViewProj"), 1, GL_FALSE,
+                           glm::value_ptr(invVP));
+
+        // освещение
+        {
+            std::vector<Light*> candidates;
+            for (Light* l : activeLights) if (l->isEnabled()) candidates.push_back(l);
+            std::sort(candidates.begin(), candidates.end(), [](Light* a, Light* b) {
+                float da = (a->pos[0]-camera.eye_x)*(a->pos[0]-camera.eye_x) +
+                           (a->pos[1]-camera.eye_y)*(a->pos[1]-camera.eye_y) +
+                           (a->pos[2]-camera.eye_z)*(a->pos[2]-camera.eye_z);
+                float db = (b->pos[0]-camera.eye_x)*(b->pos[0]-camera.eye_x) +
+                           (b->pos[1]-camera.eye_y)*(b->pos[1]-camera.eye_y) +
+                           (b->pos[2]-camera.eye_z)*(b->pos[2]-camera.eye_z);
+                return da < db;
+            });
+            int cnt = std::min((int)candidates.size(), MAX_LIGHTS);
+            glUniform1i(glGetUniformLocation(prog, "numLights"), cnt);
+            char buf[64];
+            for (int i = 0; i < cnt; ++i) {
+                Light* L = candidates[i];
+                snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
+                glUniform1i(glGetUniformLocation(prog, buf), 1);
+                snprintf(buf, sizeof(buf), "lights[%d].position", i);
+                glUniform3f(glGetUniformLocation(prog, buf), L->pos[0], L->pos[1], L->pos[2]);
+                snprintf(buf, sizeof(buf), "lights[%d].direction", i);
+                glUniform3f(glGetUniformLocation(prog, buf), L->dir[0], L->dir[1], L->dir[2]);
+                snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
+                glUniform3f(glGetUniformLocation(prog, buf), L->color[0]*L->intensity, L->color[1]*L->intensity, L->color[2]*L->intensity);
+                snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
+                glUniform1f(glGetUniformLocation(prog, buf), cosf(L->cutoff * M_PI/180.0f));
+                snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
+                glUniform3f(glGetUniformLocation(prog, buf), L->constAtt, L->linearAtt, L->quadAtt);
+            }
+            glUniform3f(glGetUniformLocation(prog, "ambientLight"),
+                        global_ambient[0], global_ambient[1], global_ambient[2]);
+            glUniform3f(glGetUniformLocation(prog, "fogColor"),
+                        fog.color[0], fog.color[1], fog.color[2]);
+            glUniform1f(glGetUniformLocation(prog, "fogStart"), fog.start);
+            glUniform1f(glGetUniformLocation(prog, "fogEnd"), fog.end);
+        }
+
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glBindVertexArray(fullscreenVAO);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        glBindVertexArray(0);
+
+        // ---- 2D элементы (HUD, меню, прицел) ----
+        glUseProgram(simple2DShader);
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadIdentity();
+        glOrtho(0, window_w, 0, window_h, -1, 1);
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadIdentity();
+
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        for (const auto& cmd : drawQueue) {
+            if (cmd.type == CMD_SQUARE) {
+                GLuint shaderToUse = cmd.shaderID ? cmd.shaderID : simple2DShader;
+                if (currentShaderProg != shaderToUse) {
+                    useShader(shaderToUse);
+                }
+                const char* texName = cmd.tex.empty() ? nullptr : cmd.tex.c_str();
+                glActiveTexture(GL_TEXTURE0);
+                GLuint texID = texName ? loadTextureFromFile(texName) : 0;
+                if (texID) {
+                    glBindTexture(GL_TEXTURE_2D, texID);
+                } else {
+                    ensureWhiteTex();
+                    glBindTexture(GL_TEXTURE_2D, whiteTex);
+                }
+                if (shaderToUse && loc_tex != -1) glUniform1i(loc_tex, 0);
+
+                const float ar = cmd.rotate * float(M_PI) / -180.0f;
+                const float tc[8] = {0,1, 1,1, 1,0, 0,0};
+                float data[28];
+                for (int i = 0; i < 4; ++i) {
+                    float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
+                    rotatePoint(px, py, 0, 0, ar);
+                    float vx = cmd.cx + px * cmd.scale;
+                    float vy = cmd.cy + py * cmd.scale;
+                    data[i*7+0] = vx;
+                    data[i*7+1] = vy;
+                    data[i*7+2] = cmd.r;
+                    data[i*7+3] = cmd.g;
+                    data[i*7+4] = cmd.b;
+                    data[i*7+5] = tc[i*2];
+                    data[i*7+6] = tc[i*2+1];
+                }
+                glBindVertexArray(sq_vao);
+                glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                glBindVertexArray(0);
+            }
+            else if (cmd.type == CMD_TEXT) {
+                stopShader();
+                if (glIsEnabled(GL_TEXTURE_2D)) glDisable(GL_TEXTURE_2D);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glColor4f(cmd.r, cmd.g, cmd.b, cmd.a);
+                glRasterPos2f(cmd.x, cmd.y);
+                for (const char* c = cmd.text.c_str(); *c; ++c)
+                    glutBitmapCharacter(cmd.font, *c);
+            }
+        }
+
+        glMatrixMode(GL_MODELVIEW);
+        glPopMatrix();
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+
+        glUseProgram(0);
+        drawQueue.clear();
+        return;
+    }
+
+    // ========== старый растровый код (без изменений) ==========
     extractFrustumPlanes();
 
     std::sort(drawQueue.begin(), drawQueue.end(), [](const DrawCommand& a, const DrawCommand& b) {
@@ -637,29 +1292,7 @@ void flushDrawQueue() {
         ensureWhiteTex();
     }
 
-    static GLuint sq_vao = 0, sq_vbo = 0, sq_ibo = 0;
-    static bool sq_init = false;
-    if (!sq_init) {
-        sq_init = true;
-        glGenVertexArrays(1, &sq_vao);
-        glGenBuffers(1, &sq_vbo);
-        glGenBuffers(1, &sq_ibo);
-        glBindVertexArray(sq_vao);
-        glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
-        glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(3);
-        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
-        glEnableVertexAttribArray(8);
-        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
-        GLuint indices[6] = {0, 1, 2, 0, 2, 3};
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sq_ibo);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-        glBindVertexArray(0);
-        ensureWhiteTex();
-    }
-
+    // ---------- буферы для 3D-объектов ----------
     static GLuint vao3D = 0, vbo_pos = 0, vbo_norm = 0, vbo_uv = 0, ibo3d = 0;
     static size_t cap_pos = 0, cap_norm = 0, cap_uv = 0, cap_idx = 0;
     if (vao3D == 0) {
@@ -1078,6 +1711,7 @@ void flushDrawQueue() {
 
     drawQueue.clear();
 }
+
 //              текстуры
 // функция для загрузки текстуры
 GLuint loadTextureFromFile(const char* filename) {
@@ -1117,6 +1751,8 @@ GLuint loadTextureFromFile(const char* filename) {
 
     glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, w, h, 0, format, GL_UNSIGNED_BYTE, img);
 
+    textureSizes[id] = std::make_pair(w, h);
+
     glGenerateMipmap(GL_TEXTURE_2D);
 
     SOIL_free_image_data(img);
@@ -1124,6 +1760,86 @@ GLuint loadTextureFromFile(const char* filename) {
     lock_guard<mutex> lock(textureCacheMutex);
     return textureCache[filename] = id;
 }
+
+static void buildAutoAtlas() {
+    if (autoAtlas) { glDeleteTextures(1, &autoAtlas); autoAtlas = 0; }
+    atlasOffsets.clear();
+    // даже если worldTriangles пуст, можем собрать используемые текстуры из drawQueue
+    std::set<GLuint> used;
+    {
+        std::lock_guard<std::mutex> lock(drawQueueMutex);
+        for (const auto& cmd : drawQueue) {
+            if (!cmd.obj_tex.empty()) {
+                GLuint id = loadTextureFromFile(cmd.obj_tex.c_str());
+                if (id) used.insert(id);
+            }
+            if (cmd.entity) {
+                for (const auto& t : cmd.entity->getTextures()) {
+                    if (!t.empty()) {
+                        GLuint id = loadTextureFromFile(t.c_str());
+                        if (id) used.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    if (used.empty()) return;
+
+    int maxH = 0, totalW = 0;
+    for (GLuint id : used) {
+        auto it = textureSizes.find(id);
+        if (it != textureSizes.end()) {
+            totalW += it->second.first;
+            if (it->second.second > maxH) maxH = it->second.second;
+        }
+    }
+    autoAtlasWidth = totalW;
+    autoAtlasHeight = maxH;
+
+    GLuint fbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    glGenTextures(1, &autoAtlas);
+    glBindTexture(GL_TEXTURE_2D, autoAtlas);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, autoAtlasWidth, autoAtlasHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, autoAtlas, 0);
+
+    glViewport(0, 0, autoAtlasWidth, autoAtlasHeight);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, autoAtlasWidth, 0, autoAtlasHeight, -1, 1);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_TEXTURE_2D);
+
+    int curX = 0;
+    for (GLuint id : used) {
+        auto it = textureSizes.find(id);
+        if (it == textureSizes.end()) continue;
+        int w = it->second.first, h = it->second.second;
+        glBindTexture(GL_TEXTURE_2D, id);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0,0); glVertex2f(curX, 0);
+        glTexCoord2f(1,0); glVertex2f(curX + w, 0);
+        glTexCoord2f(1,1); glVertex2f(curX + w, h);
+        glTexCoord2f(0,1); glVertex2f(curX, h);
+        glEnd();
+        atlasOffsets[id] = std::make_pair(curX, 0);
+        curX += w;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glViewport(0, 0, window_w, window_h);
+    changeSize3D(window_w, window_h);
+}
+
 // загружаем много текстур параллельно
 void preloadTextures(const vector<string>& filenames) {
     struct RawTex { string name; unsigned char* data; int w, h, channels; };

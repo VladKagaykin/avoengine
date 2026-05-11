@@ -29,6 +29,8 @@ GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
 void useShader(GLuint id);
 void stopShader();
 
+extern bool g_rayTraceMode;
+
 void flushDrawQueue();
 
 GLuint loadTextureFromFile(const char* filename);
@@ -221,6 +223,8 @@ public:
 
     void checkTeleport();
 
+    glm::mat4 getPortalTransform(float fx, float fy, float fz,
+                                  float tx, float ty, float tz) const;
 private:
     struct FBO {
         GLuint fbo = 0;
@@ -233,8 +237,6 @@ private:
     void destroyFBOs();
     void resizeFBOs(int w, int h);
 
-    glm::mat4 getPortalTransform(float fx, float fy, float fz,
-                                  float tx, float ty, float tz) const;
     glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
 
     void renderThroughPortal(float src_x, float src_y, float src_z,
