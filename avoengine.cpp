@@ -438,13 +438,33 @@ static void initSimple2DShader() {
     if (!simple2DShader)
         simple2DShader = createShaderProgram(simple2DVertexShader, simple2DFragmentShader);
 }
+static GLuint lineVAO = 0, lineVBO = 0;
+static bool lineInit = false;
+
+static void initLineVAO() {
+    if (lineInit) return;
+    lineInit = true;
+    glGenVertexArrays(1, &lineVAO);
+    glGenBuffers(1, &lineVBO);
+    glBindVertexArray(lineVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+    glBufferData(GL_ARRAY_BUFFER, 2 * 9 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(7 * sizeof(float)));
+    glBindVertexArray(0);
+}
 //              очень ужасное вэбэо
 enum DrawCommandType : int {
-    CMD_TRIANGLE,
     CMD_SQUARE,
     CMD_TEXT,
     CMD_3DOBJECT,
-    CMD_PSEUDO3D
+    CMD_PSEUDO3D,
+    CMD_LINE_2D, 
+    CMD_LINE_3D
 };
 
 struct DrawCommand {
@@ -602,7 +622,6 @@ void flushDrawQueue() {
         if (a.type != b.type) return (int)a.type > (int)b.type;
         const char* texA = nullptr, *texB = nullptr;
         switch (a.type) {
-            case CMD_TRIANGLE: texA = a.tex.empty() ? nullptr : a.tex.c_str(); break;
             case CMD_SQUARE:   texA = a.tex.empty() ? nullptr : a.tex.c_str(); break;
             case CMD_3DOBJECT: texA = a.obj_tex.empty() ? nullptr : a.obj_tex.c_str(); break;
             case CMD_PSEUDO3D:
@@ -671,7 +690,7 @@ void flushDrawQueue() {
     bool shadowsApplied = false;
 
     for (const auto& cmd : drawQueue) {
-        int dim = (cmd.type == CMD_TRIANGLE || cmd.type == CMD_SQUARE || cmd.type == CMD_TEXT) ? 0 : 1;
+        int dim = (cmd.type == CMD_SQUARE || cmd.type == CMD_TEXT || cmd.type == CMD_LINE_2D) ? 0 : 1;
         if (dim != currentDimension) {
             if (dim == 0) {
                 currentIs2D = true;
@@ -1045,6 +1064,101 @@ void flushDrawQueue() {
                 break;
             }
 
+        case CMD_LINE_2D: {
+            GLuint shader = simple2DShader;
+            if (currentShader != shader) {
+                useShader(shader);
+                currentShader = shader;
+            }
+
+            // Отключаем нормаль (атрибут 2)
+            glDisableVertexAttribArray(2);
+            glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+
+            // Данные: позиция (x,y,0), цвет (r,g,b,a), texcoord (0,0)
+            float data[2 * 9] = {0};
+            // Вершина 1
+            data[0] = cmd.verts[0]; data[1] = cmd.verts[1]; data[2] = 0.0f;
+            data[3] = cmd.r; data[4] = cmd.g; data[5] = cmd.b; data[6] = cmd.a;
+            data[7] = 0.0f; data[8] = 0.0f;
+            // Вершина 2
+            data[9] = cmd.verts[2]; data[10] = cmd.verts[3]; data[11] = 0.0f;
+            data[12] = cmd.r; data[13] = cmd.g; data[14] = cmd.b; data[15] = cmd.a;
+            data[16] = 0.0f; data[17] = 0.0f;
+
+            glBindVertexArray(lineVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+
+            // Используем белую текстуру, чтобы не влиять на цвет
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, whiteTex);
+            GLint loc = glGetUniformLocation(shader, "tex");
+            if (loc != -1) glUniform1i(loc, 0);
+
+            glLineWidth(cmd.scale);
+            glDrawArrays(GL_LINES, 0, 2);
+            glLineWidth(1.0f);
+            glBindVertexArray(0);
+            break;
+        }
+
+        case CMD_LINE_3D: {
+            GLuint shader = defaultLightingShader;
+            if (currentShader != shader) {
+                useShader(shader);
+                currentShader = shader;
+                lightsApplied = false;
+                shadowsApplied = false;
+            }
+            if (!lightsApplied || !shadowsApplied) {
+                applyAllLights();
+                applyAllShadows();
+                lightsApplied = true;
+                shadowsApplied = true;
+            }
+
+            glEnable(GL_COLOR_MATERIAL);
+            glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+            glColor4f(cmd.obj_r, cmd.obj_g, cmd.obj_b, cmd.a);
+
+            glDisableVertexAttribArray(2);
+            glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f); // нормаль вверх
+            glDisableVertexAttribArray(8);
+            glVertexAttrib2f(8, 0.0f, 0.0f);
+
+            float data[2 * 9] = {0};
+            float x1 = cmd.verts[0], y1 = cmd.verts[1], z1 = cmd.verts[2];
+            float x2 = cmd.verts[3], y2 = cmd.verts[4], z2 = cmd.verts[5];
+
+            data[0] = x1; data[1] = y1; data[2] = z1;
+            data[3] = cmd.obj_r; data[4] = cmd.obj_g; data[5] = cmd.obj_b; data[6] = cmd.a;
+            data[7] = 0.0f; data[8] = 0.0f;
+
+            data[9] = x2; data[10] = y2; data[11] = z2;
+            data[12] = cmd.obj_r; data[13] = cmd.obj_g; data[14] = cmd.obj_b; data[15] = cmd.a;
+            data[16] = 0.0f; data[17] = 0.0f;
+
+            glBindVertexArray(lineVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, whiteTex);
+            if (loc_tex != -1) glUniform1i(loc_tex, 0);
+
+            glPushMatrix();
+            glTranslatef(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz);
+            glLineWidth(cmd.radius);
+            glDrawArrays(GL_LINES, 0, 2);
+            glLineWidth(1.0f);
+            glPopMatrix();
+
+            glDisable(GL_COLOR_MATERIAL);
+            glBindVertexArray(0);
+            break;
+        }
+
             default: break;
         }
     }
@@ -1207,7 +1321,51 @@ static void enableTex(const char* file){
 }
 
 //              простые 2д фигуры
+// отрезок
+void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness) {
+    if (!g_useDrawQueue) {
+        // Немедленный рендеринг (для порталов)
 
+        GLuint shader = simple2DShader;
+        useShader(shader);
+        glDisableVertexAttribArray(2);
+        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+
+        float data[2 * 9] = {0};
+        data[0] = x + x1; data[1] = y + y1; data[2] = 0.0f;
+        data[3] = r; data[4] = g; data[5] = b; data[6] = a;
+        data[7] = 0.0f; data[8] = 0.0f;
+
+        data[9] = x + x2; data[10] = y + y2; data[11] = 0.0f;
+        data[12] = r; data[13] = g; data[14] = b; data[15] = a;
+        data[16] = 0.0f; data[17] = 0.0f;
+
+        glBindVertexArray(lineVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
+        GLint loc = glGetUniformLocation(shader, "tex");
+        if (loc != -1) glUniform1i(loc, 0);
+
+        glLineWidth(thickness);
+        glDrawArrays(GL_LINES, 0, 2);
+        glLineWidth(1.0f);
+        glBindVertexArray(0);
+        return;
+    }
+
+    // Добавление в очередь (без изменений)
+    DrawCommand cmd;
+    cmd.type = CMD_LINE_2D;
+    cmd.verts[0] = x + x1; cmd.verts[1] = y + y1;
+    cmd.verts[2] = x + x2; cmd.verts[3] = y + y2;
+    cmd.r = r; cmd.g = g; cmd.b = b; cmd.a = a;
+    cmd.scale = thickness;
+    std::lock_guard<std::mutex> lock(drawQueueMutex);
+    drawQueue.push_back(cmd);
+}
 // квадрат
 void square(float local_size, float x, float y, double r, double g, double b,
             float rotate, const float* vertices, const char* tex) {
@@ -1802,6 +1960,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     glCullFace(GL_BACK);
     initDefaultShader();
     initSimple2DShader();
+    initLineVAO();
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     changeSize2D(w, h);
 }
@@ -1936,6 +2095,84 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 }
 
 //              3д(может быть потом ещё что-то будет)
+// отрезок
+void draw_line_3d(float x, float y, float z, float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b, float a, float thickness) {
+    if (!g_useDrawQueue) {
+        GLuint shader = defaultLightingShader;
+        useShader(shader);
+
+        // Сохраняем текущие настройки материала
+        GLboolean colorMaterialWasEnabled = glIsEnabled(GL_COLOR_MATERIAL);
+        GLint colorMaterialParam;
+        if (colorMaterialWasEnabled) {
+            glGetIntegerv(GL_COLOR_MATERIAL_PARAMETER, &colorMaterialParam);
+        }
+
+        // Включаем GL_COLOR_MATERIAL – цвет из glColor будет влиять на освещение
+        glEnable(GL_COLOR_MATERIAL);
+        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+        // Передаём цвет через glColor (он будет умножен на diffuse и ambient)
+        glColor4f(r, g, b, a);
+
+        // Отключаем нормаль (атрибут 2) – можно оставить фиктивную
+        glDisableVertexAttribArray(2);
+        glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f);
+        glDisableVertexAttribArray(8);
+        glVertexAttrib2f(8, 0.0f, 0.0f);
+
+        // Временно отключаем источники света, чтобы не было лишних вычислений – но это уже отключение, что запрещено.
+        // Поскольку вы против отключения света, оставляем свет включённым.
+        // Однако, если цвет всё равно чёрный, причина в том, что нормаль (0,1,0) даёт вклад только от верхнего света.
+        // Исправим нормаль на направление к камере – это уже другое решение.
+        // Поэтому для чистоты варианта 2 – просто полагаемся на glColorMaterial и нормаль (0,1,0).
+
+        float data[2 * 9] = {0};
+        data[0] = x1; data[1] = y1; data[2] = z1;
+        data[3] = r; data[4] = g; data[5] = b; data[6] = a;
+        data[7] = 0.0f; data[8] = 0.0f;
+
+        data[9] = x2; data[10] = y2; data[11] = z2;
+        data[12] = r; data[13] = g; data[14] = b; data[15] = a;
+        data[16] = 0.0f; data[17] = 0.0f;
+
+        glBindVertexArray(lineVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
+        GLint loc = glGetUniformLocation(shader, "tex");
+        if (loc != -1) glUniform1i(loc, 0);
+
+        glPushMatrix();
+        glTranslatef(x, y, z);
+        glLineWidth(thickness);
+        glDrawArrays(GL_LINES, 0, 2);
+        glLineWidth(1.0f);
+        glPopMatrix();
+
+        // Восстанавливаем состояние GL_COLOR_MATERIAL
+        if (colorMaterialWasEnabled) {
+            glColorMaterial(GL_FRONT_AND_BACK, colorMaterialParam);
+        } else {
+            glDisable(GL_COLOR_MATERIAL);
+        }
+
+        glBindVertexArray(0);
+        return;
+    }
+
+    // Добавление в очередь
+    DrawCommand cmd;
+    cmd.type = CMD_LINE_3D;
+    cmd.obj_cx = x; cmd.obj_cy = y; cmd.obj_cz = z;
+    cmd.verts[0] = x1; cmd.verts[1] = y1; cmd.verts[2] = z1;
+    cmd.verts[3] = x2; cmd.verts[4] = y2; cmd.verts[5] = z2;
+    cmd.obj_r = r; cmd.obj_g = g; cmd.obj_b = b; cmd.a = a;
+    cmd.radius = thickness;
+    std::lock_guard<std::mutex> lock(drawQueueMutex);
+    drawQueue.push_back(cmd);
+}
 // рисуем 3д объект, указывая вершины треугольников
 void draw3DObject(float cx, float cy, float cz,
                   double r, double g, double b,
