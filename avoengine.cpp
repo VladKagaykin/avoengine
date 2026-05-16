@@ -96,6 +96,24 @@ std::vector<Light*> activeLights;
 float global_ambient[3] = {0.05f, 0.05f, 0.05f};
 std::vector<pseudo_3d_entity*> allEntities;
 std::vector<Portal*> allPortals;
+
+struct GenericShadowCaster {
+    float pos[3];        
+    float radius;        
+    GLuint textureID;    
+    
+    std::vector<float> vertices;
+    std::vector<int> indices;
+    std::vector<float> normals;
+    std::vector<float> texcoords;
+    
+    bool isLine;
+    float lineStart[3], lineEnd[3];
+    float lineThickness;
+};
+
+static std::vector<GenericShadowCaster*> genericCasters;
+
 //              утилиты 
 // вычисляем то, куда смотрит центр камеры и прочее
 static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
@@ -457,6 +475,79 @@ static void initLineVAO() {
     glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(7 * sizeof(float)));
     glBindVertexArray(0);
 }
+
+static GLuint whiteTex = 0;
+
+static void ensureWhiteTex() {
+    if (whiteTex == 0) {
+        unsigned char white[4] = {255,255,255,255};
+        glGenTextures(1, &whiteTex);
+        glBindTexture(GL_TEXTURE_2D, whiteTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+}
+
+void registerShadowCaster3D(float cx, float cy, float cz, float radius,
+                            const std::vector<float>& vertices,
+                            const std::vector<int>& indices,
+                            const std::vector<float>& normals,
+                            const std::vector<float>& texcoords,
+                            const char* textureFile) {
+    GenericShadowCaster* caster = new GenericShadowCaster;
+    caster->pos[0] = cx; caster->pos[1] = cy; caster->pos[2] = cz;
+    caster->radius = radius;
+    caster->isLine = false;
+    caster->vertices = vertices;
+    caster->indices = indices;
+    caster->normals = normals;
+    caster->texcoords = texcoords;
+    if (textureFile && textureFile[0]) {
+        caster->textureID = loadTextureFromFile(textureFile);
+    } else {
+        ensureWhiteTex();
+        caster->textureID = whiteTex;
+    }
+    genericCasters.push_back(caster);
+}
+
+void registerShadowCasterLine(float x, float y, float z,
+                              float x1, float y1, float z1,
+                              float x2, float y2, float z2,
+                              float thickness, const char* textureFile) {
+    GenericShadowCaster* caster = new GenericShadowCaster;
+    caster->pos[0] = x;
+    caster->pos[1] = y;
+    caster->pos[2] = z;
+    caster->isLine = true;
+
+    // Мировые координаты начала и конца отрезка
+    caster->lineStart[0] = x + x1;
+    caster->lineStart[1] = y + y1;
+    caster->lineStart[2] = z + z1;
+    caster->lineEnd[0]   = x + x2;
+    caster->lineEnd[1]   = y + y2;
+    caster->lineEnd[2]   = z + z2;
+    caster->lineThickness = thickness;
+
+    if (textureFile && textureFile[0]) {
+        caster->textureID = loadTextureFromFile(textureFile);
+    } else {
+        ensureWhiteTex();
+        caster->textureID = whiteTex;
+    }
+
+    float dx = caster->lineEnd[0] - caster->lineStart[0];
+    float dy = caster->lineEnd[1] - caster->lineStart[1];
+    float dz = caster->lineEnd[2] - caster->lineStart[2];
+    float len = sqrtf(dx*dx + dy*dy + dz*dz);
+    caster->radius = len * 0.5f + thickness;
+
+    genericCasters.push_back(caster);
+}
+
 //              очень ужасное вэбэо
 enum DrawCommandType : int {
     CMD_SQUARE,
@@ -499,20 +590,6 @@ bool g_useDrawQueue = true;
 
 static std::vector<DrawCommand> drawQueue;
 static std::mutex drawQueueMutex;
-
-static GLuint whiteTex = 0;
-
-static void ensureWhiteTex() {
-    if (whiteTex == 0) {
-        unsigned char white[4] = {255,255,255,255};
-        glGenTextures(1, &whiteTex);
-        glBindTexture(GL_TEXTURE_2D, whiteTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-}
 
 // Вспомогательная функция для пересоздания GL-буфера, если его размер меньше требуемого
 static GLuint vao3D = 0;
@@ -617,6 +694,40 @@ void flushDrawQueue() {
     if (drawQueue.empty()) return;
 
     extractFrustumPlanes();
+
+    // Очистка предыдущих временных источников теней
+    for (auto* c : genericCasters) delete c;
+    genericCasters.clear();
+
+    // Предварительная регистрация всех источников тени (3D-объекты и линии)
+    for (const auto& cmd : drawQueue) {
+        if (cmd.type == CMD_3DOBJECT) {
+            if (cmd.radius > 0.0f &&
+                !sphereInFrustum(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius))
+                continue;
+            // Не регистрируем тень для очень крупных объектов (например, пол)
+            if (cmd.radius > 5.0f)
+                continue;
+            registerShadowCaster3D(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius,
+                cmd.obj_vertices, cmd.obj_indices, cmd.obj_normals, cmd.obj_texcoords,
+                cmd.obj_tex.c_str());
+        } else if (cmd.type == CMD_LINE_3D) {
+            float mx = (cmd.verts[0] + cmd.verts[3]) * 0.5f + cmd.obj_cx;
+            float my = (cmd.verts[1] + cmd.verts[4]) * 0.5f + cmd.obj_cy;
+            float mz = (cmd.verts[2] + cmd.verts[5]) * 0.5f + cmd.obj_cz;
+            float dx = cmd.verts[3] - cmd.verts[0];
+            float dy = cmd.verts[4] - cmd.verts[1];
+            float dz = cmd.verts[5] - cmd.verts[2];
+            float lineLen = sqrtf(dx*dx + dy*dy + dz*dz);
+            float sphRad = lineLen * 0.5f + cmd.radius;
+            if (!sphereInFrustum(mx, my, mz, sphRad))
+                continue;
+            registerShadowCasterLine(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz,
+                cmd.verts[0], cmd.verts[1], cmd.verts[2],
+                cmd.verts[3], cmd.verts[4], cmd.verts[5],
+                cmd.radius, cmd.obj_tex.c_str());
+        }
+    }
 
     std::sort(drawQueue.begin(), drawQueue.end(), [](const DrawCommand& a, const DrawCommand& b) {
         if (a.type != b.type) return (int)a.type > (int)b.type;
@@ -827,6 +938,7 @@ void flushDrawQueue() {
             }
 
             case CMD_3DOBJECT: {
+
                 GLuint shaderToUse = cmd.shaderID ? cmd.shaderID : defaultLightingShader;
                 if (currentShader != shaderToUse) {
                     useShader(shaderToUse);
@@ -1123,7 +1235,7 @@ void flushDrawQueue() {
             glColor4f(cmd.obj_r, cmd.obj_g, cmd.obj_b, cmd.a);
 
             glDisableVertexAttribArray(2);
-            glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f); // нормаль вверх
+            glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f); 
             glDisableVertexAttribArray(8);
             glVertexAttrib2f(8, 0.0f, 0.0f);
 
@@ -1189,6 +1301,11 @@ void flushDrawQueue() {
             useShader(simple2DShader);
         }
     }
+
+    // for (auto* caster : genericCasters) {
+    //     delete caster;
+    // }
+    // genericCasters.clear();
 
     drawQueue.clear();
 }
@@ -2098,6 +2215,7 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 // отрезок
 void draw_line_3d(float x, float y, float z, float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b, float a, float thickness) {
     if (!g_useDrawQueue) {
+        registerShadowCasterLine(x, y, z, x1, y1, z1, x2, y2, z2, thickness, nullptr);
         GLuint shader = defaultLightingShader;
         useShader(shader);
 
