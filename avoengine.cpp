@@ -1170,6 +1170,10 @@ void flushDrawQueue() {
                 glBindVertexArray(sq_vao);
                 glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
                 glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data2), data2);
+
+                glDisableVertexAttribArray(2);
+                glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+
                 glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
                 glBindVertexArray(0);
                 glPopMatrix();
