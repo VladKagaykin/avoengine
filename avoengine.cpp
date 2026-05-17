@@ -730,6 +730,10 @@ void flushDrawQueue() {
     }
 
     std::sort(drawQueue.begin(), drawQueue.end(), [](const DrawCommand& a, const DrawCommand& b) {
+        int dimA = (a.type == CMD_SQUARE || a.type == CMD_TEXT || a.type == CMD_LINE_2D) ? 0 : 1;
+        int dimB = (b.type == CMD_SQUARE || b.type == CMD_TEXT || b.type == CMD_LINE_2D) ? 0 : 1;
+        if (dimA != dimB) return dimA > dimB; 
+
         if (a.type != b.type) return (int)a.type > (int)b.type;
         const char* texA = nullptr, *texB = nullptr;
         switch (a.type) {
