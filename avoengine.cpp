@@ -452,9 +452,12 @@ void main() {
 )";
 
 static GLuint simple2DShader = 0;
-static void initSimple2DShader() {
-    if (!simple2DShader)
-        simple2DShader = createShaderProgram(simple2DVertexShader, simple2DFragmentShader);
+static GLint loc_tex_2d = -1;
+
+void initSimple2DShader() {
+    if (simple2DShader) return;
+    simple2DShader = createShaderProgram(simple2DVertexShader, simple2DFragmentShader);
+    loc_tex_2d = glGetUniformLocation(simple2DShader, "tex");
 }
 static GLuint lineVAO = 0, lineVBO = 0;
 static bool lineInit = false;
@@ -554,8 +557,10 @@ enum DrawCommandType : int {
     CMD_TEXT,
     CMD_3DOBJECT,
     CMD_PSEUDO3D,
-    CMD_LINE_2D, 
-    CMD_LINE_3D
+    CMD_LINE_2D,
+    CMD_LINE_3D,
+    CMD_PANORAMA,
+    CMD_PORTAL
 };
 
 struct DrawCommand {
@@ -578,15 +583,20 @@ struct DrawCommand {
     std::vector<int> obj_indices;
     std::vector<float> obj_texcoords;
     std::vector<float> obj_normals;
-    float radius = 0.0f;             
+    float radius = 0.0f;
 
     const pseudo_3d_entity* entity;
     float cam_x, cam_y, cam_z;
 
     GLuint shaderID = 0;
+
+    Portal* portal = nullptr;
 };
 
-bool g_useDrawQueue = true;
+// bool g_useDrawQueue = true;
+
+static GLuint skyboxVAO = 0, skyboxVBO = 0, skyboxIBO = 0;
+static int skyboxIndexCount = 0;
 
 static std::vector<DrawCommand> drawQueue;
 static std::mutex drawQueueMutex;
@@ -693,21 +703,55 @@ static bool currentIs2D = false;
 void flushDrawQueue() {
     if (drawQueue.empty()) return;
 
+    for (auto it = drawQueue.begin(); it != drawQueue.end(); ) {
+        if (it->type == CMD_PANORAMA) {
+            DrawCommand cmd = *it;
+            it = drawQueue.erase(it);
+
+            glPushAttrib(GL_ALL_ATTRIB_BITS);
+            GLuint prevShader = currentShaderProg;
+            useShader(simple2DShader);
+            glUniform1i(loc_tex_2d, 0);
+
+            glDisable(GL_LIGHTING);
+            glDisable(GL_DEPTH_TEST);
+            glDisable(GL_FOG);
+            glDepthMask(GL_FALSE);
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
+            glColor4f(1, 1, 1, 1);
+
+            glPushMatrix();
+            glTranslatef(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz);
+            glRotatef(90, 1, 0, 0);
+
+            glBindVertexArray(skyboxVAO);
+            glDisableVertexAttribArray(2);
+            glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+            glDrawElements(GL_TRIANGLES, skyboxIndexCount, GL_UNSIGNED_INT, nullptr);
+            glBindVertexArray(0);
+
+            glPopMatrix();
+
+            if (prevShader) useShader(prevShader);
+            glPopAttrib();
+            continue;
+        }
+        ++it;
+    }
+
+    if (drawQueue.empty()) return;
+
     extractFrustumPlanes();
 
-    // Очистка предыдущих временных источников теней
     for (auto* c : genericCasters) delete c;
     genericCasters.clear();
 
-    // Предварительная регистрация всех источников тени (3D-объекты и линии)
     for (const auto& cmd : drawQueue) {
         if (cmd.type == CMD_3DOBJECT) {
-            if (cmd.radius > 0.0f &&
-                !sphereInFrustum(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius))
+            if (cmd.radius > 0.0f && !sphereInFrustum(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius))
                 continue;
-            // Не регистрируем тень для очень крупных объектов (например, пол)
-            if (cmd.radius > 5.0f)
-                continue;
+            if (cmd.radius > 5.0f) continue;
             registerShadowCaster3D(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius,
                 cmd.obj_vertices, cmd.obj_indices, cmd.obj_normals, cmd.obj_texcoords,
                 cmd.obj_tex.c_str());
@@ -720,8 +764,7 @@ void flushDrawQueue() {
             float dz = cmd.verts[5] - cmd.verts[2];
             float lineLen = sqrtf(dx*dx + dy*dy + dz*dz);
             float sphRad = lineLen * 0.5f + cmd.radius;
-            if (!sphereInFrustum(mx, my, mz, sphRad))
-                continue;
+            if (!sphereInFrustum(mx, my, mz, sphRad)) continue;
             registerShadowCasterLine(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz,
                 cmd.verts[0], cmd.verts[1], cmd.verts[2],
                 cmd.verts[3], cmd.verts[4], cmd.verts[5],
@@ -732,8 +775,7 @@ void flushDrawQueue() {
     std::sort(drawQueue.begin(), drawQueue.end(), [](const DrawCommand& a, const DrawCommand& b) {
         int dimA = (a.type == CMD_SQUARE || a.type == CMD_TEXT || a.type == CMD_LINE_2D) ? 0 : 1;
         int dimB = (b.type == CMD_SQUARE || b.type == CMD_TEXT || b.type == CMD_LINE_2D) ? 0 : 1;
-        if (dimA != dimB) return dimA > dimB; 
-
+        if (dimA != dimB) return dimA > dimB;
         if (a.type != b.type) return (int)a.type > (int)b.type;
         const char* texA = nullptr, *texB = nullptr;
         switch (a.type) {
@@ -747,10 +789,6 @@ void flushDrawQueue() {
         }
         return texA < texB;
     });
-
-    GLuint currentShader = 0;
-    const char* currentTexName = nullptr;
-    int currentDimension = 1;
 
     static GLuint tri_vao = 0, tri_vbo = 0;
     static bool tri_init = false;
@@ -800,11 +838,198 @@ void flushDrawQueue() {
         glGenVertexArrays(1, &vao3D);
     }
 
+    GLuint currentShader = 0;
+    const char* currentTexName = nullptr;
+    int currentDimension = 1;
     GLuint boundTexUnit0 = 0;
-    bool lightsApplied = false;
-    bool shadowsApplied = false;
+    bool lightsApplied = false, shadowsApplied = false;
 
-    for (const auto& cmd : drawQueue) {
+    for (auto it = drawQueue.begin(); it != drawQueue.end(); ) {
+        DrawCommand& cmd = *it;
+
+        if (cmd.type == CMD_PORTAL) {
+            Portal* portal = cmd.portal;
+            int recursion = (int)cmd.obj_cx;
+            it = drawQueue.erase(it);
+
+            float savedFrustum[6][4];
+            memcpy(savedFrustum, frustumPlanes, sizeof(savedFrustum));
+
+            struct LightSnapshot {
+                Light* light;
+                float pos[3];
+                float dir[3];
+            };
+            std::vector<LightSnapshot> lightSnapshots;
+            for (Light* l : activeLights) {
+                LightSnapshot snap;
+                snap.light = l;
+                snap.pos[0] = l->pos[0]; snap.pos[1] = l->pos[1]; snap.pos[2] = l->pos[2];
+                snap.dir[0] = l->dir[0]; snap.dir[1] = l->dir[1]; snap.dir[2] = l->dir[2];
+                lightSnapshots.push_back(snap);
+            }
+
+            {
+                portal->resizeFBOs(window_w, window_h);
+                std::vector<DrawCommand> savedQueue = std::move(drawQueue);
+                drawQueue.clear();
+
+                glm::mat4 portalMat = portal->getPortalTransform(portal->ax, portal->ay, portal->az,
+                                                                portal->bx, portal->by, portal->bz);
+                glm::vec3 camPos = glm::vec3(portalMat * glm::vec4(camera.eye_x, camera.eye_y, camera.eye_z, 1.0f));
+                glm::vec3 newDir = glm::normalize(glm::mat3(portalMat) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
+                float new_pitch = glm::degrees(asinf(newDir.y));
+                float new_yaw   = glm::degrees(atan2f(newDir.x, newDir.z));
+
+                glm::vec3 dstNorm = portal->portalNormal(portal->bx, portal->by, portal->bz, true);
+                int n = portal->vertices.size() / 3;
+                glm::vec3 dstCenter(0,0,0);
+                for (int i = 0; i < n; i++)
+                    dstCenter += glm::vec3(portal->bx + portal->vertices[i*3], portal->by + portal->vertices[i*3+1], portal->bz + portal->vertices[i*3+2]);
+                dstCenter /= (float)n;
+                GLdouble clipPlane[4] = { dstNorm.x, dstNorm.y, dstNorm.z, -glm::dot(dstNorm, dstCenter) };
+
+                float savedEyeX = camera.eye_x, savedEyeY = camera.eye_y, savedEyeZ = camera.eye_z;
+                float savedCtrX = camera.ctr_x, savedCtrY = camera.ctr_y, savedCtrZ = camera.ctr_z;
+                float savedDirX = camera.dir_x, savedDirY = camera.dir_y, savedDirZ = camera.dir_z;
+                float savedUpX = camera.up_x, savedUpY = camera.up_y, savedUpZ = camera.up_z;
+                float savedPitch = camera.pitch, savedYaw = camera.yaw;
+
+                glBindFramebuffer(GL_FRAMEBUFFER, portal->fboB.fbo);
+                glViewport(0, 0, portal->fboB.w, portal->fboB.h);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+                camera.eye_x = camPos.x; camera.eye_y = camPos.y; camera.eye_z = camPos.z;
+                camera.dir_x = newDir.x; camera.dir_y = newDir.y; camera.dir_z = newDir.z;
+                camera.ctr_x = camPos.x + newDir.x;
+                camera.ctr_y = camPos.y + newDir.y;
+                camera.ctr_z = camPos.z + newDir.z;
+                camera.pitch = new_pitch;
+                camera.yaw   = new_yaw;
+
+                glMatrixMode(GL_MODELVIEW);
+                glPushMatrix();
+                glLoadIdentity();
+                gluLookAt(camPos.x, camPos.y, camPos.z,
+                        camera.ctr_x, camera.ctr_y, camera.ctr_z,
+                        camera.up_x, camera.up_y, camera.up_z);
+
+                glEnable(GL_CLIP_PLANE0);
+                glClipPlane(GL_CLIP_PLANE0, clipPlane);
+
+                portal->sceneDraw();
+                flushDrawQueue();
+
+                glDisable(GL_CLIP_PLANE0);
+                glPopMatrix();
+
+                camera.eye_x = savedEyeX; camera.eye_y = savedEyeY; camera.eye_z = savedEyeZ;
+                camera.ctr_x = savedCtrX; camera.ctr_y = savedCtrY; camera.ctr_z = savedCtrZ;
+                camera.dir_x = savedDirX; camera.dir_y = savedDirY; camera.dir_z = savedDirZ;
+                camera.up_x = savedUpX; camera.up_y = savedUpY; camera.up_z = savedUpZ;
+                camera.pitch = savedPitch; camera.yaw = savedYaw;
+
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                glViewport(0, 0, window_w, window_h);
+
+                glMatrixMode(GL_MODELVIEW);
+                glLoadIdentity();
+                gluLookAt(savedEyeX, savedEyeY, savedEyeZ,
+                        savedEyeX + savedDirX, savedEyeY + savedDirY, savedEyeZ + savedDirZ,
+                        savedUpX, savedUpY, savedUpZ);
+
+                drawQueue = std::move(savedQueue);
+            }
+
+            {
+                std::vector<DrawCommand> savedQueue = std::move(drawQueue);
+                drawQueue.clear();
+
+                glm::mat4 portalMat = portal->getPortalTransform(portal->bx, portal->by, portal->bz,
+                                                                portal->ax, portal->ay, portal->az);
+                glm::vec3 camPos = glm::vec3(portalMat * glm::vec4(camera.eye_x, camera.eye_y, camera.eye_z, 1.0f));
+                glm::vec3 newDir = glm::normalize(glm::mat3(portalMat) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
+                float new_pitch = glm::degrees(asinf(newDir.y));
+                float new_yaw   = glm::degrees(atan2f(newDir.x, newDir.z));
+
+                glm::vec3 dstNorm = portal->portalNormal(portal->ax, portal->ay, portal->az, false);
+                int n = portal->vertices.size() / 3;
+                glm::vec3 dstCenter(0,0,0);
+                for (int i = 0; i < n; i++)
+                    dstCenter += glm::vec3(portal->ax + portal->vertices[i*3], portal->ay + portal->vertices[i*3+1], portal->az + portal->vertices[i*3+2]);
+                dstCenter /= (float)n;
+                GLdouble clipPlane[4] = { dstNorm.x, dstNorm.y, dstNorm.z, -glm::dot(dstNorm, dstCenter) };
+
+                float savedEyeX = camera.eye_x, savedEyeY = camera.eye_y, savedEyeZ = camera.eye_z;
+                float savedCtrX = camera.ctr_x, savedCtrY = camera.ctr_y, savedCtrZ = camera.ctr_z;
+                float savedDirX = camera.dir_x, savedDirY = camera.dir_y, savedDirZ = camera.dir_z;
+                float savedUpX = camera.up_x, savedUpY = camera.up_y, savedUpZ = camera.up_z;
+                float savedPitch = camera.pitch, savedYaw = camera.yaw;
+
+                glBindFramebuffer(GL_FRAMEBUFFER, portal->fboA.fbo);
+                glViewport(0, 0, portal->fboA.w, portal->fboA.h);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+                camera.eye_x = camPos.x; camera.eye_y = camPos.y; camera.eye_z = camPos.z;
+                camera.dir_x = newDir.x; camera.dir_y = newDir.y; camera.dir_z = newDir.z;
+                camera.ctr_x = camPos.x + newDir.x;
+                camera.ctr_y = camPos.y + newDir.y;
+                camera.ctr_z = camPos.z + newDir.z;
+                camera.pitch = new_pitch;
+                camera.yaw   = new_yaw;
+
+                glMatrixMode(GL_MODELVIEW);
+                glPushMatrix();
+                glLoadIdentity();
+                gluLookAt(camPos.x, camPos.y, camPos.z,
+                        camera.ctr_x, camera.ctr_y, camera.ctr_z,
+                        camera.up_x, camera.up_y, camera.up_z);
+
+                glEnable(GL_CLIP_PLANE0);
+                glClipPlane(GL_CLIP_PLANE0, clipPlane);
+
+                portal->sceneDraw();
+                flushDrawQueue();
+
+                glDisable(GL_CLIP_PLANE0);
+                glPopMatrix();
+
+                camera.eye_x = savedEyeX; camera.eye_y = savedEyeY; camera.eye_z = savedEyeZ;
+                camera.ctr_x = savedCtrX; camera.ctr_y = savedCtrY; camera.ctr_z = savedCtrZ;
+                camera.dir_x = savedDirX; camera.dir_y = savedDirY; camera.dir_z = savedDirZ;
+                camera.up_x = savedUpX; camera.up_y = savedUpY; camera.up_z = savedUpZ;
+                camera.pitch = savedPitch; camera.yaw = savedYaw;
+
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                glViewport(0, 0, window_w, window_h);
+
+                glMatrixMode(GL_MODELVIEW);
+                glLoadIdentity();
+                gluLookAt(savedEyeX, savedEyeY, savedEyeZ,
+                        savedEyeX + savedDirX, savedEyeY + savedDirY, savedEyeZ + savedDirZ,
+                        savedUpX, savedUpY, savedUpZ);
+
+                drawQueue = std::move(savedQueue);
+            }
+
+            for (auto& snap : lightSnapshots) {
+                snap.light->setPosition(snap.pos[0], snap.pos[1], snap.pos[2]);
+                snap.light->dir[0] = snap.dir[0];
+                snap.light->dir[1] = snap.dir[1];
+                snap.light->dir[2] = snap.dir[2];
+            }
+
+            portal->drawPortalSurface(portal->ax, portal->ay, portal->az, portal->fboB.colorTex, false);
+            portal->drawPortalSurface(portal->bx, portal->by, portal->bz, portal->fboA.colorTex, true);
+
+            lightsApplied = false;
+            shadowsApplied = false;
+
+            memcpy(frustumPlanes, savedFrustum, sizeof(frustumPlanes));
+
+            continue;
+        }
+
         int dim = (cmd.type == CMD_SQUARE || cmd.type == CMD_TEXT || cmd.type == CMD_LINE_2D) ? 0 : 1;
         if (dim != currentDimension) {
             if (dim == 0) {
@@ -829,9 +1054,7 @@ void flushDrawQueue() {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-                GLint loc = glGetUniformLocation(simple2DShader, "tex");
-                if (loc != -1) glUniform1i(loc, 0);
-
+                if (loc_tex_2d != -1) glUniform1i(loc_tex_2d, 0);
                 currentTexName = nullptr;
                 boundTexUnit0 = 0;
                 lightsApplied = false;
@@ -871,8 +1094,10 @@ void flushDrawQueue() {
         }
 
         if (cmd.type == CMD_3DOBJECT && cmd.radius > 0.0f) {
-            if (!sphereInFrustum(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius))
+            if (!sphereInFrustum(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz, cmd.radius)) {
+                ++it;
                 continue;
+            }
         }
 
         switch (cmd.type) {
@@ -925,7 +1150,6 @@ void flushDrawQueue() {
                 glBindVertexArray(0);
                 break;
             }
-
             case CMD_TEXT: {
                 if (currentShader != 0) {
                     stopShader();
@@ -940,9 +1164,7 @@ void flushDrawQueue() {
                 currentTexName = nullptr;
                 break;
             }
-
             case CMD_3DOBJECT: {
-
                 GLuint shaderToUse = cmd.shaderID ? cmd.shaderID : defaultLightingShader;
                 if (currentShader != shaderToUse) {
                     useShader(shaderToUse);
@@ -956,13 +1178,11 @@ void flushDrawQueue() {
                     lightsApplied = true;
                     shadowsApplied = true;
                 }
-
                 if (currentShader && loc_receiveShadows != -1) {
                     glUniform1i(loc_receiveShadows, 1);
                 }
 
                 glActiveTexture(GL_TEXTURE0);
-
                 GLuint desiredTex = 0;
                 if (cmd.obj_tex.empty()) {
                     ensureWhiteTex();
@@ -974,14 +1194,12 @@ void flushDrawQueue() {
                         desiredTex = whiteTex;
                     }
                 }
-
                 if (desiredTex != boundTexUnit0) {
                     glEnable(GL_TEXTURE_2D);
                     glBindTexture(GL_TEXTURE_2D, desiredTex);
                     boundTexUnit0 = desiredTex;
                     if (currentShader && loc_tex != -1) glUniform1i(loc_tex, 0);
                 }
-
                 currentTexName = cmd.obj_tex.empty() ? nullptr : cmd.obj_tex.c_str();
 
                 size_t numVerts = cmd.obj_vertices.size() / 3;
@@ -1017,7 +1235,6 @@ void flushDrawQueue() {
                 glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, cmd.obj_indices.data());
 
                 glBindVertexArray(vao3D);
-
                 glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
                 glEnableVertexAttribArray(0);
                 glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
@@ -1048,7 +1265,6 @@ void flushDrawQueue() {
                 glBindVertexArray(0);
                 break;
             }
-
             case CMD_PSEUDO3D: {
                 GLuint shaderToUse = cmd.shaderID ? cmd.shaderID : defaultLightingShader;
                 if (currentShader != shaderToUse) {
@@ -1183,104 +1399,93 @@ void flushDrawQueue() {
                 glActiveTexture(GL_TEXTURE0);
                 break;
             }
+            case CMD_LINE_2D: {
+                GLuint shader = simple2DShader;
+                if (currentShader != shader) {
+                    useShader(shader);
+                    currentShader = shader;
+                }
+                glDisableVertexAttribArray(2);
+                glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
 
-        case CMD_LINE_2D: {
-            GLuint shader = simple2DShader;
-            if (currentShader != shader) {
-                useShader(shader);
-                currentShader = shader;
+                float data[2 * 9] = {0};
+                data[0] = cmd.verts[0]; data[1] = cmd.verts[1]; data[2] = 0.0f;
+                data[3] = cmd.r; data[4] = cmd.g; data[5] = cmd.b; data[6] = cmd.a;
+                data[7] = 0.0f; data[8] = 0.0f;
+                data[9] = cmd.verts[2]; data[10] = cmd.verts[3]; data[11] = 0.0f;
+                data[12] = cmd.r; data[13] = cmd.g; data[14] = cmd.b; data[15] = cmd.a;
+                data[16] = 0.0f; data[17] = 0.0f;
+
+                glBindVertexArray(lineVAO);
+                glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, whiteTex);
+                if (loc_tex_2d != -1) glUniform1i(loc_tex_2d, 0);
+
+                glLineWidth(cmd.scale);
+                glDrawArrays(GL_LINES, 0, 2);
+                glLineWidth(1.0f);
+                glBindVertexArray(0);
+                break;
             }
+            case CMD_LINE_3D: {
+                GLuint shader = defaultLightingShader;
+                if (currentShader != shader) {
+                    useShader(shader);
+                    currentShader = shader;
+                    lightsApplied = false;
+                    shadowsApplied = false;
+                }
+                if (!lightsApplied || !shadowsApplied) {
+                    applyAllLights();
+                    applyAllShadows();
+                    lightsApplied = true;
+                    shadowsApplied = true;
+                }
+                glEnable(GL_COLOR_MATERIAL);
+                glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+                glColor4f(cmd.obj_r, cmd.obj_g, cmd.obj_b, cmd.a);
 
-            // Отключаем нормаль (атрибут 2)
-            glDisableVertexAttribArray(2);
-            glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+                glDisableVertexAttribArray(2);
+                glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f);
+                glDisableVertexAttribArray(8);
+                glVertexAttrib2f(8, 0.0f, 0.0f);
 
-            // Данные: позиция (x,y,0), цвет (r,g,b,a), texcoord (0,0)
-            float data[2 * 9] = {0};
-            // Вершина 1
-            data[0] = cmd.verts[0]; data[1] = cmd.verts[1]; data[2] = 0.0f;
-            data[3] = cmd.r; data[4] = cmd.g; data[5] = cmd.b; data[6] = cmd.a;
-            data[7] = 0.0f; data[8] = 0.0f;
-            // Вершина 2
-            data[9] = cmd.verts[2]; data[10] = cmd.verts[3]; data[11] = 0.0f;
-            data[12] = cmd.r; data[13] = cmd.g; data[14] = cmd.b; data[15] = cmd.a;
-            data[16] = 0.0f; data[17] = 0.0f;
+                float data[2 * 9] = {0};
+                float x1 = cmd.verts[0], y1 = cmd.verts[1], z1 = cmd.verts[2];
+                float x2 = cmd.verts[3], y2 = cmd.verts[4], z2 = cmd.verts[5];
 
-            glBindVertexArray(lineVAO);
-            glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+                data[0] = x1; data[1] = y1; data[2] = z1;
+                data[3] = cmd.obj_r; data[4] = cmd.obj_g; data[5] = cmd.obj_b; data[6] = cmd.a;
+                data[7] = 0.0f; data[8] = 0.0f;
+                data[9] = x2; data[10] = y2; data[11] = z2;
+                data[12] = cmd.obj_r; data[13] = cmd.obj_g; data[14] = cmd.obj_b; data[15] = cmd.a;
+                data[16] = 0.0f; data[17] = 0.0f;
 
-            // Используем белую текстуру, чтобы не влиять на цвет
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, whiteTex);
-            GLint loc = glGetUniformLocation(shader, "tex");
-            if (loc != -1) glUniform1i(loc, 0);
+                glBindVertexArray(lineVAO);
+                glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
 
-            glLineWidth(cmd.scale);
-            glDrawArrays(GL_LINES, 0, 2);
-            glLineWidth(1.0f);
-            glBindVertexArray(0);
-            break;
-        }
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, whiteTex);
+                if (loc_tex != -1) glUniform1i(loc_tex, 0);
 
-        case CMD_LINE_3D: {
-            GLuint shader = defaultLightingShader;
-            if (currentShader != shader) {
-                useShader(shader);
-                currentShader = shader;
-                lightsApplied = false;
-                shadowsApplied = false;
+                glPushMatrix();
+                glTranslatef(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz);
+                glLineWidth(cmd.radius);
+                glDrawArrays(GL_LINES, 0, 2);
+                glLineWidth(1.0f);
+                glPopMatrix();
+
+                glDisable(GL_COLOR_MATERIAL);
+                glBindVertexArray(0);
+                break;
             }
-            if (!lightsApplied || !shadowsApplied) {
-                applyAllLights();
-                applyAllShadows();
-                lightsApplied = true;
-                shadowsApplied = true;
-            }
-
-            glEnable(GL_COLOR_MATERIAL);
-            glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-            glColor4f(cmd.obj_r, cmd.obj_g, cmd.obj_b, cmd.a);
-
-            glDisableVertexAttribArray(2);
-            glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f); 
-            glDisableVertexAttribArray(8);
-            glVertexAttrib2f(8, 0.0f, 0.0f);
-
-            float data[2 * 9] = {0};
-            float x1 = cmd.verts[0], y1 = cmd.verts[1], z1 = cmd.verts[2];
-            float x2 = cmd.verts[3], y2 = cmd.verts[4], z2 = cmd.verts[5];
-
-            data[0] = x1; data[1] = y1; data[2] = z1;
-            data[3] = cmd.obj_r; data[4] = cmd.obj_g; data[5] = cmd.obj_b; data[6] = cmd.a;
-            data[7] = 0.0f; data[8] = 0.0f;
-
-            data[9] = x2; data[10] = y2; data[11] = z2;
-            data[12] = cmd.obj_r; data[13] = cmd.obj_g; data[14] = cmd.obj_b; data[15] = cmd.a;
-            data[16] = 0.0f; data[17] = 0.0f;
-
-            glBindVertexArray(lineVAO);
-            glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, whiteTex);
-            if (loc_tex != -1) glUniform1i(loc_tex, 0);
-
-            glPushMatrix();
-            glTranslatef(cmd.obj_cx, cmd.obj_cy, cmd.obj_cz);
-            glLineWidth(cmd.radius);
-            glDrawArrays(GL_LINES, 0, 2);
-            glLineWidth(1.0f);
-            glPopMatrix();
-
-            glDisable(GL_COLOR_MATERIAL);
-            glBindVertexArray(0);
-            break;
-        }
-
             default: break;
         }
+        ++it;
     }
 
     if (currentDimension == 0) {
@@ -1309,11 +1514,6 @@ void flushDrawQueue() {
             useShader(simple2DShader);
         }
     }
-
-    // for (auto* caster : genericCasters) {
-    //     delete caster;
-    // }
-    // genericCasters.clear();
 
     drawQueue.clear();
 }
@@ -1448,38 +1648,38 @@ static void enableTex(const char* file){
 //              простые 2д фигуры
 // отрезок
 void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness) {
-    if (!g_useDrawQueue) {
-        // Немедленный рендеринг (для порталов)
+    // if (!g_useDrawQueue) {
+    //     // Немедленный рендеринг (для порталов)
 
-        GLuint shader = simple2DShader;
-        useShader(shader);
-        glDisableVertexAttribArray(2);
-        glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+    //     GLuint shader = simple2DShader;
+    //     useShader(shader);
+    //     glDisableVertexAttribArray(2);
+    //     glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
 
-        float data[2 * 9] = {0};
-        data[0] = x + x1; data[1] = y + y1; data[2] = 0.0f;
-        data[3] = r; data[4] = g; data[5] = b; data[6] = a;
-        data[7] = 0.0f; data[8] = 0.0f;
+    //     float data[2 * 9] = {0};
+    //     data[0] = x + x1; data[1] = y + y1; data[2] = 0.0f;
+    //     data[3] = r; data[4] = g; data[5] = b; data[6] = a;
+    //     data[7] = 0.0f; data[8] = 0.0f;
 
-        data[9] = x + x2; data[10] = y + y2; data[11] = 0.0f;
-        data[12] = r; data[13] = g; data[14] = b; data[15] = a;
-        data[16] = 0.0f; data[17] = 0.0f;
+    //     data[9] = x + x2; data[10] = y + y2; data[11] = 0.0f;
+    //     data[12] = r; data[13] = g; data[14] = b; data[15] = a;
+    //     data[16] = 0.0f; data[17] = 0.0f;
 
-        glBindVertexArray(lineVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+    //     glBindVertexArray(lineVAO);
+    //     glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+    //     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, whiteTex);
-        GLint loc = glGetUniformLocation(shader, "tex");
-        if (loc != -1) glUniform1i(loc, 0);
+    //     glActiveTexture(GL_TEXTURE0);
+    //     glBindTexture(GL_TEXTURE_2D, whiteTex);
+    //     GLint loc = glGetUniformLocation(shader, "tex");
+    //     if (loc != -1) glUniform1i(loc, 0);
 
-        glLineWidth(thickness);
-        glDrawArrays(GL_LINES, 0, 2);
-        glLineWidth(1.0f);
-        glBindVertexArray(0);
-        return;
-    }
+    //     glLineWidth(thickness);
+    //     glDrawArrays(GL_LINES, 0, 2);
+    //     glLineWidth(1.0f);
+    //     glBindVertexArray(0);
+    //     return;
+    // }
 
     // Добавление в очередь (без изменений)
     DrawCommand cmd;
@@ -1494,88 +1694,88 @@ void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, floa
 // квадрат
 void square(float local_size, float x, float y, double r, double g, double b,
             float rotate, const float* vertices, const char* tex) {
-    if (!g_useDrawQueue) {
-        static GLuint vao = 0, vbo = 0, ibo = 0;
-        static bool init = false;
-        if (!init) {
-            init = true;
-            glGenVertexArrays(1, &vao);
-            glGenBuffers(1, &vbo);
-            glGenBuffers(1, &ibo);
+    // if (!g_useDrawQueue) {
+    //     static GLuint vao = 0, vbo = 0, ibo = 0;
+    //     static bool init = false;
+    //     if (!init) {
+    //         init = true;
+    //         glGenVertexArrays(1, &vao);
+    //         glGenBuffers(1, &vbo);
+    //         glGenBuffers(1, &ibo);
 
-            glBindVertexArray(vao);
-            glBindBuffer(GL_ARRAY_BUFFER, vbo);
-            glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    //         glBindVertexArray(vao);
+    //         glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    //         glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
 
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
-            glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
-            glEnableVertexAttribArray(8);
-            glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
+    //         glEnableVertexAttribArray(0);
+    //         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+    //         glEnableVertexAttribArray(3);
+    //         glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
+    //         glEnableVertexAttribArray(8);
+    //         glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
 
-            GLuint indices[6] = {0, 1, 2, 0, 2, 3};
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-            glBindVertexArray(0);
-            ensureWhiteTex();
-        }
+    //         GLuint indices[6] = {0, 1, 2, 0, 2, 3};
+    //         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    //         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    //         glBindVertexArray(0);
+    //         ensureWhiteTex();
+    //     }
 
-        const float ar = rotate * float(M_PI) / -180.0f;
-        const float tc[8] = {0,1, 1,1, 1,0, 0,0};
+    //     const float ar = rotate * float(M_PI) / -180.0f;
+    //     const float tc[8] = {0,1, 1,1, 1,0, 0,0};
 
-        float data[28];
-        for (int i = 0; i < 4; ++i) {
-            float px = vertices[i*2], py = vertices[i*2+1];
-            rotatePoint(px, py, 0, 0, ar);
-            float vx = x + px * local_size;
-            float vy = y + py * local_size;
-            data[i*7 + 0] = vx;
-            data[i*7 + 1] = vy;
-            data[i*7 + 2] = (float)r;
-            data[i*7 + 3] = (float)g;
-            data[i*7 + 4] = (float)b;
-            data[i*7 + 5] = tc[i*2];
-            data[i*7 + 6] = tc[i*2+1];
-        }
+    //     float data[28];
+    //     for (int i = 0; i < 4; ++i) {
+    //         float px = vertices[i*2], py = vertices[i*2+1];
+    //         rotatePoint(px, py, 0, 0, ar);
+    //         float vx = x + px * local_size;
+    //         float vy = y + py * local_size;
+    //         data[i*7 + 0] = vx;
+    //         data[i*7 + 1] = vy;
+    //         data[i*7 + 2] = (float)r;
+    //         data[i*7 + 3] = (float)g;
+    //         data[i*7 + 4] = (float)b;
+    //         data[i*7 + 5] = tc[i*2];
+    //         data[i*7 + 6] = tc[i*2+1];
+    //     }
 
-        glActiveTexture(GL_TEXTURE0);
-        if (tex) {
-            GLuint texID = loadTextureFromFile(tex);
-            if (texID) {
-                glEnable(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D, texID);
-            } else {
-                ensureWhiteTex();
-                glEnable(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D, whiteTex);
-            }
-        } else {
-            ensureWhiteTex();
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, whiteTex);
-        }
+    //     glActiveTexture(GL_TEXTURE0);
+    //     if (tex) {
+    //         GLuint texID = loadTextureFromFile(tex);
+    //         if (texID) {
+    //             glEnable(GL_TEXTURE_2D);
+    //             glBindTexture(GL_TEXTURE_2D, texID);
+    //         } else {
+    //             ensureWhiteTex();
+    //             glEnable(GL_TEXTURE_2D);
+    //             glBindTexture(GL_TEXTURE_2D, whiteTex);
+    //         }
+    //     } else {
+    //         ensureWhiteTex();
+    //         glEnable(GL_TEXTURE_2D);
+    //         glBindTexture(GL_TEXTURE_2D, whiteTex);
+    //     }
 
-        if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
-        if (currentShaderProg) {
-            glDisableVertexAttribArray(2);
-            glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
-        }
+    //     if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
+    //     if (currentShaderProg) {
+    //         glDisableVertexAttribArray(2);
+    //         glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+    //     }
 
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
+    //     glBindVertexArray(vao);
+    //     glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    //     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+    //     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    //     glBindVertexArray(0);
 
-        if (tex) {
-            glDisable(GL_TEXTURE_2D);
-        } else {
-            glDisable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
-        return;
-    }
+    //     if (tex) {
+    //         glDisable(GL_TEXTURE_2D);
+    //     } else {
+    //         glDisable(GL_TEXTURE_2D);
+    //         glBindTexture(GL_TEXTURE_2D, 0);
+    //     }
+    //     return;
+    // }
 
     DrawCommand cmd;
     cmd.type = CMD_SQUARE;
@@ -1704,83 +1904,83 @@ int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) con
 void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     if (!isVisible(cam_x, cam_y, cam_z)) return;
 
-    if (!g_useDrawQueue) {
-        const float dx = cam_x - x;
-        const float dy = cam_y - y;
-        const float dz = cam_z - z;
-        const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+    // if (!g_useDrawQueue) {
+    //     const float dx = cam_x - x;
+    //     const float dy = cam_y - y;
+    //     const float dz = cam_z - z;
+    //     const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
 
-        const int tidx = getTextureIndex(dx, dy, dz);
+    //     const int tidx = getTextureIndex(dx, dy, dz);
 
-        const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
-        const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
-        const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
+    //     const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
+    //     const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
+    //     const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
 
-        float wx = 0, wy = 1, wz = 0;
-        if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
-        float rx = wy * fz - wz * fy;
-        float ry = wz * fx - wx * fz;
-        float rz = wx * fy - wy * fx;
-        const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
-        if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+    //     float wx = 0, wy = 1, wz = 0;
+    //     if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+    //     float rx = wy * fz - wz * fy;
+    //     float ry = wz * fx - wx * fz;
+    //     float rz = wx * fy - wy * fx;
+    //     const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+    //     if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
 
-        const float ux = fy * rz - fz * ry;
-        const float uy = fz * rx - fx * rz;
-        const float uz = fx * ry - fy * rx;
+    //     const float ux = fy * rz - fz * ry;
+    //     const float uy = fz * rx - fx * rz;
+    //     const float uz = fx * ry - fy * rx;
 
-        const float mat[16] = {
-            rx, ry, rz, 0,
-            ux, uy, uz, 0,
-            fx, fy, fz, 0,
-            0,  0,  0,  1
-        };
+    //     const float mat[16] = {
+    //         rx, ry, rz, 0,
+    //         ux, uy, uz, 0,
+    //         fx, fy, fz, 0,
+    //         0,  0,  0,  1
+    //     };
 
-        const float ga = g_angle * float(M_PI) / 180.0f;
-        const float va = v_angle * float(M_PI) / 180.0f;
+    //     const float ga = g_angle * float(M_PI) / 180.0f;
+    //     const float va = v_angle * float(M_PI) / 180.0f;
 
-        float eu_x = -sinf(ga) * sinf(va);
-        float eu_y = -cosf(va);
-        float eu_z = -cosf(ga) * sinf(va);
+    //     float eu_x = -sinf(ga) * sinf(va);
+    //     float eu_y = -cosf(va);
+    //     float eu_z = -cosf(ga) * sinf(va);
 
-        float dot = eu_x * fx + eu_y * fy + eu_z * fz;
-        float pu_x = eu_x - dot * fx;
-        float pu_y = eu_y - dot * fy;
-        float pu_z = eu_z - dot * fz;
-        float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
+    //     float dot = eu_x * fx + eu_y * fy + eu_z * fz;
+    //     float pu_x = eu_x - dot * fx;
+    //     float pu_y = eu_y - dot * fy;
+    //     float pu_z = eu_z - dot * fz;
+    //     float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
 
-        if (plen < 0.01f) {
-            const float ef_x = cosf(va) * sinf(ga);
-            const float ef_y = -sinf(va);
-            const float ef_z = cosf(va) * cosf(ga);
-            const float d2 = ef_x * fx + ef_y * fy + ef_z * fz;
-            pu_x = ef_x - d2 * fx;
-            pu_y = ef_y - d2 * fy;
-            pu_z = ef_z - d2 * fz;
-        }
+    //     if (plen < 0.01f) {
+    //         const float ef_x = cosf(va) * sinf(ga);
+    //         const float ef_y = -sinf(va);
+    //         const float ef_z = cosf(va) * cosf(ga);
+    //         const float d2 = ef_x * fx + ef_y * fy + ef_z * fz;
+    //         pu_x = ef_x - d2 * fx;
+    //         pu_y = ef_y - d2 * fy;
+    //         pu_z = ef_z - d2 * fz;
+    //     }
 
-        float billboard_roll = atan2f(-(pu_x * rx + pu_y * ry + pu_z * rz),
-                                       pu_x * ux + pu_y * uy + pu_z * uz) * 180.0f / float(M_PI);
+    //     float billboard_roll = atan2f(-(pu_x * rx + pu_y * ry + pu_z * rz),
+    //                                    pu_x * ux + pu_y * uy + pu_z * uz) * 180.0f / float(M_PI);
 
-        float total_roll = billboard_roll + r_angle;
+    //     float total_roll = billboard_roll + r_angle;
 
-        const bool mirror = (tidx == 0);
-        const char* tex = (tidx >= 0 && tidx < (int)textureFiles.size()) ? textureFiles[tidx].c_str() : nullptr;
+    //     const bool mirror = (tidx == 0);
+    //     const char* tex = (tidx >= 0 && tidx < (int)textureFiles.size()) ? textureFiles[tidx].c_str() : nullptr;
 
-        if (currentShaderProg && loc_receiveShadows != -1)
-            glUniform1i(loc_receiveShadows, 0);
+    //     if (currentShaderProg && loc_receiveShadows != -1)
+    //         glUniform1i(loc_receiveShadows, 0);
 
-        glPushMatrix();
-        glTranslatef(x, y, z);
-        glMultMatrixf(mat);
-        glRotatef(total_roll + 180.0f, 0, 0, 1);
-        square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
-        glPopMatrix();
+    //     glPushMatrix();
+    //     glTranslatef(x, y, z);
+    //     glMultMatrixf(mat);
+    //     glRotatef(total_roll + 180.0f, 0, 0, 1);
+    //     square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
+    //     glPopMatrix();
 
-        if (currentShaderProg && loc_receiveShadows != -1)
-            glUniform1i(loc_receiveShadows, 1);
+    //     if (currentShaderProg && loc_receiveShadows != -1)
+    //         glUniform1i(loc_receiveShadows, 1);
 
-        return;
-    }
+    //     return;
+    // }
 
     DrawCommand cmd;
     cmd.type = CMD_PSEUDO3D;
@@ -2222,71 +2422,71 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 //              3д(может быть потом ещё что-то будет)
 // отрезок
 void draw_line_3d(float x, float y, float z, float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b, float a, float thickness) {
-    if (!g_useDrawQueue) {
-        registerShadowCasterLine(x, y, z, x1, y1, z1, x2, y2, z2, thickness, nullptr);
-        GLuint shader = defaultLightingShader;
-        useShader(shader);
+    // if (!g_useDrawQueue) {
+    //     registerShadowCasterLine(x, y, z, x1, y1, z1, x2, y2, z2, thickness, nullptr);
+    //     GLuint shader = defaultLightingShader;
+    //     useShader(shader);
 
-        // Сохраняем текущие настройки материала
-        GLboolean colorMaterialWasEnabled = glIsEnabled(GL_COLOR_MATERIAL);
-        GLint colorMaterialParam;
-        if (colorMaterialWasEnabled) {
-            glGetIntegerv(GL_COLOR_MATERIAL_PARAMETER, &colorMaterialParam);
-        }
+    //     // Сохраняем текущие настройки материала
+    //     GLboolean colorMaterialWasEnabled = glIsEnabled(GL_COLOR_MATERIAL);
+    //     GLint colorMaterialParam;
+    //     if (colorMaterialWasEnabled) {
+    //         glGetIntegerv(GL_COLOR_MATERIAL_PARAMETER, &colorMaterialParam);
+    //     }
 
-        // Включаем GL_COLOR_MATERIAL – цвет из glColor будет влиять на освещение
-        glEnable(GL_COLOR_MATERIAL);
-        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-        // Передаём цвет через glColor (он будет умножен на diffuse и ambient)
-        glColor4f(r, g, b, a);
+    //     // Включаем GL_COLOR_MATERIAL – цвет из glColor будет влиять на освещение
+    //     glEnable(GL_COLOR_MATERIAL);
+    //     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+    //     // Передаём цвет через glColor (он будет умножен на diffuse и ambient)
+    //     glColor4f(r, g, b, a);
 
-        // Отключаем нормаль (атрибут 2) – можно оставить фиктивную
-        glDisableVertexAttribArray(2);
-        glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f);
-        glDisableVertexAttribArray(8);
-        glVertexAttrib2f(8, 0.0f, 0.0f);
+    //     // Отключаем нормаль (атрибут 2) – можно оставить фиктивную
+    //     glDisableVertexAttribArray(2);
+    //     glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f);
+    //     glDisableVertexAttribArray(8);
+    //     glVertexAttrib2f(8, 0.0f, 0.0f);
 
-        // Временно отключаем источники света, чтобы не было лишних вычислений – но это уже отключение, что запрещено.
-        // Поскольку вы против отключения света, оставляем свет включённым.
-        // Однако, если цвет всё равно чёрный, причина в том, что нормаль (0,1,0) даёт вклад только от верхнего света.
-        // Исправим нормаль на направление к камере – это уже другое решение.
-        // Поэтому для чистоты варианта 2 – просто полагаемся на glColorMaterial и нормаль (0,1,0).
+    //     // Временно отключаем источники света, чтобы не было лишних вычислений – но это уже отключение, что запрещено.
+    //     // Поскольку вы против отключения света, оставляем свет включённым.
+    //     // Однако, если цвет всё равно чёрный, причина в том, что нормаль (0,1,0) даёт вклад только от верхнего света.
+    //     // Исправим нормаль на направление к камере – это уже другое решение.
+    //     // Поэтому для чистоты варианта 2 – просто полагаемся на glColorMaterial и нормаль (0,1,0).
 
-        float data[2 * 9] = {0};
-        data[0] = x1; data[1] = y1; data[2] = z1;
-        data[3] = r; data[4] = g; data[5] = b; data[6] = a;
-        data[7] = 0.0f; data[8] = 0.0f;
+    //     float data[2 * 9] = {0};
+    //     data[0] = x1; data[1] = y1; data[2] = z1;
+    //     data[3] = r; data[4] = g; data[5] = b; data[6] = a;
+    //     data[7] = 0.0f; data[8] = 0.0f;
 
-        data[9] = x2; data[10] = y2; data[11] = z2;
-        data[12] = r; data[13] = g; data[14] = b; data[15] = a;
-        data[16] = 0.0f; data[17] = 0.0f;
+    //     data[9] = x2; data[10] = y2; data[11] = z2;
+    //     data[12] = r; data[13] = g; data[14] = b; data[15] = a;
+    //     data[16] = 0.0f; data[17] = 0.0f;
 
-        glBindVertexArray(lineVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+    //     glBindVertexArray(lineVAO);
+    //     glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+    //     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
 
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, whiteTex);
-        GLint loc = glGetUniformLocation(shader, "tex");
-        if (loc != -1) glUniform1i(loc, 0);
+    //     glActiveTexture(GL_TEXTURE0);
+    //     glBindTexture(GL_TEXTURE_2D, whiteTex);
+    //     GLint loc = glGetUniformLocation(shader, "tex");
+    //     if (loc != -1) glUniform1i(loc, 0);
 
-        glPushMatrix();
-        glTranslatef(x, y, z);
-        glLineWidth(thickness);
-        glDrawArrays(GL_LINES, 0, 2);
-        glLineWidth(1.0f);
-        glPopMatrix();
+    //     glPushMatrix();
+    //     glTranslatef(x, y, z);
+    //     glLineWidth(thickness);
+    //     glDrawArrays(GL_LINES, 0, 2);
+    //     glLineWidth(1.0f);
+    //     glPopMatrix();
 
-        // Восстанавливаем состояние GL_COLOR_MATERIAL
-        if (colorMaterialWasEnabled) {
-            glColorMaterial(GL_FRONT_AND_BACK, colorMaterialParam);
-        } else {
-            glDisable(GL_COLOR_MATERIAL);
-        }
+    //     // Восстанавливаем состояние GL_COLOR_MATERIAL
+    //     if (colorMaterialWasEnabled) {
+    //         glColorMaterial(GL_FRONT_AND_BACK, colorMaterialParam);
+    //     } else {
+    //         glDisable(GL_COLOR_MATERIAL);
+    //     }
 
-        glBindVertexArray(0);
-        return;
-    }
+    //     glBindVertexArray(0);
+    //     return;
+    // }
 
     // Добавление в очередь
     DrawCommand cmd;
@@ -2318,98 +2518,98 @@ void draw3DObject(float cx, float cy, float cz,
     }
     float radius = sqrtf(maxDist);
 
-    if (!g_useDrawQueue) {
-        // --- немедленный рендеринг (для порталов) ---
-        if (vao3D == 0) {
-            glGenVertexArrays(1, &vao3D);
-        }
-        size_t numVerts = vertices.size() / 3;
-        if (numVerts == 0 || indices.empty()) return;
+    // if (!g_useDrawQueue) {
+    //     // --- немедленный рендеринг (для порталов) ---
+    //     if (vao3D == 0) {
+    //         glGenVertexArrays(1, &vao3D);
+    //     }
+    //     size_t numVerts = vertices.size() / 3;
+    //     if (numVerts == 0 || indices.empty()) return;
 
-        const bool hasTex = (tex != nullptr && !texcoords.empty());
-        std::vector<float> uv;
-        const float* uvPtr;
-        if (hasTex) {
-            uvPtr = texcoords.data();
-        } else {
-            uv.assign(numVerts * 2, 0.0f);
-            uvPtr = uv.data();
-        }
+    //     const bool hasTex = (tex != nullptr && !texcoords.empty());
+    //     std::vector<float> uv;
+    //     const float* uvPtr;
+    //     if (hasTex) {
+    //         uvPtr = texcoords.data();
+    //     } else {
+    //         uv.assign(numVerts * 2, 0.0f);
+    //         uvPtr = uv.data();
+    //     }
 
-        size_t posBytes = vertices.size() * sizeof(float);
-        ensureBuffer(vbo_pos, cap_pos, posBytes, GL_ARRAY_BUFFER);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, posBytes, vertices.data());
+    //     size_t posBytes = vertices.size() * sizeof(float);
+    //     ensureBuffer(vbo_pos, cap_pos, posBytes, GL_ARRAY_BUFFER);
+    //     glBufferSubData(GL_ARRAY_BUFFER, 0, posBytes, vertices.data());
 
-        bool hasNormals = !normals.empty();
-        if (hasNormals) {
-            size_t normBytes = normals.size() * sizeof(float);
-            ensureBuffer(vbo_norm, cap_norm, normBytes, GL_ARRAY_BUFFER);
-            glBufferSubData(GL_ARRAY_BUFFER, 0, normBytes, normals.data());
-        }
+    //     bool hasNormals = !normals.empty();
+    //     if (hasNormals) {
+    //         size_t normBytes = normals.size() * sizeof(float);
+    //         ensureBuffer(vbo_norm, cap_norm, normBytes, GL_ARRAY_BUFFER);
+    //         glBufferSubData(GL_ARRAY_BUFFER, 0, normBytes, normals.data());
+    //     }
 
-        size_t uvBytes = numVerts * 2 * sizeof(float);
-        ensureBuffer(vbo_uv, cap_uv, uvBytes, GL_ARRAY_BUFFER);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, uvBytes, uvPtr);
+    //     size_t uvBytes = numVerts * 2 * sizeof(float);
+    //     ensureBuffer(vbo_uv, cap_uv, uvBytes, GL_ARRAY_BUFFER);
+    //     glBufferSubData(GL_ARRAY_BUFFER, 0, uvBytes, uvPtr);
 
-        size_t idxBytes = indices.size() * sizeof(int);
-        ensureBuffer(ibo, cap_idx, idxBytes, GL_ELEMENT_ARRAY_BUFFER);
-        glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, indices.data());
+    //     size_t idxBytes = indices.size() * sizeof(int);
+    //     ensureBuffer(ibo, cap_idx, idxBytes, GL_ELEMENT_ARRAY_BUFFER);
+    //     glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, indices.data());
 
-        glBindVertexArray(vao3D);
+    //     glBindVertexArray(vao3D);
 
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    //     glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
+    //     glEnableVertexAttribArray(0);
+    //     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-        if (hasNormals) {
-            glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
-            glEnableVertexAttribArray(2);
-            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-        } else {
-            glDisableVertexAttribArray(2);
-            glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
-        }
+    //     if (hasNormals) {
+    //         glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
+    //         glEnableVertexAttribArray(2);
+    //         glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    //     } else {
+    //         glDisableVertexAttribArray(2);
+    //         glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
+    //     }
 
-        glDisableVertexAttribArray(3);
-        glVertexAttrib3f(3, (float)r, (float)g, (float)b);
+    //     glDisableVertexAttribArray(3);
+    //     glVertexAttrib3f(3, (float)r, (float)g, (float)b);
 
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_uv);
-        glEnableVertexAttribArray(8);
-        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+    //     glBindBuffer(GL_ARRAY_BUFFER, vbo_uv);
+    //     glEnableVertexAttribArray(8);
+    //     glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    //     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
 
-        ensureWhiteTex();
-        if (tex) {
-            GLuint texID = loadTextureFromFile(tex);
-            if (texID) {
-                glEnable(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D, texID);
-            } else {
-                glEnable(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D, whiteTex);
-            }
-        } else {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, whiteTex);
-        }
+    //     ensureWhiteTex();
+    //     if (tex) {
+    //         GLuint texID = loadTextureFromFile(tex);
+    //         if (texID) {
+    //             glEnable(GL_TEXTURE_2D);
+    //             glBindTexture(GL_TEXTURE_2D, texID);
+    //         } else {
+    //             glEnable(GL_TEXTURE_2D);
+    //             glBindTexture(GL_TEXTURE_2D, whiteTex);
+    //         }
+    //     } else {
+    //         glEnable(GL_TEXTURE_2D);
+    //         glBindTexture(GL_TEXTURE_2D, whiteTex);
+    //     }
 
-        if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
+    //     if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
 
-        glPushMatrix();
-        glTranslatef(cx, cy, cz);
-        glDrawElements(GL_TRIANGLES, (GLsizei)indices.size(), GL_UNSIGNED_INT, nullptr);
-        glPopMatrix();
+    //     glPushMatrix();
+    //     glTranslatef(cx, cy, cz);
+    //     glDrawElements(GL_TRIANGLES, (GLsizei)indices.size(), GL_UNSIGNED_INT, nullptr);
+    //     glPopMatrix();
 
-        if (tex) {
-            glDisable(GL_TEXTURE_2D);
-        } else {
-            glDisable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
-        glBindVertexArray(0);
-        return;
-    }
+    //     if (tex) {
+    //         glDisable(GL_TEXTURE_2D);
+    //     } else {
+    //         glDisable(GL_TEXTURE_2D);
+    //         glBindTexture(GL_TEXTURE_2D, 0);
+    //     }
+    //     glBindVertexArray(0);
+    //     return;
+    // }
 
     DrawCommand cmd;
     cmd.type = CMD_3DOBJECT;
@@ -2827,6 +3027,7 @@ sphere_panorama sphere_sky;
 static GLuint skybox_list = 0; 
 void set_panorama(const char* path) {
     if (sphere_sky.enabled) remove_panorama();
+
     sphere_sky.texture = SOIL_load_OGL_texture(
         path,
         SOIL_LOAD_AUTO,
@@ -2834,70 +3035,101 @@ void set_panorama(const char* path) {
         SOIL_FLAG_MIPMAPS | SOIL_FLAG_INVERT_Y | SOIL_FLAG_COMPRESS_TO_DXT
     );
 
-    if (sphere_sky.texture == 0) {
-        printf("ERROR: Could not load texture from %s. Reason: %s\n", path, SOIL_last_result());
-        system("pwd"); 
-        return;
-    }
+    if (sphere_sky.texture == 0) return;
 
     glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x812F); 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, 0x812F);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    skybox_list = glGenLists(1);
-    glNewList(skybox_list, GL_COMPILE);
-        float radius = 180.0f;
-        int stacks = 32, slices = 32;
-        for (int i = 0; i < stacks; i++) {
-            float lat0 = M_PI * (-0.5f + (float)i / stacks);
-            float z0 = sin(lat0), zr0 = cos(lat0);
-            float lat1 = M_PI * (-0.5f + (float)(i + 1) / stacks);
-            float z1 = sin(lat1), zr1 = cos(lat1);
-            glBegin(GL_QUAD_STRIP);
-            for (int j = 0; j <= slices; j++) {
-                float lng = 2 * M_PI * (float)j / slices;
-                float x = cos(lng), y = sin(lng);
-                glTexCoord2f((float)j / slices, (float)i / stacks);
-                glVertex3f(x * zr0 * radius, y * zr0 * radius, z0 * radius);
-                glTexCoord2f((float)j / slices, (float)(i + 1) / stacks);
-                glVertex3f(x * zr1 * radius, y * zr1 * radius, z1 * radius);
-            }
-            glEnd();
+    float radius = 180.0f;
+    int stacks = 32, slices = 32;
+
+    std::vector<float> vertices;
+    std::vector<float> texcoords;
+    std::vector<float> colors;
+    std::vector<unsigned int> indices;
+
+    for (int i = 0; i <= stacks; ++i) {
+        float lat0 = M_PI * (-0.5f + (float)i / stacks);
+        float z0 = sin(lat0), zr0 = cos(lat0);
+        for (int j = 0; j <= slices; ++j) {
+            float lng = 2.0f * M_PI * (float)j / slices;
+            float x = cos(lng), y = sin(lng);
+            vertices.push_back(x * zr0 * radius);
+            vertices.push_back(y * zr0 * radius);
+            vertices.push_back(z0 * radius);
+            texcoords.push_back((float)j / slices);
+            texcoords.push_back((float)i / stacks);
+            colors.push_back(1.0f); colors.push_back(1.0f); colors.push_back(1.0f); colors.push_back(1.0f);
         }
-    glEndList();
+    }
+
+    for (int i = 0; i < stacks; ++i) {
+        for (int j = 0; j < slices; ++j) {
+            unsigned int first = i * (slices + 1) + j;
+            unsigned int second = first + slices + 1;
+            indices.push_back(first);
+            indices.push_back(second);
+            indices.push_back(first + 1);
+            indices.push_back(second);
+            indices.push_back(second + 1);
+            indices.push_back(first + 1);
+        }
+    }
+
+    skyboxIndexCount = (int)indices.size();
+
+    glGenVertexArrays(1, &skyboxVAO);
+    glGenBuffers(1, &skyboxVBO);
+    glGenBuffers(1, &skyboxIBO);
+
+    glBindVertexArray(skyboxVAO);
+
+    glBindBuffer(GL_ARRAY_BUFFER, skyboxVBO);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    GLuint texVBO;
+    glGenBuffers(1, &texVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, texVBO);
+    glBufferData(GL_ARRAY_BUFFER, texcoords.size() * sizeof(float), texcoords.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    GLuint colVBO;
+    glGenBuffers(1, &colVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, colVBO);
+    glBufferData(GL_ARRAY_BUFFER, colors.size() * sizeof(float), colors.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, skyboxIBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+
+    glBindVertexArray(0);
+    glDeleteBuffers(1, &texVBO);
+    glDeleteBuffers(1, &colVBO);
+
     sphere_sky.enabled = true;
     sphere_sky.path = path;
-    printf("Panorama loaded successfully: %s\n", path);
 }
-void remove_panorama(){
-    if (sphere_sky.enabled) {
-        glDeleteTextures(1, &sphere_sky.texture);
-        glDeleteLists(skybox_list, 1);
-        sphere_sky.enabled = false;
-    }
+void remove_panorama() {
+    if (!sphere_sky.enabled) return;
+    glDeleteTextures(1, &sphere_sky.texture);
+    if (skyboxVAO) { glDeleteVertexArrays(1, &skyboxVAO); skyboxVAO = 0; }
+    if (skyboxVBO) { glDeleteBuffers(1, &skyboxVBO); skyboxVBO = 0; }
+    if (skyboxIBO) { glDeleteBuffers(1, &skyboxIBO); skyboxIBO = 0; }
+    skyboxIndexCount = 0;
+    sphere_sky.enabled = false;
 }
-void draw_panorama(float camX, float camY, float camZ){
-    if (!sphere_sky.enabled || sphere_sky.texture == 0) return;
-    
-    GLuint prevShader = currentShaderProg;
-    if (prevShader) stopShader();
-
-    glPushAttrib(GL_ALL_ATTRIB_BITS); 
-    glDisable(GL_LIGHTING);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_FOG);         
-    glDepthMask(GL_FALSE);
-    glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
-    glColor4f(1, 1, 1, 1);     
-    glPushMatrix();
-    glTranslatef(camX, camY, camZ);
-    glRotatef(90, 1, 0, 0); 
-    glCallList(skybox_list); 
-    glPopMatrix();
-    glPopAttrib();
-
-    if (prevShader) useShader(prevShader);
+void draw_panorama(float camX, float camY, float camZ) {
+    if (!sphere_sky.enabled || sphere_sky.texture == 0 || skyboxVAO == 0) return;
+    DrawCommand cmd;
+    cmd.type = CMD_PANORAMA;
+    cmd.obj_cx = camX; cmd.obj_cy = camY; cmd.obj_cz = camZ;
+    std::lock_guard<std::mutex> lock(drawQueueMutex);
+    drawQueue.push_back(cmd);
 }
 //порталы
 Portal::Portal(float ax, float ay, float az,
@@ -2912,11 +3144,48 @@ Portal::Portal(float ax, float ay, float az,
     , yawB(yawB), pitchB(pitchB), rollB(rollB)
 {
     initFBOs(window_w > 0 ? window_w : 800, window_h > 0 ? window_h : 600);
+
+    int n = (int)vertices.size() / 3;
+    if (n >= 4) {
+        std::vector<float> vboData = {
+            vertices[0], vertices[1], vertices[2],      0,0,1,   0,0,
+            vertices[3], vertices[4], vertices[5],      0,0,1,   1,0,
+            vertices[6], vertices[7], vertices[8],      0,0,1,   1,1,
+            vertices[9], vertices[10], vertices[11],    0,0,1,   0,1
+        };
+        std::vector<unsigned int> indices = { 0,1,2, 0,2,3 };
+        portalIndexCount = (int)indices.size();
+
+        glGenVertexArrays(1, &portalVAO);
+        glGenBuffers(1, &portalVBO);
+        GLuint portalIBO;
+        glGenBuffers(1, &portalIBO);
+
+        glBindVertexArray(portalVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, portalVBO);
+        glBufferData(GL_ARRAY_BUFFER, vboData.size() * sizeof(float), vboData.data(), GL_STATIC_DRAW);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, portalIBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+
+        glBindVertexArray(0);
+        glDeleteBuffers(1, &portalIBO);
+    }
+
     allPortals.push_back(this);
 }
 
 Portal::~Portal() {
     destroyFBOs();
+    if (portalVAO) glDeleteVertexArrays(1, &portalVAO);
+    if (portalVBO) glDeleteBuffers(1, &portalVBO);
     auto it = std::find(allPortals.begin(), allPortals.end(), this);
     if (it != allPortals.end()) allPortals.erase(it);
 }
@@ -3066,17 +3335,15 @@ static void portalClearUniforms(GLuint prog) {
 }
 
 void Portal::drawPortalSurface(float px, float py, float pz, GLuint tex, bool sideB) {
-    int n = (int)vertices.size() / 3;
-    if (n < 3) return;
+    if (portalIndexCount == 0 || portalVAO == 0) return;
 
     GLuint prog = currentShaderProg ? currentShaderProg : defaultLightingShader;
-
-    glDisable(GL_CULL_FACE);
-
     portalSetUniforms(prog, tex, false);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_FALSE);
     glDepthFunc(GL_LEQUAL);
+
+    glDisable(GL_CULL_FACE);
 
     glPushMatrix();
     glTranslatef(px, py, pz);
@@ -3090,11 +3357,12 @@ void Portal::drawPortalSurface(float px, float py, float pz, GLuint tex, bool si
         glRotatef(rollA,  0.0f, 0.0f, 1.0f);
     }
 
-    glBegin(GL_TRIANGLE_FAN);
-    for (int i = 0; i < n; i++)
-        glVertex3f(vertices[i*3], vertices[i*3+1], vertices[i*3+2]);
-    glEnd();
+    glBindVertexArray(portalVAO);
+    glDrawElements(GL_TRIANGLES, portalIndexCount, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
     glPopMatrix();
+
+    glEnable(GL_CULL_FACE);
 
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);
@@ -3104,6 +3372,8 @@ void Portal::drawPortalSurface(float px, float py, float pz, GLuint tex, bool si
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
     glDepthMask(GL_TRUE);
 
+    glDisable(GL_CULL_FACE);
+
     glPushMatrix();
     glTranslatef(px, py, pz);
     if (sideB) {
@@ -3116,116 +3386,24 @@ void Portal::drawPortalSurface(float px, float py, float pz, GLuint tex, bool si
         glRotatef(rollA,  0.0f, 0.0f, 1.0f);
     }
 
-    glBegin(GL_TRIANGLE_FAN);
-    for (int i = 0; i < n; i++)
-        glVertex3f(vertices[i*3], vertices[i*3+1], vertices[i*3+2]);
-    glEnd();
+    glBindVertexArray(portalVAO);
+    glDrawElements(GL_TRIANGLES, portalIndexCount, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
     glPopMatrix();
+
+    glEnable(GL_CULL_FACE);
 
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     portalClearUniforms(prog);
-
-    glEnable(GL_CULL_FACE);
-}
-
-void Portal::renderThroughPortal(float src_x, float src_y, float src_z,
-                                  float dst_x, float dst_y, float dst_z,
-                                  int depth, bool drawingA){
-    if (!sceneDraw) return;
-
-    FBO& fbo = drawingA ? fboA : fboB;
-    resizeFBOs(window_w > 0 ? window_w : 800, window_h > 0 ? window_h : 600);
-
-    glm::mat4 portalMat = getPortalTransform(src_x, src_y, src_z, dst_x, dst_y, dst_z);
-
-    glm::vec3 camPos = glm::vec3(portalMat * glm::vec4(camera.eye_x, camera.eye_y, camera.eye_z, 1.0f));
-    glm::vec3 newDir = glm::normalize(glm::mat3(portalMat) * glm::vec3(camera.dir_x, camera.dir_y, camera.dir_z));
-    float new_pitch = glm::degrees(asinf(newDir.y));
-    float new_yaw   = glm::degrees(atan2f(newDir.x, newDir.z));
-
-    glm::vec3 dstNorm = portalNormal(dst_x, dst_y, dst_z, !drawingA);
-    int n = vertices.size() / 3;
-    glm::vec3 dstCenter(0,0,0);
-    for (int i = 0; i < n; i++)
-        dstCenter += glm::vec3(dst_x + vertices[i*3], dst_y + vertices[i*3+1], dst_z + vertices[i*3+2]);
-    dstCenter /= (float)n;
-
-    GLdouble clipPlane[4] = {
-        (GLdouble)dstNorm.x,
-        (GLdouble)dstNorm.y,
-        (GLdouble)dstNorm.z,
-        -(GLdouble)glm::dot(dstNorm, dstCenter)
-    };
-
-    float savedEyeX = camera.eye_x, savedEyeY = camera.eye_y, savedEyeZ = camera.eye_z;
-    float savedCtrX = camera.ctr_x, savedCtrY = camera.ctr_y, savedCtrZ = camera.ctr_z;
-    float savedDirX = camera.dir_x, savedDirY = camera.dir_y, savedDirZ = camera.dir_z;
-    float savedUpX = camera.up_x, savedUpY = camera.up_y, savedUpZ = camera.up_z;
-    float savedPitch = camera.pitch, savedYaw = camera.yaw;
-
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo.fbo);
-    glViewport(0, 0, fbo.w, fbo.h);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    camera.eye_x = camPos.x; camera.eye_y = camPos.y; camera.eye_z = camPos.z;
-    camera.dir_x = newDir.x; camera.dir_y = newDir.y; camera.dir_z = newDir.z;
-    camera.ctr_x = camPos.x + newDir.x;
-    camera.ctr_y = camPos.y + newDir.y;
-    camera.ctr_z = camPos.z + newDir.z;
-    camera.pitch = new_pitch;
-    camera.yaw   = new_yaw;
-
-    glMatrixMode(GL_MODELVIEW);
-    glPushMatrix();
-    glLoadIdentity();
-    gluLookAt(camPos.x, camPos.y, camPos.z,
-              camera.ctr_x, camera.ctr_y, camera.ctr_z,
-              camera.up_x, camera.up_y, camera.up_z);
-
-    glEnable(GL_CLIP_PLANE0);
-    glClipPlane(GL_CLIP_PLANE0, clipPlane);
-
-    bool prevQueue = g_useDrawQueue;
-    g_useDrawQueue = false;
-
-    GLuint shaderToUse = currentShaderProg ? currentShaderProg : defaultLightingShader;
-    useShader(shaderToUse);
-    applyAllLights();
-    applyAllShadows();
-
-    sceneDraw();
-
-    stopShader();
-
-    g_useDrawQueue = prevQueue;
-
-    glDisable(GL_CLIP_PLANE0);
-    glPopMatrix();
-
-    camera.eye_x = savedEyeX; camera.eye_y = savedEyeY; camera.eye_z = savedEyeZ;
-    camera.ctr_x = savedCtrX; camera.ctr_y = savedCtrY; camera.ctr_z = savedCtrZ;
-    camera.dir_x = savedDirX; camera.dir_y = savedDirY; camera.dir_z = savedDirZ;
-    camera.up_x = savedUpX; camera.up_y = savedUpY; camera.up_z = savedUpZ;
-    camera.pitch = savedPitch; camera.yaw = savedYaw;
-
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    gluLookAt(savedEyeX, savedEyeY, savedEyeZ,
-              savedEyeX + savedDirX, savedEyeY + savedDirY, savedEyeZ + savedDirZ,
-              savedUpX, savedUpY, savedUpZ);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, window_w, window_h);
 }
 
 void Portal::draw(int recursion_depth) {
-    resizeFBOs(window_w > 0 ? window_w : 800, window_h > 0 ? window_h : 600);
-
-    renderThroughPortal(ax, ay, az, bx, by, bz, recursion_depth, false);
-    drawPortalSurface(ax, ay, az, fboB.colorTex, false);
-
-    renderThroughPortal(bx, by, bz, ax, ay, az, recursion_depth, true);
-    drawPortalSurface(bx, by, bz, fboA.colorTex, true);
+    DrawCommand cmd;
+    cmd.type = CMD_PORTAL;
+    cmd.portal = this;
+    cmd.obj_cx = (float)recursion_depth;
+    std::lock_guard<std::mutex> lock(drawQueueMutex);
+    drawQueue.push_back(cmd);
 }
 
 void Portal::checkTeleport() {

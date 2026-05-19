@@ -224,6 +224,8 @@ public:
     void checkTeleport();
 
 private:
+    friend void flushDrawQueue();
+
     struct FBO {
         GLuint fbo = 0;
         GLuint colorTex = 0;
@@ -239,13 +241,14 @@ private:
                                   float tx, float ty, float tz) const;
     glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
 
-    void renderThroughPortal(float src_x, float src_y, float src_z,
-                              float dst_x, float dst_y, float dst_z,
-                              int depth, bool drawingA);
     void drawPortalSurface(float px, float py, float pz, GLuint tex, bool sideB);
 
     FBO fboA, fboB;
     std::function<void()> sceneDraw;
+
+    GLuint portalVAO = 0;
+    GLuint portalVBO = 0;
+    int portalIndexCount = 0;
 
     glm::vec3 prevCamPos = glm::vec3(0.0f);  
     float prevSignedDist = 0.0f;              
