@@ -593,8 +593,6 @@ struct DrawCommand {
     Portal* portal = nullptr;
 };
 
-// bool g_useDrawQueue = true;
-
 static GLuint skyboxVAO = 0, skyboxVBO = 0, skyboxIBO = 0;
 static int skyboxIndexCount = 0;
 
@@ -1648,40 +1646,6 @@ static void enableTex(const char* file){
 //              простые 2д фигуры
 // отрезок
 void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness) {
-    // if (!g_useDrawQueue) {
-    //     // Немедленный рендеринг (для порталов)
-
-    //     GLuint shader = simple2DShader;
-    //     useShader(shader);
-    //     glDisableVertexAttribArray(2);
-    //     glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
-
-    //     float data[2 * 9] = {0};
-    //     data[0] = x + x1; data[1] = y + y1; data[2] = 0.0f;
-    //     data[3] = r; data[4] = g; data[5] = b; data[6] = a;
-    //     data[7] = 0.0f; data[8] = 0.0f;
-
-    //     data[9] = x + x2; data[10] = y + y2; data[11] = 0.0f;
-    //     data[12] = r; data[13] = g; data[14] = b; data[15] = a;
-    //     data[16] = 0.0f; data[17] = 0.0f;
-
-    //     glBindVertexArray(lineVAO);
-    //     glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-    //     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-
-    //     glActiveTexture(GL_TEXTURE0);
-    //     glBindTexture(GL_TEXTURE_2D, whiteTex);
-    //     GLint loc = glGetUniformLocation(shader, "tex");
-    //     if (loc != -1) glUniform1i(loc, 0);
-
-    //     glLineWidth(thickness);
-    //     glDrawArrays(GL_LINES, 0, 2);
-    //     glLineWidth(1.0f);
-    //     glBindVertexArray(0);
-    //     return;
-    // }
-
-    // Добавление в очередь (без изменений)
     DrawCommand cmd;
     cmd.type = CMD_LINE_2D;
     cmd.verts[0] = x + x1; cmd.verts[1] = y + y1;
@@ -1694,89 +1658,6 @@ void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, floa
 // квадрат
 void square(float local_size, float x, float y, double r, double g, double b,
             float rotate, const float* vertices, const char* tex) {
-    // if (!g_useDrawQueue) {
-    //     static GLuint vao = 0, vbo = 0, ibo = 0;
-    //     static bool init = false;
-    //     if (!init) {
-    //         init = true;
-    //         glGenVertexArrays(1, &vao);
-    //         glGenBuffers(1, &vbo);
-    //         glGenBuffers(1, &ibo);
-
-    //         glBindVertexArray(vao);
-    //         glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    //         glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-
-    //         glEnableVertexAttribArray(0);
-    //         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
-    //         glEnableVertexAttribArray(3);
-    //         glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
-    //         glEnableVertexAttribArray(8);
-    //         glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
-
-    //         GLuint indices[6] = {0, 1, 2, 0, 2, 3};
-    //         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-    //         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-    //         glBindVertexArray(0);
-    //         ensureWhiteTex();
-    //     }
-
-    //     const float ar = rotate * float(M_PI) / -180.0f;
-    //     const float tc[8] = {0,1, 1,1, 1,0, 0,0};
-
-    //     float data[28];
-    //     for (int i = 0; i < 4; ++i) {
-    //         float px = vertices[i*2], py = vertices[i*2+1];
-    //         rotatePoint(px, py, 0, 0, ar);
-    //         float vx = x + px * local_size;
-    //         float vy = y + py * local_size;
-    //         data[i*7 + 0] = vx;
-    //         data[i*7 + 1] = vy;
-    //         data[i*7 + 2] = (float)r;
-    //         data[i*7 + 3] = (float)g;
-    //         data[i*7 + 4] = (float)b;
-    //         data[i*7 + 5] = tc[i*2];
-    //         data[i*7 + 6] = tc[i*2+1];
-    //     }
-
-    //     glActiveTexture(GL_TEXTURE0);
-    //     if (tex) {
-    //         GLuint texID = loadTextureFromFile(tex);
-    //         if (texID) {
-    //             glEnable(GL_TEXTURE_2D);
-    //             glBindTexture(GL_TEXTURE_2D, texID);
-    //         } else {
-    //             ensureWhiteTex();
-    //             glEnable(GL_TEXTURE_2D);
-    //             glBindTexture(GL_TEXTURE_2D, whiteTex);
-    //         }
-    //     } else {
-    //         ensureWhiteTex();
-    //         glEnable(GL_TEXTURE_2D);
-    //         glBindTexture(GL_TEXTURE_2D, whiteTex);
-    //     }
-
-    //     if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
-    //     if (currentShaderProg) {
-    //         glDisableVertexAttribArray(2);
-    //         glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
-    //     }
-
-    //     glBindVertexArray(vao);
-    //     glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    //     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-    //     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-    //     glBindVertexArray(0);
-
-    //     if (tex) {
-    //         glDisable(GL_TEXTURE_2D);
-    //     } else {
-    //         glDisable(GL_TEXTURE_2D);
-    //         glBindTexture(GL_TEXTURE_2D, 0);
-    //     }
-    //     return;
-    // }
-
     DrawCommand cmd;
     cmd.type = CMD_SQUARE;
     cmd.scale = local_size;
@@ -1903,85 +1784,6 @@ int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) con
 // рисуем сущность
 void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
     if (!isVisible(cam_x, cam_y, cam_z)) return;
-
-    // if (!g_useDrawQueue) {
-    //     const float dx = cam_x - x;
-    //     const float dy = cam_y - y;
-    //     const float dz = cam_z - z;
-    //     const float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-
-    //     const int tidx = getTextureIndex(dx, dy, dz);
-
-    //     const float fx = (dist > 1e-4f) ? dx / dist : 0.0f;
-    //     const float fy = (dist > 1e-4f) ? dy / dist : 1.0f;
-    //     const float fz = (dist > 1e-4f) ? dz / dist : 0.0f;
-
-    //     float wx = 0, wy = 1, wz = 0;
-    //     if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
-    //     float rx = wy * fz - wz * fy;
-    //     float ry = wz * fx - wx * fz;
-    //     float rz = wx * fy - wy * fx;
-    //     const float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
-    //     if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
-
-    //     const float ux = fy * rz - fz * ry;
-    //     const float uy = fz * rx - fx * rz;
-    //     const float uz = fx * ry - fy * rx;
-
-    //     const float mat[16] = {
-    //         rx, ry, rz, 0,
-    //         ux, uy, uz, 0,
-    //         fx, fy, fz, 0,
-    //         0,  0,  0,  1
-    //     };
-
-    //     const float ga = g_angle * float(M_PI) / 180.0f;
-    //     const float va = v_angle * float(M_PI) / 180.0f;
-
-    //     float eu_x = -sinf(ga) * sinf(va);
-    //     float eu_y = -cosf(va);
-    //     float eu_z = -cosf(ga) * sinf(va);
-
-    //     float dot = eu_x * fx + eu_y * fy + eu_z * fz;
-    //     float pu_x = eu_x - dot * fx;
-    //     float pu_y = eu_y - dot * fy;
-    //     float pu_z = eu_z - dot * fz;
-    //     float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
-
-    //     if (plen < 0.01f) {
-    //         const float ef_x = cosf(va) * sinf(ga);
-    //         const float ef_y = -sinf(va);
-    //         const float ef_z = cosf(va) * cosf(ga);
-    //         const float d2 = ef_x * fx + ef_y * fy + ef_z * fz;
-    //         pu_x = ef_x - d2 * fx;
-    //         pu_y = ef_y - d2 * fy;
-    //         pu_z = ef_z - d2 * fz;
-    //     }
-
-    //     float billboard_roll = atan2f(-(pu_x * rx + pu_y * ry + pu_z * rz),
-    //                                    pu_x * ux + pu_y * uy + pu_z * uz) * 180.0f / float(M_PI);
-
-    //     float total_roll = billboard_roll + r_angle;
-
-    //     const bool mirror = (tidx == 0);
-    //     const char* tex = (tidx >= 0 && tidx < (int)textureFiles.size()) ? textureFiles[tidx].c_str() : nullptr;
-
-    //     if (currentShaderProg && loc_receiveShadows != -1)
-    //         glUniform1i(loc_receiveShadows, 0);
-
-    //     glPushMatrix();
-    //     glTranslatef(x, y, z);
-    //     glMultMatrixf(mat);
-    //     glRotatef(total_roll + 180.0f, 0, 0, 1);
-    //     square(1.0f, 0, 0, 1, 1, 1, mirror ? -180.0f : 0.0f, vertices_.data(), tex);
-    //     glPopMatrix();
-
-    //     if (currentShaderProg && loc_receiveShadows != -1)
-    //         glUniform1i(loc_receiveShadows, 1);
-
-    //     return;
-    // }
-
     DrawCommand cmd;
     cmd.type = CMD_PSEUDO3D;
     cmd.entity = this;
@@ -2422,73 +2224,7 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 //              3д(может быть потом ещё что-то будет)
 // отрезок
 void draw_line_3d(float x, float y, float z, float x1, float y1, float z1, float x2, float y2, float z2, float r, float g, float b, float a, float thickness) {
-    // if (!g_useDrawQueue) {
-    //     registerShadowCasterLine(x, y, z, x1, y1, z1, x2, y2, z2, thickness, nullptr);
-    //     GLuint shader = defaultLightingShader;
-    //     useShader(shader);
 
-    //     // Сохраняем текущие настройки материала
-    //     GLboolean colorMaterialWasEnabled = glIsEnabled(GL_COLOR_MATERIAL);
-    //     GLint colorMaterialParam;
-    //     if (colorMaterialWasEnabled) {
-    //         glGetIntegerv(GL_COLOR_MATERIAL_PARAMETER, &colorMaterialParam);
-    //     }
-
-    //     // Включаем GL_COLOR_MATERIAL – цвет из glColor будет влиять на освещение
-    //     glEnable(GL_COLOR_MATERIAL);
-    //     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-    //     // Передаём цвет через glColor (он будет умножен на diffuse и ambient)
-    //     glColor4f(r, g, b, a);
-
-    //     // Отключаем нормаль (атрибут 2) – можно оставить фиктивную
-    //     glDisableVertexAttribArray(2);
-    //     glVertexAttrib3f(2, 0.0f, 1.0f, 0.0f);
-    //     glDisableVertexAttribArray(8);
-    //     glVertexAttrib2f(8, 0.0f, 0.0f);
-
-    //     // Временно отключаем источники света, чтобы не было лишних вычислений – но это уже отключение, что запрещено.
-    //     // Поскольку вы против отключения света, оставляем свет включённым.
-    //     // Однако, если цвет всё равно чёрный, причина в том, что нормаль (0,1,0) даёт вклад только от верхнего света.
-    //     // Исправим нормаль на направление к камере – это уже другое решение.
-    //     // Поэтому для чистоты варианта 2 – просто полагаемся на glColorMaterial и нормаль (0,1,0).
-
-    //     float data[2 * 9] = {0};
-    //     data[0] = x1; data[1] = y1; data[2] = z1;
-    //     data[3] = r; data[4] = g; data[5] = b; data[6] = a;
-    //     data[7] = 0.0f; data[8] = 0.0f;
-
-    //     data[9] = x2; data[10] = y2; data[11] = z2;
-    //     data[12] = r; data[13] = g; data[14] = b; data[15] = a;
-    //     data[16] = 0.0f; data[17] = 0.0f;
-
-    //     glBindVertexArray(lineVAO);
-    //     glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-    //     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-
-    //     glActiveTexture(GL_TEXTURE0);
-    //     glBindTexture(GL_TEXTURE_2D, whiteTex);
-    //     GLint loc = glGetUniformLocation(shader, "tex");
-    //     if (loc != -1) glUniform1i(loc, 0);
-
-    //     glPushMatrix();
-    //     glTranslatef(x, y, z);
-    //     glLineWidth(thickness);
-    //     glDrawArrays(GL_LINES, 0, 2);
-    //     glLineWidth(1.0f);
-    //     glPopMatrix();
-
-    //     // Восстанавливаем состояние GL_COLOR_MATERIAL
-    //     if (colorMaterialWasEnabled) {
-    //         glColorMaterial(GL_FRONT_AND_BACK, colorMaterialParam);
-    //     } else {
-    //         glDisable(GL_COLOR_MATERIAL);
-    //     }
-
-    //     glBindVertexArray(0);
-    //     return;
-    // }
-
-    // Добавление в очередь
     DrawCommand cmd;
     cmd.type = CMD_LINE_3D;
     cmd.obj_cx = x; cmd.obj_cy = y; cmd.obj_cz = z;
@@ -2507,7 +2243,6 @@ void draw3DObject(float cx, float cy, float cz,
                   const std::vector<int>& indices,
                   const std::vector<float>& texcoords,
                   const std::vector<float>& normals) {
-    // вычисляем радиус ограничивающей сферы
     float maxDist = 0.0f;
     for (size_t i = 0; i < vertices.size(); i += 3) {
         float dx = vertices[i] - cx;
@@ -2517,100 +2252,6 @@ void draw3DObject(float cx, float cy, float cz,
         if (d2 > maxDist) maxDist = d2;
     }
     float radius = sqrtf(maxDist);
-
-    // if (!g_useDrawQueue) {
-    //     // --- немедленный рендеринг (для порталов) ---
-    //     if (vao3D == 0) {
-    //         glGenVertexArrays(1, &vao3D);
-    //     }
-    //     size_t numVerts = vertices.size() / 3;
-    //     if (numVerts == 0 || indices.empty()) return;
-
-    //     const bool hasTex = (tex != nullptr && !texcoords.empty());
-    //     std::vector<float> uv;
-    //     const float* uvPtr;
-    //     if (hasTex) {
-    //         uvPtr = texcoords.data();
-    //     } else {
-    //         uv.assign(numVerts * 2, 0.0f);
-    //         uvPtr = uv.data();
-    //     }
-
-    //     size_t posBytes = vertices.size() * sizeof(float);
-    //     ensureBuffer(vbo_pos, cap_pos, posBytes, GL_ARRAY_BUFFER);
-    //     glBufferSubData(GL_ARRAY_BUFFER, 0, posBytes, vertices.data());
-
-    //     bool hasNormals = !normals.empty();
-    //     if (hasNormals) {
-    //         size_t normBytes = normals.size() * sizeof(float);
-    //         ensureBuffer(vbo_norm, cap_norm, normBytes, GL_ARRAY_BUFFER);
-    //         glBufferSubData(GL_ARRAY_BUFFER, 0, normBytes, normals.data());
-    //     }
-
-    //     size_t uvBytes = numVerts * 2 * sizeof(float);
-    //     ensureBuffer(vbo_uv, cap_uv, uvBytes, GL_ARRAY_BUFFER);
-    //     glBufferSubData(GL_ARRAY_BUFFER, 0, uvBytes, uvPtr);
-
-    //     size_t idxBytes = indices.size() * sizeof(int);
-    //     ensureBuffer(ibo, cap_idx, idxBytes, GL_ELEMENT_ARRAY_BUFFER);
-    //     glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, idxBytes, indices.data());
-
-    //     glBindVertexArray(vao3D);
-
-    //     glBindBuffer(GL_ARRAY_BUFFER, vbo_pos);
-    //     glEnableVertexAttribArray(0);
-    //     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-
-    //     if (hasNormals) {
-    //         glBindBuffer(GL_ARRAY_BUFFER, vbo_norm);
-    //         glEnableVertexAttribArray(2);
-    //         glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-    //     } else {
-    //         glDisableVertexAttribArray(2);
-    //         glVertexAttrib3f(2, 0.0f, 0.0f, 1.0f);
-    //     }
-
-    //     glDisableVertexAttribArray(3);
-    //     glVertexAttrib3f(3, (float)r, (float)g, (float)b);
-
-    //     glBindBuffer(GL_ARRAY_BUFFER, vbo_uv);
-    //     glEnableVertexAttribArray(8);
-    //     glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
-
-    //     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-
-    //     ensureWhiteTex();
-    //     if (tex) {
-    //         GLuint texID = loadTextureFromFile(tex);
-    //         if (texID) {
-    //             glEnable(GL_TEXTURE_2D);
-    //             glBindTexture(GL_TEXTURE_2D, texID);
-    //         } else {
-    //             glEnable(GL_TEXTURE_2D);
-    //             glBindTexture(GL_TEXTURE_2D, whiteTex);
-    //         }
-    //     } else {
-    //         glEnable(GL_TEXTURE_2D);
-    //         glBindTexture(GL_TEXTURE_2D, whiteTex);
-    //     }
-
-    //     if (currentShaderProg && loc_tex != -1) glUniform1i(loc_tex, 0);
-
-    //     glPushMatrix();
-    //     glTranslatef(cx, cy, cz);
-    //     glDrawElements(GL_TRIANGLES, (GLsizei)indices.size(), GL_UNSIGNED_INT, nullptr);
-    //     glPopMatrix();
-
-    //     if (tex) {
-    //         glDisable(GL_TEXTURE_2D);
-    //     } else {
-    //         glDisable(GL_TEXTURE_2D);
-    //         glBindTexture(GL_TEXTURE_2D, 0);
-    //     }
-    //     glBindVertexArray(0);
-    //     return;
-    // }
-
     DrawCommand cmd;
     cmd.type = CMD_3DOBJECT;
     cmd.obj_cx = cx; cmd.obj_cy = cy; cmd.obj_cz = cz;
