@@ -96,6 +96,8 @@ public:
     int getTextureIndex(float dir_x, float dir_y, float dir_z) const;
     bool isVisible(float cam_x, float cam_y, float cam_z) const;
 
+    GLuint getTextureID(int index) const { return (index >= 0 && index < (int)textureIDs.size()) ? textureIDs[index] : 0; }
+
 private:
     void computeRadius();
 
@@ -142,8 +144,6 @@ public:
     void enable();
     void disable();
     bool isEnabled() const { return enabled; }
-
-    void applyToShader(int index, GLuint program) const;
 
     bool enabled = false;
     float pos[3]   = {0,0,0};
@@ -212,73 +212,30 @@ public:
     );
     ~Portal();
 
-    void setSceneDrawCallback(std::function<void()> cb);
-    void draw(int recursion_depth = 2);
+    void draw();                  
+    void checkTeleport();        
 
-    float ax, ay, az;
-    float bx, by, bz;
+    bool teleportRay(const glm::vec3& origin, const glm::vec3& dir, float maxDist,
+                     glm::vec3& newOrigin, glm::vec3& newDir) const;
+
+    float ax, ay, az;   
+    float bx, by, bz;   
     float yawA, pitchA, rollA;
     float yawB, pitchB, rollB;
-    std::vector<float> vertices;
-
-    void checkTeleport();
+    std::vector<float> vertices;   
 
 private:
     friend void flushDrawQueue();
-
-    struct FBO {
-        GLuint fbo = 0;
-        GLuint colorTex = 0;
-        GLuint depthTex = 0;
-        int w = 0, h = 0;
-    };
-
-    void initFBOs(int w, int h);
-    void destroyFBOs();
-    void resizeFBOs(int w, int h);
-
-    glm::mat4 getPortalTransform(float fx, float fy, float fz,
-                                  float tx, float ty, float tz) const;
-    glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
-
-    void drawPortalSurface(float px, float py, float pz, GLuint tex, bool sideB);
-
-    FBO fboA, fboB;
-    std::function<void()> sceneDraw;
 
     GLuint portalVAO = 0;
     GLuint portalVBO = 0;
     int portalIndexCount = 0;
 
-    glm::vec3 prevCamPos = glm::vec3(0.0f);  
-    float prevSignedDist = 0.0f;              
-    bool prevValid = false;
-    glm::vec3 getCenterA(const glm::mat4& worldMat) const {
-        glm::vec3 center(ax, ay, az);
-        int n = vertices.size() / 3;
-        for (int i = 0; i < n; ++i) {
-            glm::vec4 local(vertices[i*3], vertices[i*3+1], vertices[i*3+2], 1.0f);
-            glm::vec3 world = glm::vec3(worldMat * local);
-            center += world;
-        }
-        return center / float(n + 1);
-    }
+    glm::mat4 getPortalTransform(float fx, float fy, float fz,
+                                  float tx, float ty, float tz) const;
+    glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
+    bool pointInPortalPolygon(const glm::vec2& point) const;
 
-    bool pointInPortalPolygon(const glm::vec2& point) const {
-        int n = vertices.size() / 3;
-        if (n < 3) return false;
-        bool inside = false;
-        for (int i = 0, j = n-1; i < n; j = i++) {
-            float xi = vertices[i*3];
-            float yi = vertices[i*3+1];
-            float xj = vertices[j*3];
-            float yj = vertices[j*3+1];
-            if ( ((yi > point.y) != (yj > point.y)) &&
-                (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi) )
-                inside = !inside;
-        }
-        return inside;
-    }
     struct SideState {
         glm::vec3 prevCamPos = glm::vec3(0.0f);
         float prevSignedDist = 0.0f;
