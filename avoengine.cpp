@@ -46,8 +46,246 @@ extern "C" {
 //              утилиты
 // библиотека для работы со временем для замеров производительности
 #include <chrono>
-// библиотека для того чтобы определить названия компонентов
-#include <hwinfo/hwinfo.h>
+// определить названия компонентов
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#include <intrin.h>
+#include <string>
+
+static std::string getCPUName_Win() {
+    // Использование CPUID для получения строки процессора
+    char brand[49] = {0};
+    int cpuInfo[4] = {0};
+    __cpuid(cpuInfo, 0x80000000);
+    if (cpuInfo[0] >= 0x80000004) {
+        for (unsigned int i = 0; i < 3; ++i) {
+            __cpuid(cpuInfo, 0x80000002 + i);
+            memcpy(brand + i * 16, cpuInfo, sizeof(cpuInfo));
+        }
+        return std::string(brand);
+    }
+    return "Unknown CPU";
+}
+
+static std::string getRAMTotal_Win() {
+    MEMORYSTATUSEX statex;
+    statex.dwLength = sizeof(statex);
+    GlobalMemoryStatusEx(&statex);
+    return std::to_string(statex.ullTotalPhys / (1024 * 1024)) + " MB";
+}
+
+static std::string getGPUName_OpenGL() {
+    // Должен быть активный контекст OpenGL
+    const char* renderer = (const char*)glGetString(GL_RENDERER);
+    return renderer ? std::string(renderer) : "Unknown GPU";
+}
+#else
+#include <fstream>
+#include <sstream>
+#include <cstring>
+
+static std::string getCPUName_Linux() {
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(cpuinfo, line)) {
+        if (line.rfind("model name", 0) == 0) {
+            size_t pos = line.find(": ");
+            if (pos != std::string::npos)
+                return line.substr(pos + 2);
+        }
+    }
+    return "Unknown CPU";
+}
+
+static std::string getRAMTotal_Linux() {
+    std::ifstream meminfo("/proc/meminfo");
+    std::string line;
+    while (std::getline(meminfo, line)) {
+        if (line.rfind("MemTotal:", 0) == 0) {
+            size_t pos = line.find(":");
+            std::string val = line.substr(pos + 1);
+            // удаляем " kB" в конце
+            size_t kbpos = val.find("kB");
+            if (kbpos != std::string::npos)
+                val = val.substr(0, kbpos);
+            // убираем пробелы
+            val.erase(0, val.find_first_not_of(" \t"));
+            val.erase(val.find_last_not_of(" \t") + 1);
+            long kb = std::stol(val);
+            return std::to_string(kb / 1024) + " MB";
+        }
+    }
+    return "Unknown RAM";
+}
+
+static std::string getGPUName_OpenGL() {
+    const char* renderer = (const char*)glGetString(GL_RENDERER);
+    return renderer ? std::string(renderer) : "Unknown GPU";
+}
+#endif
+
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#include <pdh.h>           
+#pragma comment(lib, "pdh.lib")
+#else
+#include <unistd.h>
+#include <sys/sysinfo.h>
+#include <cstring>
+#endif
+
+#ifdef _WIN32
+static double getProcessCPUUsage_Win() {
+    static ULARGE_INTEGER lastCPU, lastSysCPU;
+    static int numProcessors = 0;
+    static bool initialized = false;
+
+    HANDLE self = GetCurrentProcess();
+    FILETIME ftime, fsys, fuser;
+    GetProcessTimes(self, &ftime, &ftime, &fsys, &fuser);
+    ULARGE_INTEGER nowCPU, nowSysCPU;
+    nowCPU.LowPart = fuser.dwLowDateTime; nowCPU.HighPart = fuser.dwHighDateTime;
+    nowSysCPU.LowPart = fsys.dwLowDateTime; nowSysCPU.HighPart = fsys.dwHighDateTime;
+
+    if (!initialized) {
+        lastCPU = nowCPU; lastSysCPU = nowSysCPU;
+        SYSTEM_INFO sysInfo;
+        GetSystemInfo(&sysInfo);
+        numProcessors = sysInfo.dwNumberOfProcessors;
+        initialized = true;
+        return 0.0;
+    }
+
+    ULONGLONG totalCPU = (nowCPU.QuadPart - lastCPU.QuadPart) +
+                         (nowSysCPU.QuadPart - lastSysCPU.QuadPart);
+    lastCPU = nowCPU; lastSysCPU = nowSysCPU;
+
+    FILETIME ftime2;
+    GetSystemTimeAsFileTime(&ftime2);
+    ULARGE_INTEGER nowSysTime;
+    nowSysTime.LowPart = ftime2.dwLowDateTime;
+    nowSysTime.HighPart = ftime2.dwHighDateTime;
+    static ULARGE_INTEGER lastSysTime = nowSysTime;
+    double elapsed = (nowSysTime.QuadPart - lastSysTime.QuadPart) / 10000000.0;
+    lastSysTime = nowSysTime;
+
+    if (elapsed <= 0.0) return 0.0;
+    return (totalCPU / 10000.0) / (elapsed * numProcessors) * 100.0;
+}
+
+static long getProcessRAMUsage_Win() {
+    PROCESS_MEMORY_COUNTERS_EX pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc)))
+        return pmc.WorkingSetSize / (1024 * 1024); // МБ
+    return 0;
+}
+
+static float getGPUUsage_Win() {
+    return -1.0f;
+}
+#else
+static double getProcessCPUUsage_Linux(long &prev_cpu_total) {
+    long utime, stime;
+    FILE* stat = fopen("/proc/self/stat", "r");
+    if (!stat) return 0.0;
+    fscanf(stat, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %ld %ld", &utime, &stime);
+    fclose(stat);
+
+    long cur_cpu = utime + stime;
+    static long numCores = sysconf(_SC_NPROCESSORS_ONLN);   
+
+    double pct = (cur_cpu - prev_cpu_total) * 100.0 / (double)sysconf(_SC_CLK_TCK) / 1.0 / numCores;
+    prev_cpu_total = cur_cpu;
+    return pct;
+}
+
+static long getProcessRAMUsage_Linux() {
+    FILE* status = fopen("/proc/self/status", "r");
+    if (!status) return 0;
+    char line[128];
+    long vmRSS = 0;
+    while (fgets(line, sizeof(line), status))
+        if (sscanf(line, "VmRSS: %ld", &vmRSS) == 1) break;
+    fclose(status);
+    return vmRSS / 1024; 
+}
+
+#include <linux/perf_event.h>
+#include <asm/unistd.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+static float getGPUUsage_Linux() {
+    for (int i = 0; i < 8; ++i) {
+        char path[128];
+        snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/gpu_busy_percent", i);
+        FILE* f = fopen(path, "r");
+        if (f) {
+            int val = -1;
+            int ret = fscanf(f, "%d", &val);
+            fclose(f);
+            if (ret == 1 && val >= 0) return (float)val;
+        }
+    }
+
+    FILE* intel_fp = popen("intel_gpu_top -J -s 250 -o /dev/stdout 2>/dev/null", "r");
+    if (intel_fp) {
+        char buf[4096];
+        std::string json;
+        while (fgets(buf, sizeof(buf), intel_fp))
+            json += buf;
+        pclose(intel_fp);
+
+        size_t pos = json.find("\"Render/3D");
+        if (pos != std::string::npos) {
+            pos = json.find("\"busy\":", pos);
+            if (pos != std::string::npos) {
+                pos += 7;
+                char* end;
+                float usage = strtof(json.c_str() + pos, &end);
+                if (usage >= 0.0f && usage <= 100.0f)
+                    return usage;
+            }
+        }
+    }
+
+    FILE* amd_fp = popen("radeontop -d - -l 1 2>/dev/null", "r");
+    if (amd_fp) {
+        char line[256];
+        float total_usage = -1.0f;
+        while (fgets(line, sizeof(line), amd_fp)) {
+            if (strstr(line, "Graphics pipe")) {
+                char* pct = strstr(line, "%");
+                if (pct) {
+                    *pct = '\0';
+                    char* num = strrchr(line, ' ');
+                    if (num) {
+                        total_usage = strtof(num + 1, nullptr);
+                        break;
+                    }
+                }
+            }
+        }
+        pclose(amd_fp);
+        if (total_usage >= 0.0f) return total_usage;
+    }
+
+    FILE* nv_fp = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null", "r");
+    if (nv_fp) {
+        float usage = -1.0f;
+        if (fscanf(nv_fp, "%f", &usage) == 1) {
+            pclose(nv_fp);
+            return usage;
+        }
+        pclose(nv_fp);
+    }
+
+    return -1.0f; 
+}
+#endif
+
 // математика(п, синусы, косинусы)
 #include <cmath>
 #include <algorithm>
@@ -284,7 +522,7 @@ static const char* defaultFragmentShader = R"(
 #define MAX_STEPS 64
 #define SURF_DIST 0.001
 #define MAX_DIST 1000.0
-#define MAX_TEXTURES 8
+#define MAX_TEXTURES 2         
 #define MAX_PORTALS 8
 #define MAX_PORTAL_VERTS 16
 #define MAX_BOUNCES 4
@@ -328,7 +566,7 @@ uniform sampler2D triTexNorm;
 uniform sampler2D triTexColor;
 uniform sampler2D triTexUV;
 uniform sampler2D triTexIndices;
-uniform sampler2D textures[MAX_TEXTURES];
+uniform sampler2D textures[MAX_TEXTURES];   
 uniform int triCount;
 uniform int triTexWidth;
 uniform int triTexHeight;
@@ -346,19 +584,7 @@ uniform int portalVertCount[MAX_PORTALS];
 uniform vec2 portalVerts[MAX_PORTALS * MAX_PORTAL_VERTS];
 uniform mat4 portalTeleport[MAX_PORTALS];
 
-vec3 fetchVec3(sampler2D tex, float idx, int width, int height) {
-    float x = mod(idx, float(width)) / float(width);
-    float y = floor(idx / float(width)) / float(height);
-    return texture2D(tex, vec2(x, y)).rgb;
-}
-
-vec2 fetchVec2(sampler2D tex, float idx, int width, int height) {
-    float x = mod(idx, float(width)) / float(width);
-    float y = floor(idx / float(width)) / float(height);
-    return texture2D(tex, vec2(x, y)).rg;
-}
-
-float rayTriangleIntersect(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, out vec3 normal, out float u, out float v) {
+float rayTriangleIntersect(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, out vec3 faceNormal, out float u, out float v) {
     vec3 e1 = v1 - v0;
     vec3 e2 = v2 - v0;
     vec3 h = cross(rd, e2);
@@ -373,7 +599,7 @@ float rayTriangleIntersect(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2, out vec3
     if (v < 0.0 || u + v > 1.0) return -1.0;
     float t = f * dot(e2, q);
     if (t > 0.001) {
-        normal = normalize(cross(e1, e2));
+        faceNormal = cross(e1, e2);
         return t;
     }
     return -1.0;
@@ -384,16 +610,17 @@ void main() {
         gl_FragColor = texture2D(accumulationTex, vUV);
         return;
     }
-
     if (portalMode) {
-        if (portalDepthOnly) {
-            gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
-            return;
-        }
+        if (portalDepthOnly) { gl_FragColor = vec4(0.0); return; }
         vec2 uv = (vClipPos.xy / vClipPos.w) * 0.5 + 0.5;
         gl_FragColor = texture2D(portalTex, uv);
         return;
     }
+
+    // Константы для тумана (вычисляются один раз)
+    float invFogRange = 1.0 / (fogEnd - fogStart);
+    const float PI = 3.14159265;
+    const float TWO_PI = 6.2831853;
 
     if (raycast) {
         vec3 ro = camPos;
@@ -401,67 +628,104 @@ void main() {
         vec4 worldPos = invViewProj * clipPos;
         worldPos /= worldPos.w;
         vec3 rd = normalize(worldPos.xyz - ro);
-
         float totalDist = 0.0;
+
+        float invTriW = 1.0 / float(triTexWidth);
+        float invTriH = 1.0 / float(triTexHeight);
+        float triW = float(triTexWidth);
 
         for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
             float closest = MAX_DIST;
-            vec3 hitPos;
-            vec3 hitNormal = vec3(0.0);
-            vec3 hitCol = vec3(0.0);
+            vec3 hitPos, hitNormal, hitCol;
             int hitTexID = -1;
             bool isPortalHit = false;
             int portalHitIdx = -1;
 
             for (int i = 0; i < triCount; i++) {
-                float i0 = fetchVec3(triTexIndices, float(i*3+0), triTexWidth, triTexHeight).x;
-                float i1 = fetchVec3(triTexIndices, float(i*3+1), triTexWidth, triTexHeight).x;
-                float i2 = fetchVec3(triTexIndices, float(i*3+2), triTexWidth, triTexHeight).x;
+                float base = float(i) * 3.0;
+                float u0 = mod(base, triW) * invTriW;
+                float v0coord = floor(base * invTriW) * invTriH;
+                vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
+                float i0 = idxData0.x;
                 if (i0 < 0.0) continue;
-                vec3 v0 = fetchVec3(triTexPos, i0, triTexWidth, triTexHeight);
-                vec3 v1 = fetchVec3(triTexPos, i1, triTexWidth, triTexHeight);
-                vec3 v2 = fetchVec3(triTexPos, i2, triTexWidth, triTexHeight);
-                vec3 norm;
+                float billFlag = idxData0.y;
+                float tid_f = idxData0.z;
+
+                // Индексы двух других вершин
+                float u1 = mod(base+1.0, triW) * invTriW;
+                float v1coord = floor((base+1.0) * invTriW) * invTriH;
+                float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
+                float u2 = mod(base+2.0, triW) * invTriW;
+                float v2coord = floor((base+2.0) * invTriW) * invTriH;
+                float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
+
+                // Координаты в текстурах для вершин
+                float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
+                float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
+                float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
+
+                vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
+                vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
+                vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
+
+                vec3 faceNormal;
                 float u, v;
-                float t = rayTriangleIntersect(ro, rd, v0, v1, v2, norm, u, v);
+                float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
                 if (t > 0.0 && t < closest) {
-                    vec3 col = fetchVec3(triTexColor, i0, triTexWidth, triTexHeight);
-                    int texID = int(fetchVec3(triTexIndices, float(i*3+0), triTexWidth, triTexHeight).z);
+                    int texID = int(floor(tid_f));
                     bool opaque = true;
+                    vec3 col = texture2D(triTexColor, vec2(p0x, p0y)).rgb;
                     if (texID >= 0 && texID < MAX_TEXTURES) {
-                        vec2 uv0 = fetchVec2(triTexUV, i0, triTexWidth, triTexHeight);
-                        vec2 uv1 = fetchVec2(triTexUV, i1, triTexWidth, triTexHeight);
-                        vec2 uv2 = fetchVec2(triTexUV, i2, triTexWidth, triTexHeight);
-                        vec2 uvCoord = (1.0 - u - v) * uv0 + u * uv1 + v * uv2;
-                        vec4 texCol = texture2D(textures[texID], uvCoord);
+                        vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
+                        vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
+                        vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
+                        vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
+                        vec4 texCol = vec4(1.0);
+                        if (texID == 0) texCol = texture2D(textures[0], uvCoord);
+                        else if (texID == 1) texCol = texture2D(textures[1], uvCoord);
                         if (texCol.a < 0.5) opaque = false;
                         col = texCol.rgb * col;
                     }
                     if (opaque) {
                         closest = t;
                         hitPos = ro + rd * t;
-                        hitNormal = norm;
+                        if (billFlag < 0.5) {
+                            hitNormal = -rd;
+                        } else {
+                            vec3 n0 = texture2D(triTexNorm, vec2(p0x, p0y)).rgb;
+                            vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
+                            vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
+                            vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
+                            float len2 = dot(interpN, interpN);
+                            if (len2 < 0.0000001) {
+                                hitNormal = normalize(faceNormal);
+                            } else {
+                                hitNormal = interpN * inversesqrt(len2);
+                            }
+                        }
                         hitCol = col;
                         hitTexID = texID;
+                        isPortalHit = false;
                     }
                 }
             }
 
+            // Проверка порталов (без изменений, только быстрый возврат)
             for (int p = 0; p < portalCount; p++) {
                 vec3 N = portalNormal[p];
                 float denom = dot(rd, N);
+                if (abs(denom) < 0.0001) continue;
                 float t = -(dot(ro, N) + portalD[p]) / denom;
                 if (t > 0.001 && t < closest) {
                     vec3 candidatePos = ro + rd * t;
-                    vec4 local4 = portalInvWorld[p] * vec4(candidatePos, 1.0);
-                    vec2 localPt = local4.xy;
+                    vec2 localPt = (portalInvWorld[p] * vec4(candidatePos, 1.0)).xy;
                     int vc = portalVertCount[p];
                     bool inside = false;
                     for (int i = 0, j = vc-1; i < vc; j = i++) {
                         vec2 vi = portalVerts[p * MAX_PORTAL_VERTS + i];
                         vec2 vj = portalVerts[p * MAX_PORTAL_VERTS + j];
                         if (((vi.y > localPt.y) != (vj.y > localPt.y)) &&
-                            (localPt.x < (vj.x - vi.x) * (localPt.y - vi.y) / (vj.y - vi.y) + vi.x))
+                            (localPt.x < (vj.x-vi.x)*(localPt.y-vi.y)/(vj.y-vi.y)+vi.x))
                             inside = !inside;
                     }
                     if (inside) {
@@ -475,9 +739,9 @@ void main() {
 
             if (closest == MAX_DIST) {
                 if (hasPanorama) {
-                    float u = 0.5 + atan(rd.z, rd.x) / (2.0 * 3.14159265);
-                    float v = 0.5 + asin(rd.y) / 3.14159265;
-                    gl_FragColor = texture2D(panoramaTex, vec2(u, v));
+                    float panU = 0.5 + atan(rd.z, rd.x) / TWO_PI;
+                    float panV = 0.5 + asin(rd.y) / PI;
+                    gl_FragColor = texture2D(panoramaTex, vec2(panU, panV));
                 } else {
                     gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
                 }
@@ -490,73 +754,67 @@ void main() {
                 rd = normalize(mat3(portalTeleport[portalHitIdx]) * rd);
             } else {
                 float fogCoord = totalDist + closest;
-                vec3 N = normalize(hitNormal);
+                vec3 N = normalize(hitNormal); // уже примерно единичная
                 vec3 col = ambientLight;
                 for (int j = 0; j < numLights; j++) {
-                    if (!lights[j].enabled) continue;
-                    vec3 L;
-                    float atten = 1.0;
-                    if (length(lights[j].direction) > 0.001) {
+                    if (!lights[j].enabled) continue; // используем enabled
+                    if (lights[j].attenuation.x <= 0.0) continue;
+                    vec3 L; float atten;
+                    if (dot(lights[j].direction, lights[j].direction) > 0.000001) {
                         vec3 toPoint = hitPos - lights[j].position;
-                        float distToLight = length(toPoint);
-                        if (distToLight < 0.001) continue;
-                        L = -toPoint / distToLight;
-                        atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y * distToLight + lights[j].attenuation.z * distToLight * distToLight);
-                        vec3 lightDir = normalize(lights[j].direction);
-                        float cosTheta = dot(-L, lightDir);
-                        if (cosTheta < lights[j].cutoff) continue;
+                        float d2 = dot(toPoint, toPoint);
+                        if (d2 < 0.000001) continue;
+                        float invDist = inversesqrt(d2);
+                        L = -toPoint * invDist;
+                        float d = 1.0 / invDist;
+                        atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
+                        if (dot(-L, lights[j].direction) < lights[j].cutoff) continue;
                     } else {
-                        L = lights[j].position - hitPos;
-                        float distToLight = length(L);
-                        if (distToLight < 0.001) continue;
-                        L = normalize(L);
-                        atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y * distToLight + lights[j].attenuation.z * distToLight * distToLight);
+                        vec3 toLight = lights[j].position - hitPos;
+                        float d2 = dot(toLight, toLight);
+                        if (d2 < 0.000001) continue;
+                        float invDist = inversesqrt(d2);
+                        L = toLight * invDist;
+                        float d = 1.0 / invDist;
+                        atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
                     }
                     float diff = max(dot(N, L), 0.0);
                     col += lights[j].diffuse * diff * atten;
                 }
                 col *= hitCol;
-                float fogFactor = clamp((fogEnd - fogCoord) / (fogEnd - fogStart), 0.0, 1.0);
+                float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
                 col = mix(fogColor, col, fogFactor);
                 gl_FragColor = vec4(col, 1.0);
                 return;
             }
         }
-
         gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
 
-    // original forward rendering (unchanged)
+    // Растровый путь (оптимизирован аналогично)
     vec4 texColor = texture2D(tex, vTexCoord);
     if (texColor.a < 0.01) discard;
-
     vec3 N = normalize(vN);
     vec3 totalLight = ambientLight;
-    int activeLightsCount = numLights;
-    if (activeLightsCount > MAX_LIGHTS) activeLightsCount = MAX_LIGHTS;
-
-    for (int i = 0; i < activeLightsCount; i++) {
-        if (!lights[i].enabled) continue;
-        vec3 L_vec = lights[i].position - vP;
-        float distSq = dot(L_vec, L_vec);
-        float dist = sqrt(distSq);
-        vec3 L = L_vec / dist;
-        vec3 D = normalize(lights[i].direction);
-        float cosTheta = dot(-L, D);
-        if (cosTheta < lights[i].cutoff) continue;
-        float att = 1.0 / (lights[i].attenuation.x +
-                           lights[i].attenuation.y * dist +
-                           lights[i].attenuation.z * distSq);
+    int nL = (numLights < MAX_LIGHTS) ? numLights : MAX_LIGHTS;
+    for (int i = 0; i < nL; i++) {
+        if (!lights[i].enabled || lights[i].attenuation.x <= 0.0) continue;
+        vec3 Lv = lights[i].position - vP;
+        float d2 = dot(Lv, Lv);
+        if (d2 < 0.000001) continue;
+        float invDist = inversesqrt(d2);
+        float dist = 1.0 / invDist;
+        vec3 L = Lv * invDist;
+        if (dot(-L, normalize(lights[i].direction)) < lights[i].cutoff) continue;
+        float att = 1.0 / (lights[i].attenuation.x + lights[i].attenuation.y*dist + lights[i].attenuation.z*d2);
         float diff = max(dot(N, L), 0.0);
         totalLight += lights[i].diffuse * diff * att;
     }
-
     vec3 finalColor = texColor.rgb * vColor.rgb * totalLight;
     float fogCoord = length(vP);
-    float fogFactor = clamp((fogEnd - fogCoord) / (fogEnd - fogStart), 0.0, 1.0);
+    float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
     finalColor = mix(fogColor, finalColor, fogFactor);
-
     gl_FragColor = vec4(finalColor, texColor.a * vColor.a);
 }
 )";
@@ -2042,12 +2300,14 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
         cerr << "Failed to initialize GLEW\n";
     }
 
-    auto cpus = hwinfo::getAllCPUs();
-    cpu_name = cpus.empty() ? "Unknown" : cpus[0].modelName();
-    hwinfo::Memory mem = hwinfo::Memory();
-    ram_v = to_string(mem.total_Bytes() / (1024 * 1024)) + " MB";
-    auto gpus = hwinfo::getAllGPUs();
-    gpu_name = gpus.empty() ? "Unknown" : gpus[0].name();
+    #ifdef _WIN32
+        cpu_name = getCPUName_Win();
+        ram_v = getRAMTotal_Win();
+    #else
+        cpu_name = getCPUName_Linux();
+        ram_v = getRAMTotal_Linux();
+    #endif
+        gpu_name = getGPUName_OpenGL();
 
     window_w = w;
     window_h = h;
@@ -2606,82 +2866,53 @@ void stop_all_looping_sounds(){
 }
 //              оверлей
 // сколько заполнено оперативки/процессора
-void draw_performance_hud(int win_w,int win_h){
-    // переменные для рассчётов
-    static long prev_cpu=0;
-    static double cpu_pct=0.0;
-    static long ram_kb=0;
-    static int frame_cnt=0;
-    static double fps=0.0;
-    static auto prev_time=chrono::steady_clock::now();
-    static float last_gpu_usage = -1.0f;
-    // счётчик кадров
+void draw_performance_hud(int win_w, int win_h) {
+    static int frame_cnt = 0;
+    static double fps = 0.0;
+    static auto prev_time = std::chrono::steady_clock::now();
+    static double cpu_usage = 0.0;
+    static long ram_usage_mb = 0;
+    static float gpu_usage = -1.0f; // -1 = N/A
+
     ++frame_cnt;
-    auto now=chrono::steady_clock::now();
-    double elapsed=chrono::duration<double>(now-prev_time).count();
-    // обновление статистики
-    if(elapsed>=1.0){
-        fps=frame_cnt/elapsed;
-        frame_cnt=0;
+    auto now = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(now - prev_time).count();
 
-        // объявляем до параллельного блока т.к. внутри они должны быть видны обоим потокам
-        long local_ram=0;
-        long utime=0,stime=0;
+    if (elapsed >= 1.0) {
+        fps = frame_cnt / elapsed;
+        frame_cnt = 0;
 
-        // параллельно читаем оба файла /proc т.к. это два независимых чтения с диска
-        // sections значит что каждый кусок кода помеченный как section выполняется в отдельном потоке
-        #pragma omp parallel sections
-        {
-            #pragma omp section
-            {
-                if(FILE* f=fopen("/proc/self/status","r")){
-                    char line[128];
-                    while(fgets(line,sizeof(line),f))
-                        if(sscanf(line,"VmRSS: %ld",&local_ram)==1)break;
-                    fclose(f);
-                }
-            }
-            #pragma omp section
-            {
-                if(FILE* s=fopen("/proc/self/stat","r")){
-                    fscanf(s,"%*d %*s %*c %*d %*d %*d %*d %*d "
-                              "%*u %*u %*u %*u %*u %ld %ld",&utime,&stime);
-                    fclose(s);
-                }
-            }
-        }
-
-        ram_kb=local_ram;
-        long cur_cpu=utime+stime;
-        cpu_pct=(cur_cpu-prev_cpu)/(double)sysconf(_SC_CLK_TCK)/elapsed*10.0;
-        prev_cpu=cur_cpu;
-        prev_time=now;
-        {
-            FILE* gf = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits", "r");
-            if (gf) {
-                float current_gpu = -1.0f;
-                if (fscanf(gf, "%f", &current_gpu) == 1)
-                    last_gpu_usage = current_gpu;
-                pclose(gf);
-            }
-        }
+#ifdef _WIN32
+        cpu_usage = getProcessCPUUsage_Win();
+        ram_usage_mb = getProcessRAMUsage_Win();
+        gpu_usage = getGPUUsage_Win();
+#else
+        static long prev_cpu_total = 0;
+        cpu_usage = getProcessCPUUsage_Linux(prev_cpu_total);
+        ram_usage_mb = getProcessRAMUsage_Linux();
+        gpu_usage = getGPUUsage_Linux();
+#endif
+        prev_time = now;
     }
-    // вывод статистики в левом верхнем углу
+
     char buf[256];
-    snprintf(buf,sizeof(buf),"FPS: %.0f  RAM: %ld MB  CPU: %.1f%%  GPU: ", fps, ram_kb / 1024, cpu_pct);
-    if (last_gpu_usage >= 0.0f) {
+    snprintf(buf, sizeof(buf), "FPS: %.0f  RAM: %ld MB  CPU: %.1f%%  GPU: ",
+             fps, ram_usage_mb, cpu_usage);
+    if (gpu_usage >= 0.0f) {
         char gpu_str[32];
-        snprintf(gpu_str, sizeof(gpu_str), "%.1f%%", last_gpu_usage);
+        snprintf(gpu_str, sizeof(gpu_str), "%.1f%%", gpu_usage);
         strcat(buf, gpu_str);
     } else {
         strcat(buf, "N/A");
     }
-    draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
-    draw_text(buf,10.0f,float(win_h)-20.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
-    snprintf(buf,sizeof(buf),"X: %.10f  Y: %.10f  Z: %.10f",camera.eye_x,camera.eye_y,camera.eye_z);
-    draw_text(buf,10.0f,float(win_h)-32.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
-    snprintf(buf,sizeof(buf),"CPU: %s  RAM: %s  GPU: %s",cpu_name.c_str(),ram_v.c_str(),gpu_name.c_str());
-    draw_text(buf,10.0f,float(win_h)-44.0f,GLUT_BITMAP_HELVETICA_12,1.0f,1.0f,1.0f);
+    draw_text(buf, 10.0f, float(win_h) - 20.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+
+    snprintf(buf, sizeof(buf), "X: %.10f  Y: %.10f  Z: %.10f",
+             camera.eye_x, camera.eye_y, camera.eye_z);
+    draw_text(buf, 10.0f, float(win_h) - 32.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    snprintf(buf, sizeof(buf), "CPU: %s  RAM: %s  GPU: %s",
+             cpu_name.c_str(), ram_v.c_str(), gpu_name.c_str());
+    draw_text(buf, 10.0f, float(win_h) - 44.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
 }
 // панорама
 sphere_panorama sphere_sky;

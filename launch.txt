@@ -6,8 +6,8 @@ cd /your/path
 
 compile game:
 
-g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp -I./src -I./src/hwinfo -I/usr/include/stb -lGLEW -lglfw -lGLU -lGL 
--lSOIL -lglut -L. -lhwinfo_cpu -lhwinfo_gpu -lhwinfo_ram -fopenmp -lassimp
+g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp -I./src -lGLEW -lglfw -lGLU -lGL 
+-lSOIL -lglut -L. -fopenmp -lassimp
 
 
 ./output
