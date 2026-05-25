@@ -98,12 +98,11 @@ public:
 
     GLuint getTextureID(int index) const { return (index >= 0 && index < (int)textureIDs.size()) ? textureIDs[index] : 0; }
 
-private:
-    void computeRadius();
-
     float x, y, z;
     float g_angle, v_angle, r_angle;
     float radius;
+private:
+    void computeRadius();
 
     std::vector<std::string> textureFiles;
     std::vector<GLuint> textureIDs;

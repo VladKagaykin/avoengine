@@ -1320,42 +1320,95 @@ void flushDrawQueue() {
                     float dx = camX - cx, dy = camY - cy, dz = camZ - cz;
                     float dist = sqrtf(dx*dx + dy*dy + dz*dz);
                     if (dist < 0.0001f) continue;
-                    glm::vec3 dir = glm::vec3(dx/dist, dy/dist, dz/dist);
-                    glm::vec3 worldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-                    if (fabs(glm::dot(dir, worldUp)) > 0.999f) worldUp = glm::vec3(1.0f, 0.0f, 0.0f);
-                    glm::vec3 right = glm::cross(dir, worldUp);
-                    right = glm::normalize(right);
-                    glm::vec3 up = glm::cross(right, dir);
-                    up = glm::normalize(up);
+
+                    float fx = dx / dist, fy = dy / dist, fz = dz / dist;
+
+                    float wx = 0, wy = 1, wz = 0;
+                    if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+
+                    float rx = wy * fz - wz * fy;
+                    float ry = wz * fx - wx * fz;
+                    float rz = wx * fy - wy * fx;
+                    float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+                    if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+
+                    float ux = fy * rz - fz * ry;
+                    float uy = fz * rx - fx * rz;
+                    float uz = fx * ry - fy * rx;
+
+                    float ga = ent->g_angle * M_PI / 180.0f;
+                    float va = ent->v_angle * M_PI / 180.0f;
+                    float ra = ent->r_angle * M_PI / 180.0f;
+
+                    float eu_x = -sinf(ga) * sinf(va);
+                    float eu_y = -cosf(va);
+                    float eu_z = -cosf(ga) * sinf(va);
+
+                    float fwx = cosf(va) * sinf(ga);
+                    float fwy = -sinf(va);
+                    float fwz = cosf(va) * cosf(ga);
+                    float len_fw = sqrtf(fwx*fwx + fwy*fwy + fwz*fwz);
+                    if (len_fw > 1e-6f) { fwx /= len_fw; fwy /= len_fw; fwz /= len_fw; }
+
+                    float cos_ra = cosf(ra), sin_ra = sinf(ra);
+                    float rot_eu_x = eu_x * cos_ra + (fwy*eu_z - fwz*eu_y) * sin_ra + fwx*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
+                    float rot_eu_y = eu_y * cos_ra + (fwz*eu_x - fwx*eu_z) * sin_ra + fwy*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
+                    float rot_eu_z = eu_z * cos_ra + (fwx*eu_y - fwy*eu_x) * sin_ra + fwz*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
+                    eu_x = rot_eu_x; eu_y = rot_eu_y; eu_z = rot_eu_z;
+
+                    float dot_eu = eu_x * fx + eu_y * fy + eu_z * fz;
+                    float pu_x = eu_x - dot_eu * fx;
+                    float pu_y = eu_y - dot_eu * fy;
+                    float pu_z = eu_z - dot_eu * fz;
+                    float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
+
+                    float roll_raw;
+                    if (plen < 0.001f) {
+                        roll_raw = 0.0f;
+                    } else {
+                        roll_raw = atan2f(-(pu_x*rx + pu_y*ry + pu_z*rz),
+                                        pu_x*ux + pu_y*uy + pu_z*uz) * 180.0f / M_PI;
+                    }
+
+                    int texIdxLocal = ent->getTextureIndex(fx, fy, fz);
+                    bool mirror = (texIdxLocal == 0);
+
+                    float net_angle = roll_raw + 180.0f + (mirror ? -180.0f : 0.0f);
+
+                    float roll_rad = net_angle * M_PI / 180.0f;
 
                     const auto& verts = ent->getVertices();
                     if (verts.size() < 8) continue;
+
+                    auto rotateLocal = [roll_rad](float lx, float ly) {
+                        float c = cosf(roll_rad), s = sinf(roll_rad);
+                        return std::make_pair(lx * c - ly * s, lx * s + ly * c);
+                    };
+
                     float v0x = verts[0], v0y = verts[1];
                     float v1x = verts[2], v1y = verts[3];
                     float v2x = verts[4], v2y = verts[5];
                     float v3x = verts[6], v3y = verts[7];
 
-                    auto worldPos = [&](float lx, float ly) {
-                        return glm::vec3(cx + right.x*lx + up.x*ly,
-                                         cy + right.y*lx + up.y*ly,
-                                         cz + right.z*lx + up.z*ly);
-                    };
+                    auto [rv0x, rv0y] = rotateLocal(v0x, v0y);
+                    auto [rv1x, rv1y] = rotateLocal(v1x, v1y);
+                    auto [rv2x, rv2y] = rotateLocal(v2x, v2y);
+                    auto [rv3x, rv3y] = rotateLocal(v3x, v3y);
 
-                    glm::vec3 p0 = worldPos(v0x, v0y);
-                    glm::vec3 p1 = worldPos(v1x, v1y);
-                    glm::vec3 p2 = worldPos(v2x, v2y);
-                    glm::vec3 p3 = worldPos(v3x, v3y);
+                    glm::vec3 p0(cx + rx*rv0x + ux*rv0y, cy + ry*rv0x + uy*rv0y, cz + rz*rv0x + uz*rv0y);
+                    glm::vec3 p1(cx + rx*rv1x + ux*rv1y, cy + ry*rv1x + uy*rv1y, cz + rz*rv1x + uz*rv1y);
+                    glm::vec3 p2(cx + rx*rv2x + ux*rv2y, cy + ry*rv2x + uy*rv2y, cz + rz*rv2x + uz*rv2y);
+                    glm::vec3 p3(cx + rx*rv3x + ux*rv3y, cy + ry*rv3x + uy*rv3y, cz + rz*rv3x + uz*rv3y);
 
-                    glm::vec3 toCamera = glm::normalize(glm::vec3(camX - cx, camY - cy, camZ - cz));
-                    glm::vec3 normal = toCamera;
-
-                    int texIdxLocal = ent->getTextureIndex(dir.x, dir.y, dir.z);
                     GLuint texID = ent->getTextureID(texIdxLocal);
                     int slot = getTextureSlot(texID);
+                    glm::vec3 normal(fx, fy, fz);
 
-                    glm::vec3 triVerts[6] = {p0, p2, p1, p0, p3, p2};
-                    glm::vec2 uvsArr[6] = { glm::vec2(0,1), glm::vec2(1,0), glm::vec2(1,1),
-                                            glm::vec2(0,1), glm::vec2(0,0), glm::vec2(1,0) };
+                    glm::vec3 triVerts[6] = { p0, p2, p1, p0, p3, p2 };
+                    glm::vec2 uvsArr[6] = {
+                        glm::vec2(0,1), glm::vec2(1,0), glm::vec2(1,1),
+                        glm::vec2(0,1), glm::vec2(0,0), glm::vec2(1,0)
+                    };
 
                     for (int tri = 0; tri < 2; tri++) {
                         if (texIdx >= totalTriangles) break;
