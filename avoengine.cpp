@@ -1220,16 +1220,25 @@ void flushDrawQueue() {
     std::vector<DrawCommand> commands2D;
     std::vector<DrawCommand> commands3D;
     std::vector<DrawCommand> panoramaCommands;
+    bool hasPortalCommand = false;
 
     for (auto& cmd : drawQueue) {
-        if (cmd.type == CMD_PORTAL) {
+        switch (cmd.type) {
+            case CMD_PORTAL:
+                hasPortalCommand = true;
+                break;
+            case CMD_SQUARE:
+            case CMD_TEXT:
+            case CMD_LINE_2D:
+                commands2D.push_back(cmd);
+                break;
+            case CMD_PANORAMA:
+                panoramaCommands.push_back(cmd);
+                break;
+            default: // CMD_3DOBJECT, CMD_PSEUDO3D и всё остальное
+                commands3D.push_back(cmd);
+                break;
         }
-        if (cmd.type == CMD_SQUARE || cmd.type == CMD_TEXT || cmd.type == CMD_LINE_2D)
-            commands2D.push_back(cmd);
-        else if (cmd.type == CMD_PANORAMA)
-            panoramaCommands.push_back(cmd);
-        else
-            commands3D.push_back(cmd);
     }
     drawQueue.clear();
 
@@ -1272,169 +1281,174 @@ void flushDrawQueue() {
 
             int texIdx = 0;
             for (auto& cmd : commands3D) {
-                if (cmd.type == CMD_3DOBJECT && cmd.obj_indices.size() >= 3) {
-                    const auto& verts = cmd.obj_vertices;
-                    const auto& norms = cmd.obj_normals;
-                    const auto& uvs   = cmd.obj_texcoords;
-                    const auto& idxs  = cmd.obj_indices;
-                    float cx = cmd.obj_cx, cy = cmd.obj_cy, cz = cmd.obj_cz;
-                    GLuint texID = 0;
-                    if (!cmd.obj_tex.empty()) texID = loadTextureFromFile(cmd.obj_tex.c_str());
-                    int slot = getTextureSlot(texID);
+                switch (cmd.type) {
+                    case CMD_3DOBJECT: {
+                        if (cmd.obj_indices.size() < 3) break;
+                        const auto& verts = cmd.obj_vertices;
+                        const auto& norms = cmd.obj_normals;
+                        const auto& uvs   = cmd.obj_texcoords;
+                        const auto& idxs  = cmd.obj_indices;
+                        float cx = cmd.obj_cx, cy = cmd.obj_cy, cz = cmd.obj_cz;
+                        GLuint texID = 0;
+                        if (!cmd.obj_tex.empty()) texID = loadTextureFromFile(cmd.obj_tex.c_str());
+                        int slot = getTextureSlot(texID);
 
-                    for (size_t i = 0; i + 2 < idxs.size(); i += 3) {
-                        if (texIdx >= totalTriangles) break;
-                        int i0 = idxs[i]*3, i1 = idxs[i+1]*3, i2 = idxs[i+2]*3;
-                        for (int j = 0; j < 3; j++) {
-                            int vidx = (j==0?i0:j==1?i1:i2);
-                            int base = texIdx * 9 + j * 3;
-                            posData[base+0] = verts[vidx] + cx;
-                            posData[base+1] = verts[vidx+1] + cy;
-                            posData[base+2] = verts[vidx+2] + cz;
-                            if (vidx+2 < (int)norms.size()) {
-                                normData[base+0] = norms[vidx];
-                                normData[base+1] = norms[vidx+1];
-                                normData[base+2] = norms[vidx+2];
+                        for (size_t i = 0; i + 2 < idxs.size(); i += 3) {
+                            if (texIdx >= totalTriangles) break;
+                            int i0 = idxs[i]*3, i1 = idxs[i+1]*3, i2 = idxs[i+2]*3;
+                            for (int j = 0; j < 3; j++) {
+                                int vidx = (j==0?i0:j==1?i1:i2);
+                                int base = texIdx * 9 + j * 3;
+                                posData[base+0] = verts[vidx] + cx;
+                                posData[base+1] = verts[vidx+1] + cy;
+                                posData[base+2] = verts[vidx+2] + cz;
+                                if (vidx+2 < (int)norms.size()) {
+                                    normData[base+0] = norms[vidx];
+                                    normData[base+1] = norms[vidx+1];
+                                    normData[base+2] = norms[vidx+2];
+                                }
+                                colData[base+0] = cmd.obj_r;
+                                colData[base+1] = cmd.obj_g;
+                                colData[base+2] = cmd.obj_b;
+                                int uvBase = texIdx * 6 + j * 2;
+                                if (vidx/3*2+1 < (int)uvs.size()) {
+                                    uvData[uvBase+0] = uvs[vidx/3*2];
+                                    uvData[uvBase+1] = uvs[vidx/3*2+1];
+                                }
+                                int pixel = texIdx * 3 + j;
+                                idxData[pixel*4 + 0] = (float)pixel;
+                                idxData[pixel*4 + 1] = 1.0;
+                                idxData[pixel*4 + 2] = (float)slot;
+                                idxData[pixel*4 + 3] = 0.0;
                             }
-                            colData[base+0] = cmd.obj_r;
-                            colData[base+1] = cmd.obj_g;
-                            colData[base+2] = cmd.obj_b;
-                            int uvBase = texIdx * 6 + j * 2;
-                            if (vidx/3*2+1 < (int)uvs.size()) {
-                                uvData[uvBase+0] = uvs[vidx/3*2];
-                                uvData[uvBase+1] = uvs[vidx/3*2+1];
+                            texIdx++;
+                        }
+                        break;
+                    }
+                    case CMD_PSEUDO3D: {
+                        if (!cmd.entity) break;
+                        const pseudo_3d_entity* ent = cmd.entity;
+                        float cx = ent->getX(), cy = ent->getY(), cz = ent->getZ();
+                        float camX = camera.eye_x, camY = camera.eye_y, camZ = camera.eye_z;
+                        float dx = camX - cx, dy = camY - cy, dz = camZ - cz;
+                        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+                        if (dist < 0.0001f) break;
+
+                        float fx = dx / dist, fy = dy / dist, fz = dz / dist;
+                        float wx = 0, wy = 1, wz = 0;
+                        if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
+
+                        float rx = wy * fz - wz * fy;
+                        float ry = wz * fx - wx * fz;
+                        float rz = wx * fy - wy * fx;
+                        float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
+                        if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
+
+                        float ux = fy * rz - fz * ry;
+                        float uy = fz * rx - fx * rz;
+                        float uz = fx * ry - fy * rx;
+
+                        float ga = ent->g_angle * M_PI / 180.0f;
+                        float va = ent->v_angle * M_PI / 180.0f;
+                        float ra = ent->r_angle * M_PI / 180.0f;
+
+                        float eu_x = -sinf(ga) * sinf(va);
+                        float eu_y = -cosf(va);
+                        float eu_z = -cosf(ga) * sinf(va);
+
+                        float fwx = cosf(va) * sinf(ga);
+                        float fwy = -sinf(va);
+                        float fwz = cosf(va) * cosf(ga);
+                        float len_fw = sqrtf(fwx*fwx + fwy*fwy + fwz*fwz);
+                        if (len_fw > 1e-6f) { fwx /= len_fw; fwy /= len_fw; fwz /= len_fw; }
+
+                        float cos_ra = cosf(ra), sin_ra = sinf(ra);
+                        float rot_eu_x = eu_x * cos_ra + (fwy*eu_z - fwz*eu_y) * sin_ra + fwx*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
+                        float rot_eu_y = eu_y * cos_ra + (fwz*eu_x - fwx*eu_z) * sin_ra + fwy*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
+                        float rot_eu_z = eu_z * cos_ra + (fwx*eu_y - fwy*eu_x) * sin_ra + fwz*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
+                        eu_x = rot_eu_x; eu_y = rot_eu_y; eu_z = rot_eu_z;
+
+                        float dot_eu = eu_x * fx + eu_y * fy + eu_z * fz;
+                        float pu_x = eu_x - dot_eu * fx;
+                        float pu_y = eu_y - dot_eu * fy;
+                        float pu_z = eu_z - dot_eu * fz;
+                        float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
+
+                        float roll_raw;
+                        if (plen < 0.001f) {
+                            roll_raw = 0.0f;
+                        } else {
+                            roll_raw = atan2f(-(pu_x*rx + pu_y*ry + pu_z*rz),
+                                            pu_x*ux + pu_y*uy + pu_z*uz) * 180.0f / M_PI;
+                        }
+
+                        int texIdxLocal = ent->getTextureIndex(fx, fy, fz);
+                        bool mirror = (texIdxLocal == 0);
+                        float net_angle = roll_raw + 180.0f + (mirror ? -180.0f : 0.0f);
+                        float roll_rad = net_angle * M_PI / 180.0f;
+
+                        const auto& verts = ent->getVertices();
+                        if (verts.size() < 8) break;
+
+                        auto rotateLocal = [roll_rad](float lx, float ly) {
+                            float c = cosf(roll_rad), s = sinf(roll_rad);
+                            return std::make_pair(lx * c - ly * s, lx * s + ly * c);
+                        };
+
+                        float v0x = verts[0], v0y = verts[1];
+                        float v1x = verts[2], v1y = verts[3];
+                        float v2x = verts[4], v2y = verts[5];
+                        float v3x = verts[6], v3y = verts[7];
+
+                        auto [rv0x, rv0y] = rotateLocal(v0x, v0y);
+                        auto [rv1x, rv1y] = rotateLocal(v1x, v1y);
+                        auto [rv2x, rv2y] = rotateLocal(v2x, v2y);
+                        auto [rv3x, rv3y] = rotateLocal(v3x, v3y);
+
+                        glm::vec3 p0(cx + rx*rv0x + ux*rv0y, cy + ry*rv0x + uy*rv0y, cz + rz*rv0x + uz*rv0y);
+                        glm::vec3 p1(cx + rx*rv1x + ux*rv1y, cy + ry*rv1x + uy*rv1y, cz + rz*rv1x + uz*rv1y);
+                        glm::vec3 p2(cx + rx*rv2x + ux*rv2y, cy + ry*rv2x + uy*rv2y, cz + rz*rv2x + uz*rv2y);
+                        glm::vec3 p3(cx + rx*rv3x + ux*rv3y, cy + ry*rv3x + uy*rv3y, cz + rz*rv3x + uz*rv3y);
+
+                        GLuint texID = ent->getTextureID(texIdxLocal);
+                        int slot = getTextureSlot(texID);
+                        glm::vec3 normal(fx, fy, fz);
+
+                        glm::vec3 triVerts[6] = { p0, p2, p1, p0, p3, p2 };
+                        glm::vec2 uvsArr[6] = {
+                            glm::vec2(0,1), glm::vec2(1,0), glm::vec2(1,1),
+                            glm::vec2(0,1), glm::vec2(0,0), glm::vec2(1,0)
+                        };
+
+                        for (int tri = 0; tri < 2; tri++) {
+                            if (texIdx >= totalTriangles) break;
+                            for (int j = 0; j < 3; j++) {
+                                int idx = tri*3 + j;
+                                int base = texIdx * 9 + j * 3;
+                                posData[base+0] = triVerts[idx].x;
+                                posData[base+1] = triVerts[idx].y;
+                                posData[base+2] = triVerts[idx].z;
+                                normData[base+0] = normal.x;
+                                normData[base+1] = normal.y;
+                                normData[base+2] = normal.z;
+                                colData[base+0] = 1.0f;
+                                colData[base+1] = 1.0f;
+                                colData[base+2] = 1.0f;
+                                int uvBase = texIdx * 6 + j * 2;
+                                uvData[uvBase+0] = uvsArr[idx].x;
+                                uvData[uvBase+1] = uvsArr[idx].y;
+                                int pixel = texIdx * 3 + j;
+                                idxData[pixel*4 + 0] = (float)pixel;
+                                idxData[pixel*4 + 1] = 0.0;
+                                idxData[pixel*4 + 2] = (float)slot;
+                                idxData[pixel*4 + 3] = 0.0;
                             }
-                            int pixel = texIdx * 3 + j;
-                            idxData[pixel*4 + 0] = (float)pixel;
-                            idxData[pixel*4 + 1] = 1.0;
-                            idxData[pixel*4 + 2] = (float)slot;
-                            idxData[pixel*4 + 3] = 0.0;
+                            texIdx++;
                         }
-                        texIdx++;
+                        break;
                     }
-                }
-                else if (cmd.type == CMD_PSEUDO3D && cmd.entity) {
-                    const pseudo_3d_entity* ent = cmd.entity;
-                    float cx = ent->getX(), cy = ent->getY(), cz = ent->getZ();
-                    float camX = camera.eye_x, camY = camera.eye_y, camZ = camera.eye_z;
-                    float dx = camX - cx, dy = camY - cy, dz = camZ - cz;
-                    float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-                    if (dist < 0.0001f) continue;
-
-                    float fx = dx / dist, fy = dy / dist, fz = dz / dist;
-
-                    float wx = 0, wy = 1, wz = 0;
-                    if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
-
-                    float rx = wy * fz - wz * fy;
-                    float ry = wz * fx - wx * fz;
-                    float rz = wx * fy - wy * fx;
-                    float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
-                    if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
-
-                    float ux = fy * rz - fz * ry;
-                    float uy = fz * rx - fx * rz;
-                    float uz = fx * ry - fy * rx;
-
-                    float ga = ent->g_angle * M_PI / 180.0f;
-                    float va = ent->v_angle * M_PI / 180.0f;
-                    float ra = ent->r_angle * M_PI / 180.0f;
-
-                    float eu_x = -sinf(ga) * sinf(va);
-                    float eu_y = -cosf(va);
-                    float eu_z = -cosf(ga) * sinf(va);
-
-                    float fwx = cosf(va) * sinf(ga);
-                    float fwy = -sinf(va);
-                    float fwz = cosf(va) * cosf(ga);
-                    float len_fw = sqrtf(fwx*fwx + fwy*fwy + fwz*fwz);
-                    if (len_fw > 1e-6f) { fwx /= len_fw; fwy /= len_fw; fwz /= len_fw; }
-
-                    float cos_ra = cosf(ra), sin_ra = sinf(ra);
-                    float rot_eu_x = eu_x * cos_ra + (fwy*eu_z - fwz*eu_y) * sin_ra + fwx*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                    float rot_eu_y = eu_y * cos_ra + (fwz*eu_x - fwx*eu_z) * sin_ra + fwy*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                    float rot_eu_z = eu_z * cos_ra + (fwx*eu_y - fwy*eu_x) * sin_ra + fwz*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                    eu_x = rot_eu_x; eu_y = rot_eu_y; eu_z = rot_eu_z;
-
-                    float dot_eu = eu_x * fx + eu_y * fy + eu_z * fz;
-                    float pu_x = eu_x - dot_eu * fx;
-                    float pu_y = eu_y - dot_eu * fy;
-                    float pu_z = eu_z - dot_eu * fz;
-                    float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
-
-                    float roll_raw;
-                    if (plen < 0.001f) {
-                        roll_raw = 0.0f;
-                    } else {
-                        roll_raw = atan2f(-(pu_x*rx + pu_y*ry + pu_z*rz),
-                                        pu_x*ux + pu_y*uy + pu_z*uz) * 180.0f / M_PI;
-                    }
-
-                    int texIdxLocal = ent->getTextureIndex(fx, fy, fz);
-                    bool mirror = (texIdxLocal == 0);
-
-                    float net_angle = roll_raw + 180.0f + (mirror ? -180.0f : 0.0f);
-
-                    float roll_rad = net_angle * M_PI / 180.0f;
-
-                    const auto& verts = ent->getVertices();
-                    if (verts.size() < 8) continue;
-
-                    auto rotateLocal = [roll_rad](float lx, float ly) {
-                        float c = cosf(roll_rad), s = sinf(roll_rad);
-                        return std::make_pair(lx * c - ly * s, lx * s + ly * c);
-                    };
-
-                    float v0x = verts[0], v0y = verts[1];
-                    float v1x = verts[2], v1y = verts[3];
-                    float v2x = verts[4], v2y = verts[5];
-                    float v3x = verts[6], v3y = verts[7];
-
-                    auto [rv0x, rv0y] = rotateLocal(v0x, v0y);
-                    auto [rv1x, rv1y] = rotateLocal(v1x, v1y);
-                    auto [rv2x, rv2y] = rotateLocal(v2x, v2y);
-                    auto [rv3x, rv3y] = rotateLocal(v3x, v3y);
-
-                    glm::vec3 p0(cx + rx*rv0x + ux*rv0y, cy + ry*rv0x + uy*rv0y, cz + rz*rv0x + uz*rv0y);
-                    glm::vec3 p1(cx + rx*rv1x + ux*rv1y, cy + ry*rv1x + uy*rv1y, cz + rz*rv1x + uz*rv1y);
-                    glm::vec3 p2(cx + rx*rv2x + ux*rv2y, cy + ry*rv2x + uy*rv2y, cz + rz*rv2x + uz*rv2y);
-                    glm::vec3 p3(cx + rx*rv3x + ux*rv3y, cy + ry*rv3x + uy*rv3y, cz + rz*rv3x + uz*rv3y);
-
-                    GLuint texID = ent->getTextureID(texIdxLocal);
-                    int slot = getTextureSlot(texID);
-                    glm::vec3 normal(fx, fy, fz);
-
-                    glm::vec3 triVerts[6] = { p0, p2, p1, p0, p3, p2 };
-                    glm::vec2 uvsArr[6] = {
-                        glm::vec2(0,1), glm::vec2(1,0), glm::vec2(1,1),
-                        glm::vec2(0,1), glm::vec2(0,0), glm::vec2(1,0)
-                    };
-
-                    for (int tri = 0; tri < 2; tri++) {
-                        if (texIdx >= totalTriangles) break;
-                        for (int j = 0; j < 3; j++) {
-                            int idx = tri*3 + j;
-                            int base = texIdx * 9 + j * 3;
-                            posData[base+0] = triVerts[idx].x;
-                            posData[base+1] = triVerts[idx].y;
-                            posData[base+2] = triVerts[idx].z;
-                            normData[base+0] = normal.x;
-                            normData[base+1] = normal.y;
-                            normData[base+2] = normal.z;
-                            colData[base+0] = 1.0f;
-                            colData[base+1] = 1.0f;
-                            colData[base+2] = 1.0f;
-                            int uvBase = texIdx * 6 + j * 2;
-                            uvData[uvBase+0] = uvsArr[idx].x;
-                            uvData[uvBase+1] = uvsArr[idx].y;
-                            int pixel = texIdx * 3 + j;
-                            idxData[pixel*4 + 0] = (float)pixel;
-                            idxData[pixel*4 + 1] = 0.0;
-                            idxData[pixel*4 + 2] = (float)slot;
-                            idxData[pixel*4 + 3] = 0.0;
-                        }
-                        texIdx++;
-                    }
+                    default:
+                        break;
                 }
             }
             triCount = totalTriangles;
@@ -1471,20 +1485,70 @@ void flushDrawQueue() {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         useShader(defaultLightingShader);
 
-        GLint raycastLoc = glGetUniformLocation(defaultLightingShader, "raycast");
-        GLint displayModeLoc = glGetUniformLocation(defaultLightingShader, "displayMode");
-        GLint invViewProjLoc = glGetUniformLocation(defaultLightingShader, "invViewProj");
-        GLint camPosLoc = glGetUniformLocation(defaultLightingShader, "camPos");
-        GLint ambientLoc = glGetUniformLocation(defaultLightingShader, "ambientLight");
-        GLint fogColorLoc = glGetUniformLocation(defaultLightingShader, "fogColor");
-        GLint fogStartLoc = glGetUniformLocation(defaultLightingShader, "fogStart");
-        GLint fogEndLoc = glGetUniformLocation(defaultLightingShader, "fogEnd");
-        GLint numLightsLoc = glGetUniformLocation(defaultLightingShader, "numLights");
-        GLint panoramaTexLoc = glGetUniformLocation(defaultLightingShader, "panoramaTex");
-        GLint hasPanoramaLoc = glGetUniformLocation(defaultLightingShader, "hasPanorama");
+        static GLint loc_raycast = -1, loc_displayMode = -1, loc_invViewProj = -1, loc_camPos = -1;
+        static GLint loc_ambient = -1, loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
+        static GLint loc_numLights = -1, loc_panoramaTex = -1, loc_hasPanorama = -1;
+        static GLint loc_triCount = -1, loc_triTexWidth = -1, loc_triTexHeight = -1;
+        static GLint loc_triTexPos = -1, loc_triTexNorm = -1, loc_triTexColor = -1, loc_triTexIndices = -1, loc_triTexUV = -1;
+        static GLint loc_portalCount = -1, loc_portalPos = -1, loc_portalNormal = -1, loc_portalD = -1;
+        static GLint loc_portalInvWorld = -1, loc_portalVertCount = -1, loc_portalVerts = -1, loc_portalTeleport = -1;
+        static GLint loc_lightEnabled[MAX_LIGHTS] = {0}, loc_lightPos[MAX_LIGHTS] = {0}, loc_lightDir[MAX_LIGHTS] = {0};
+        static GLint loc_lightDiffuse[MAX_LIGHTS] = {0}, loc_lightCutoff[MAX_LIGHTS] = {0}, loc_lightAtten[MAX_LIGHTS] = {0};
+        static GLint loc_texSlot[8] = {0};
+        static bool uniformsCached = false;
+        if (!uniformsCached) {
+            loc_raycast = glGetUniformLocation(defaultLightingShader, "raycast");
+            loc_displayMode = glGetUniformLocation(defaultLightingShader, "displayMode");
+            loc_invViewProj = glGetUniformLocation(defaultLightingShader, "invViewProj");
+            loc_camPos = glGetUniformLocation(defaultLightingShader, "camPos");
+            loc_ambient = glGetUniformLocation(defaultLightingShader, "ambientLight");
+            loc_fogColor = glGetUniformLocation(defaultLightingShader, "fogColor");
+            loc_fogStart = glGetUniformLocation(defaultLightingShader, "fogStart");
+            loc_fogEnd = glGetUniformLocation(defaultLightingShader, "fogEnd");
+            loc_numLights = glGetUniformLocation(defaultLightingShader, "numLights");
+            loc_panoramaTex = glGetUniformLocation(defaultLightingShader, "panoramaTex");
+            loc_hasPanorama = glGetUniformLocation(defaultLightingShader, "hasPanorama");
+            loc_triCount = glGetUniformLocation(defaultLightingShader, "triCount");
+            loc_triTexWidth = glGetUniformLocation(defaultLightingShader, "triTexWidth");
+            loc_triTexHeight = glGetUniformLocation(defaultLightingShader, "triTexHeight");
+            loc_triTexPos = glGetUniformLocation(defaultLightingShader, "triTexPos");
+            loc_triTexNorm = glGetUniformLocation(defaultLightingShader, "triTexNorm");
+            loc_triTexColor = glGetUniformLocation(defaultLightingShader, "triTexColor");
+            loc_triTexIndices = glGetUniformLocation(defaultLightingShader, "triTexIndices");
+            loc_triTexUV = glGetUniformLocation(defaultLightingShader, "triTexUV");
+            loc_portalCount = glGetUniformLocation(defaultLightingShader, "portalCount");
+            loc_portalPos = glGetUniformLocation(defaultLightingShader, "portalPos");
+            loc_portalNormal = glGetUniformLocation(defaultLightingShader, "portalNormal");
+            loc_portalD = glGetUniformLocation(defaultLightingShader, "portalD");
+            loc_portalInvWorld = glGetUniformLocation(defaultLightingShader, "portalInvWorld");
+            loc_portalVertCount = glGetUniformLocation(defaultLightingShader, "portalVertCount");
+            loc_portalVerts = glGetUniformLocation(defaultLightingShader, "portalVerts");
+            loc_portalTeleport = glGetUniformLocation(defaultLightingShader, "portalTeleport");
+            for (int i = 0; i < MAX_LIGHTS; i++) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
+                loc_lightEnabled[i] = glGetUniformLocation(defaultLightingShader, buf);
+                snprintf(buf, sizeof(buf), "lights[%d].position", i);
+                loc_lightPos[i] = glGetUniformLocation(defaultLightingShader, buf);
+                snprintf(buf, sizeof(buf), "lights[%d].direction", i);
+                loc_lightDir[i] = glGetUniformLocation(defaultLightingShader, buf);
+                snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
+                loc_lightDiffuse[i] = glGetUniformLocation(defaultLightingShader, buf);
+                snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
+                loc_lightCutoff[i] = glGetUniformLocation(defaultLightingShader, buf);
+                snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
+                loc_lightAtten[i] = glGetUniformLocation(defaultLightingShader, buf);
+            }
+            for (int i = 0; i < 8; i++) {
+                char name[32];
+                snprintf(name, sizeof(name), "textures[%d]", i);
+                loc_texSlot[i] = glGetUniformLocation(defaultLightingShader, name);
+            }
+            uniformsCached = true;
+        }
 
-        if (displayModeLoc != -1) glUniform1i(displayModeLoc, 0);
-        if (raycastLoc != -1) glUniform1i(raycastLoc, 1);
+        if (loc_displayMode != -1) glUniform1i(loc_displayMode, 0);
+        if (loc_raycast != -1) glUniform1i(loc_raycast, 1);
 
         float proj[16], view[16];
         glGetFloatv(GL_PROJECTION_MATRIX, proj);
@@ -1497,65 +1561,52 @@ void flushDrawQueue() {
         float invViewProj[16];
         memcpy(invViewProj, &invVP[0][0], 16*sizeof(float));
 
-        if (invViewProjLoc != -1) glUniformMatrix4fv(invViewProjLoc, 1, GL_FALSE, invViewProj);
-        if (camPosLoc != -1) glUniform3f(camPosLoc, camera.eye_x, camera.eye_y, camera.eye_z);
-        if (ambientLoc != -1) glUniform3fv(ambientLoc, 1, global_ambient);
-        if (fogColorLoc != -1) glUniform3f(fogColorLoc, fog.color[0], fog.color[1], fog.color[2]);
-        if (fogStartLoc != -1) glUniform1f(fogStartLoc, fog.start);
-        if (fogEndLoc != -1) glUniform1f(fogEndLoc, fog.end);
+        if (loc_invViewProj != -1) glUniformMatrix4fv(loc_invViewProj, 1, GL_FALSE, invViewProj);
+        if (loc_camPos != -1) glUniform3f(loc_camPos, camera.eye_x, camera.eye_y, camera.eye_z);
+        if (loc_ambient != -1) glUniform3fv(loc_ambient, 1, global_ambient);
+        if (loc_fogColor != -1) glUniform3f(loc_fogColor, fog.color[0], fog.color[1], fog.color[2]);
+        if (loc_fogStart != -1) glUniform1f(loc_fogStart, fog.start);
+        if (loc_fogEnd != -1) glUniform1f(loc_fogEnd, fog.end);
 
         int nLights = std::min((int)activeLights.size(), MAX_LIGHTS);
-        if (numLightsLoc != -1) glUniform1i(numLightsLoc, nLights);
+        if (loc_numLights != -1) glUniform1i(loc_numLights, nLights);
         for (int i = 0; i < nLights; i++) {
             Light* l = activeLights[i];
-            char buf[64];
-            snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
-            glUniform1i(glGetUniformLocation(defaultLightingShader, buf), 1);
-            snprintf(buf, sizeof(buf), "lights[%d].position", i);
-            glUniform3f(glGetUniformLocation(defaultLightingShader, buf), l->pos[0], l->pos[1], l->pos[2]);
-            snprintf(buf, sizeof(buf), "lights[%d].direction", i);
-            glUniform3f(glGetUniformLocation(defaultLightingShader, buf), l->dir[0], l->dir[1], l->dir[2]);
-            snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
-            glUniform3f(glGetUniformLocation(defaultLightingShader, buf), l->color[0]*l->intensity, l->color[1]*l->intensity, l->color[2]*l->intensity);
-            snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
-            glUniform1f(glGetUniformLocation(defaultLightingShader, buf), cosf(l->cutoff * M_PI / 180.0f));
-            snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
-            glUniform3f(glGetUniformLocation(defaultLightingShader, buf), l->constAtt, l->linearAtt, l->quadAtt);
+            if (loc_lightEnabled[i] != -1) glUniform1i(loc_lightEnabled[i], 1);
+            if (loc_lightPos[i] != -1) glUniform3f(loc_lightPos[i], l->pos[0], l->pos[1], l->pos[2]);
+            if (loc_lightDir[i] != -1) glUniform3f(loc_lightDir[i], l->dir[0], l->dir[1], l->dir[2]);
+            if (loc_lightDiffuse[i] != -1) glUniform3f(loc_lightDiffuse[i], l->color[0]*l->intensity, l->color[1]*l->intensity, l->color[2]*l->intensity);
+            if (loc_lightCutoff[i] != -1) glUniform1f(loc_lightCutoff[i], cosf(l->cutoff * M_PI / 180.0f));
+            if (loc_lightAtten[i] != -1) glUniform3f(loc_lightAtten[i], l->constAtt, l->linearAtt, l->quadAtt);
         }
 
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triCount"), triCount);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triTexWidth"), triTexWidth);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triTexHeight"), triTexHeight);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triTexPos"), 2);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triTexNorm"), 3);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triTexColor"), 4);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triTexIndices"), 5);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "triTexUV"), 6);
+        glUniform1i(loc_triCount, triCount);
+        glUniform1i(loc_triTexWidth, triTexWidth);
+        glUniform1i(loc_triTexHeight, triTexHeight);
+        glUniform1i(loc_triTexPos, 2);
+        glUniform1i(loc_triTexNorm, 3);
+        glUniform1i(loc_triTexColor, 4);
+        glUniform1i(loc_triTexIndices, 5);
+        glUniform1i(loc_triTexUV, 6);
 
         for (int i = 0; i < (int)activeTextures.size(); i++) {
-            char name[32];
-            snprintf(name, sizeof(name), "textures[%d]", i);
-            GLint loc = glGetUniformLocation(defaultLightingShader, name);
-            if (loc != -1) {
+            if (loc_texSlot[i] != -1) {
                 glActiveTexture(GL_TEXTURE7 + i);
                 glBindTexture(GL_TEXTURE_2D, activeTextures[i]);
-                glUniform1i(loc, 7 + i);
+                glUniform1i(loc_texSlot[i], 7 + i);
             }
         }
         for (int i = activeTextures.size(); i < 8; i++) {
-            char name[32];
-            snprintf(name, sizeof(name), "textures[%d]", i);
-            GLint loc = glGetUniformLocation(defaultLightingShader, name);
-            if (loc != -1) glUniform1i(loc, 0);
+            if (loc_texSlot[i] != -1) glUniform1i(loc_texSlot[i], 0);
         }
 
         if (!panoramaCommands.empty() && sphere_sky.texture != 0) {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
-            if (panoramaTexLoc != -1) glUniform1i(panoramaTexLoc, 1);
-            if (hasPanoramaLoc != -1) glUniform1i(hasPanoramaLoc, 1);
+            if (loc_panoramaTex != -1) glUniform1i(loc_panoramaTex, 1);
+            if (loc_hasPanorama != -1) glUniform1i(loc_hasPanorama, 1);
         } else {
-            if (hasPanoramaLoc != -1) glUniform1i(hasPanoramaLoc, 0);
+            if (loc_hasPanorama != -1) glUniform1i(loc_hasPanorama, 0);
         }
 
         const int MAX_PORTALS = 8;
@@ -1569,73 +1620,75 @@ void flushDrawQueue() {
         float portalVerts[MAX_PORTALS * MAX_PORTAL_VERTS * 2] = {0};
         float portalTeleport[MAX_PORTALS * 16] = {0};
 
-        for (Portal* p : allPortals) {
-            if (portalCount >= MAX_PORTALS) break;
+        if (hasPortalCommand) {
+            for (Portal* p : allPortals) {
+                if (portalCount >= MAX_PORTALS) break;
 
-            auto addPortalSide = [&](float px, float py, float pz,
-                                     float yaw, float pitch, float roll,
-                                     float nx, float ny, float nz,
-                                     const glm::mat4& teleport) {
-                portalPos[portalCount*3 + 0] = px;
-                portalPos[portalCount*3 + 1] = py;
-                portalPos[portalCount*3 + 2] = pz;
+                auto addPortalSide = [&](float px, float py, float pz,
+                                         float yaw, float pitch, float roll,
+                                         float nx, float ny, float nz,
+                                         const glm::mat4& teleport) {
+                    portalPos[portalCount*3 + 0] = px;
+                    portalPos[portalCount*3 + 1] = py;
+                    portalPos[portalCount*3 + 2] = pz;
 
-                portalNormal[portalCount*3 + 0] = nx;
-                portalNormal[portalCount*3 + 1] = ny;
-                portalNormal[portalCount*3 + 2] = nz;
+                    portalNormal[portalCount*3 + 0] = nx;
+                    portalNormal[portalCount*3 + 1] = ny;
+                    portalNormal[portalCount*3 + 2] = nz;
 
-                portalD[portalCount] = -(nx*px + ny*py + nz*pz);
+                    portalD[portalCount] = -(nx*px + ny*py + nz*pz);
 
-                glm::mat4 rot = glm::mat4(1.0f);
-                rot = glm::rotate(rot, glm::radians(yaw),   glm::vec3(0,1,0));
-                rot = glm::rotate(rot, glm::radians(pitch), glm::vec3(1,0,0));
-                rot = glm::rotate(rot, glm::radians(roll),  glm::vec3(0,0,1));
-                glm::mat4 world = glm::translate(glm::mat4(1.0f), glm::vec3(px,py,pz)) * rot;
-                glm::mat4 invWorld = glm::inverse(world);
-                for (int c = 0; c < 4; ++c)
-                    for (int r = 0; r < 4; ++r)
-                        portalInvWorld[portalCount*16 + c*4 + r] = invWorld[c][r];
+                    glm::mat4 rot = glm::mat4(1.0f);
+                    rot = glm::rotate(rot, glm::radians(yaw),   glm::vec3(0,1,0));
+                    rot = glm::rotate(rot, glm::radians(pitch), glm::vec3(1,0,0));
+                    rot = glm::rotate(rot, glm::radians(roll),  glm::vec3(0,0,1));
+                    glm::mat4 world = glm::translate(glm::mat4(1.0f), glm::vec3(px,py,pz)) * rot;
+                    glm::mat4 invWorld = glm::inverse(world);
+                    for (int c = 0; c < 4; ++c)
+                        for (int r = 0; r < 4; ++r)
+                            portalInvWorld[portalCount*16 + c*4 + r] = invWorld[c][r];
 
-                int vCount = (int)p->vertices.size() / 3;
-                portalVertCount[portalCount] = vCount;
-                for (int i = 0; i < vCount && i < MAX_PORTAL_VERTS; ++i) {
-                    portalVerts[portalCount * MAX_PORTAL_VERTS * 2 + i*2 + 0] = p->vertices[i*3 + 0];
-                    portalVerts[portalCount * MAX_PORTAL_VERTS * 2 + i*2 + 1] = p->vertices[i*3 + 1];
+                    int vCount = (int)p->vertices.size() / 3;
+                    portalVertCount[portalCount] = vCount;
+                    for (int i = 0; i < vCount && i < MAX_PORTAL_VERTS; ++i) {
+                        portalVerts[portalCount * MAX_PORTAL_VERTS * 2 + i*2 + 0] = p->vertices[i*3 + 0];
+                        portalVerts[portalCount * MAX_PORTAL_VERTS * 2 + i*2 + 1] = p->vertices[i*3 + 1];
+                    }
+
+                    for (int c = 0; c < 4; ++c)
+                        for (int r = 0; r < 4; ++r)
+                            portalTeleport[portalCount*16 + c*4 + r] = teleport[c][r];
+
+                    portalCount++;
+                };
+
+                glm::vec3 nA = p->portalNormal(p->ax, p->ay, p->az, false);
+                glm::mat4 teleAtoB = p->getPortalTransform(p->ax, p->ay, p->az, p->bx, p->by, p->bz);
+                addPortalSide(p->ax, p->ay, p->az,
+                              p->yawA, p->pitchA, p->rollA,
+                              nA.x, nA.y, nA.z,
+                              teleAtoB);
+
+                if (portalCount < MAX_PORTALS) {
+                    glm::vec3 nB = p->portalNormal(p->bx, p->by, p->bz, true);
+                    glm::mat4 teleBtoA = p->getPortalTransform(p->bx, p->by, p->bz, p->ax, p->ay, p->az);
+                    addPortalSide(p->bx, p->by, p->bz,
+                                  p->yawB, p->pitchB, p->rollB,
+                                  nB.x, nB.y, nB.z,
+                                  teleBtoA);
                 }
-
-                for (int c = 0; c < 4; ++c)
-                    for (int r = 0; r < 4; ++r)
-                        portalTeleport[portalCount*16 + c*4 + r] = teleport[c][r];
-
-                portalCount++;
-            };
-
-            glm::vec3 nA = p->portalNormal(p->ax, p->ay, p->az, false);
-            glm::mat4 teleAtoB = p->getPortalTransform(p->ax, p->ay, p->az, p->bx, p->by, p->bz);
-            addPortalSide(p->ax, p->ay, p->az,
-                          p->yawA, p->pitchA, p->rollA,
-                          nA.x, nA.y, nA.z,
-                          teleAtoB);
-
-            if (portalCount < MAX_PORTALS) {
-                glm::vec3 nB = p->portalNormal(p->bx, p->by, p->bz, true);
-                glm::mat4 teleBtoA = p->getPortalTransform(p->bx, p->by, p->bz, p->ax, p->ay, p->az);
-                addPortalSide(p->bx, p->by, p->bz,
-                              p->yawB, p->pitchB, p->rollB,
-                              nB.x, nB.y, nB.z,
-                              teleBtoA);
             }
         }
 
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "portalCount"), portalCount);
+        glUniform1i(loc_portalCount, portalCount);
         if (portalCount > 0) {
-            glUniform3fv(glGetUniformLocation(defaultLightingShader, "portalPos"), portalCount, portalPos);
-            glUniform3fv(glGetUniformLocation(defaultLightingShader, "portalNormal"), portalCount, portalNormal);
-            glUniform1fv(glGetUniformLocation(defaultLightingShader, "portalD"), portalCount, portalD);
-            glUniformMatrix4fv(glGetUniformLocation(defaultLightingShader, "portalInvWorld"), portalCount, GL_FALSE, portalInvWorld);
-            glUniform1iv(glGetUniformLocation(defaultLightingShader, "portalVertCount"), portalCount, portalVertCount);
-            glUniform2fv(glGetUniformLocation(defaultLightingShader, "portalVerts"), MAX_PORTALS * MAX_PORTAL_VERTS, portalVerts);
-            glUniformMatrix4fv(glGetUniformLocation(defaultLightingShader, "portalTeleport"), portalCount, GL_FALSE, portalTeleport);
+            glUniform3fv(loc_portalPos, portalCount, portalPos);
+            glUniform3fv(loc_portalNormal, portalCount, portalNormal);
+            glUniform1fv(loc_portalD, portalCount, portalD);
+            glUniformMatrix4fv(loc_portalInvWorld, portalCount, GL_FALSE, portalInvWorld);
+            glUniform1iv(loc_portalVertCount, portalCount, portalVertCount);
+            glUniform2fv(loc_portalVerts, MAX_PORTALS * MAX_PORTAL_VERTS, portalVerts);
+            glUniformMatrix4fv(loc_portalTeleport, portalCount, GL_FALSE, portalTeleport);
         }
 
         glActiveTexture(GL_TEXTURE0);
@@ -1670,9 +1723,10 @@ void flushDrawQueue() {
 
         glDisable(GL_BLEND);
         useShader(defaultLightingShader);
-        if (displayModeLoc != -1) glUniform1i(displayModeLoc, 1);
-        if (raycastLoc != -1) glUniform1i(raycastLoc, 0);
-        glUniform1i(glGetUniformLocation(defaultLightingShader, "accumulationTex"), 0);
+        if (loc_displayMode != -1) glUniform1i(loc_displayMode, 1);
+        if (loc_raycast != -1) glUniform1i(loc_raycast, 0);
+        GLint loc_accumulationTex = glGetUniformLocation(defaultLightingShader, "accumulationTex");
+        glUniform1i(loc_accumulationTex, 0);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, accumulationTex);
 
@@ -1735,60 +1789,67 @@ void flushDrawQueue() {
         glUniform1i(loc_tex_2d, 0);
 
         for (auto& cmd : commands2D) {
-            if (cmd.type == CMD_SQUARE) {
-                const char* texName = cmd.tex.empty() ? nullptr : cmd.tex.c_str();
-                glActiveTexture(GL_TEXTURE0);
-                if (texName) {
-                    GLuint id = loadTextureFromFile(texName);
-                    if (id) glBindTexture(GL_TEXTURE_2D, id);
-                    else { ensureWhiteTex(); glBindTexture(GL_TEXTURE_2D, whiteTex); }
-                } else { ensureWhiteTex(); glBindTexture(GL_TEXTURE_2D, whiteTex); }
-                float ar = cmd.rotate * M_PI / -180.0f;
-                float tc[8] = {0,1, 1,1, 1,0, 0,0};
-                float data[28];
-                for (int i = 0; i < 4; ++i) {
-                    float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
-                    rotatePoint(px, py, 0, 0, ar);
-                    float vx = cmd.cx + px * cmd.scale;
-                    float vy = cmd.cy + py * cmd.scale;
-                    data[i*7+0] = vx; data[i*7+1] = vy;
-                    data[i*7+2] = cmd.r; data[i*7+3] = cmd.g; data[i*7+4] = cmd.b;
-                    data[i*7+5] = tc[i*2]; data[i*7+6] = tc[i*2+1];
+            switch (cmd.type) {
+                case CMD_SQUARE: {
+                    const char* texName = cmd.tex.empty() ? nullptr : cmd.tex.c_str();
+                    glActiveTexture(GL_TEXTURE0);
+                    if (texName) {
+                        GLuint id = loadTextureFromFile(texName);
+                        if (id) glBindTexture(GL_TEXTURE_2D, id);
+                        else { ensureWhiteTex(); glBindTexture(GL_TEXTURE_2D, whiteTex); }
+                    } else { ensureWhiteTex(); glBindTexture(GL_TEXTURE_2D, whiteTex); }
+                    float ar = cmd.rotate * M_PI / -180.0f;
+                    float tc[8] = {0,1, 1,1, 1,0, 0,0};
+                    float data[28];
+                    for (int i = 0; i < 4; ++i) {
+                        float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
+                        rotatePoint(px, py, 0, 0, ar);
+                        float vx = cmd.cx + px * cmd.scale;
+                        float vy = cmd.cy + py * cmd.scale;
+                        data[i*7+0] = vx; data[i*7+1] = vy;
+                        data[i*7+2] = cmd.r; data[i*7+3] = cmd.g; data[i*7+4] = cmd.b;
+                        data[i*7+5] = tc[i*2]; data[i*7+6] = tc[i*2+1];
+                    }
+                    glBindVertexArray(sq_vao);
+                    glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+                    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                    glBindVertexArray(0);
+                    break;
                 }
-                glBindVertexArray(sq_vao);
-                glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
-                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-                glBindVertexArray(0);
-            }
-            else if (cmd.type == CMD_TEXT) {
-                GLuint prevShader = currentShaderProg;
-                if (currentShaderProg) stopShader();
-                glDisable(GL_TEXTURE_2D);
-                glColor4f(cmd.r, cmd.g, cmd.b, cmd.a);
-                glWindowPos2f(cmd.x, cmd.y);
-                for (const char* c = cmd.text.c_str(); *c; ++c)
-                    glutBitmapCharacter(cmd.font, *c);
-                glEnable(GL_TEXTURE_2D);
-                if (prevShader) useShader(prevShader);
-            }
-            else if (cmd.type == CMD_LINE_2D) {
-                float data[2*9] = {0};
-                data[0] = cmd.verts[0]; data[1] = cmd.verts[1]; data[2] = 0;
-                data[3] = cmd.r; data[4] = cmd.g; data[5] = cmd.b; data[6] = cmd.a;
-                data[7] = 0; data[8] = 0;
-                data[9] = cmd.verts[2]; data[10] = cmd.verts[3]; data[11] = 0;
-                data[12] = cmd.r; data[13] = cmd.g; data[14] = cmd.b; data[15] = cmd.a;
-                data[16] = 0; data[17] = 0;
-                glBindVertexArray(lineVAO);
-                glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-                glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, whiteTex);
-                glLineWidth(cmd.scale);
-                glDrawArrays(GL_LINES, 0, 2);
-                glLineWidth(1.0f);
-                glBindVertexArray(0);
+                case CMD_TEXT: {
+                    GLuint prevShader = currentShaderProg;
+                    if (currentShaderProg) stopShader();
+                    glDisable(GL_TEXTURE_2D);
+                    glColor4f(cmd.r, cmd.g, cmd.b, cmd.a);
+                    glWindowPos2f(cmd.x, cmd.y);
+                    for (const char* c = cmd.text.c_str(); *c; ++c)
+                        glutBitmapCharacter(cmd.font, *c);
+                    glEnable(GL_TEXTURE_2D);
+                    if (prevShader) useShader(prevShader);
+                    break;
+                }
+                case CMD_LINE_2D: {
+                    float data[2*9] = {0};
+                    data[0] = cmd.verts[0]; data[1] = cmd.verts[1]; data[2] = 0;
+                    data[3] = cmd.r; data[4] = cmd.g; data[5] = cmd.b; data[6] = cmd.a;
+                    data[7] = 0; data[8] = 0;
+                    data[9] = cmd.verts[2]; data[10] = cmd.verts[3]; data[11] = 0;
+                    data[12] = cmd.r; data[13] = cmd.g; data[14] = cmd.b; data[15] = cmd.a;
+                    data[16] = 0; data[17] = 0;
+                    glBindVertexArray(lineVAO);
+                    glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D, whiteTex);
+                    glLineWidth(cmd.scale);
+                    glDrawArrays(GL_LINES, 0, 2);
+                    glLineWidth(1.0f);
+                    glBindVertexArray(0);
+                    break;
+                }
+                default:
+                    break;
             }
         }
 
@@ -2514,8 +2575,10 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 void draw_line_3d(float x, float y, float z,
                   float x1, float y1, float z1,
                   float x2, float y2, float z2,
-                  float r, float g, float b, float a, float thickness) {
-    thickness *= 0.001f;
+                  float r, float g, float b, float a, float thickness,
+                  int segments) {
+    if (segments < 3) segments = 3; 
+
     float wx1 = x + x1, wy1 = y + y1, wz1 = z + z1;
     float wx2 = x + x2, wy2 = y + y2, wz2 = z + z2;
     float dx = wx2 - wx1, dy = wy2 - wy1, dz = wz2 - wz1;
@@ -2541,32 +2604,93 @@ void draw_line_3d(float x, float y, float z,
 
     float half = thickness * 0.5f;
 
-    float v[24] = {
-        wx1 - rx*half - ux*half, wy1 - ry*half - uy*half, wz1 - rz*half - uz*half, 
-        wx1 + rx*half - ux*half, wy1 + ry*half - uy*half, wz1 + rz*half - uz*half,
-        wx1 + rx*half + ux*half, wy1 + ry*half + uy*half, wz1 + rz*half + uz*half, 
-        wx1 - rx*half + ux*half, wy1 - ry*half + uy*half, wz1 - rz*half + uz*half, 
+    int totalVerts = 2 * segments + 2;
+    std::vector<float> vertices(totalVerts * 3);
+    std::vector<float> normals(totalVerts * 3);
+    std::vector<int> indices;
 
-        wx2 - rx*half - ux*half, wy2 - ry*half - uy*half, wz2 - rz*half - uz*half, 
-        wx2 + rx*half - ux*half, wy2 + ry*half - uy*half, wz2 + rz*half - uz*half, 
-        wx2 + rx*half + ux*half, wy2 + ry*half + uy*half, wz2 + rz*half + uz*half, 
-        wx2 - rx*half + ux*half, wy2 - ry*half + uy*half, wz2 - rz*half + uz*half  
-    };
+    for (int i = 0; i < segments; ++i) {
+        float angle = 2.0f * M_PI * i / segments;
+        float c = cosf(angle) * half;
+        float s = sinf(angle) * half;
 
-    std::vector<int> indices = {
-        0,3,2, 0,2,1,
-        4,5,6, 4,6,7,
-        0,1,5, 0,5,4,
-        3,7,6, 3,6,2,
-        1,2,6, 1,6,5,
-        0,4,7, 0,7,3
-    };
+        vertices[i*3 + 0] = wx1 + rx * c + ux * s;
+        vertices[i*3 + 1] = wy1 + ry * c + uy * s;
+        vertices[i*3 + 2] = wz1 + rz * c + uz * s;
 
-    std::vector<float> verts(v, v + 24);
-    std::vector<float> uvs(48, 0.0f);   
-    std::vector<float> norms;         
+        float nx = rx * cosf(angle) + ux * sinf(angle);
+        float ny = ry * cosf(angle) + uy * sinf(angle);
+        float nz = rz * cosf(angle) + uz * sinf(angle);
+        normals[i*3 + 0] = nx;
+        normals[i*3 + 1] = ny;
+        normals[i*3 + 2] = nz;
+    }
 
-    draw3DObject(0, 0, 0, r, g, b, nullptr, verts, indices, uvs, norms);
+    for (int i = 0; i < segments; ++i) {
+        float angle = 2.0f * M_PI * i / segments;
+        float c = cosf(angle) * half;
+        float s = sinf(angle) * half;
+
+        vertices[(i + segments)*3 + 0] = wx2 + rx * c + ux * s;
+        vertices[(i + segments)*3 + 1] = wy2 + ry * c + uy * s;
+        vertices[(i + segments)*3 + 2] = wz2 + rz * c + uz * s;
+
+        float nx = rx * cosf(angle) + ux * sinf(angle);
+        float ny = ry * cosf(angle) + uy * sinf(angle);
+        float nz = rz * cosf(angle) + uz * sinf(angle);
+        normals[(i + segments)*3 + 0] = nx;
+        normals[(i + segments)*3 + 1] = ny;
+        normals[(i + segments)*3 + 2] = nz;
+    }
+
+    int idxStartApex = 2 * segments;
+    vertices[idxStartApex*3 + 0] = wx1 - ndx * half;
+    vertices[idxStartApex*3 + 1] = wy1 - ndy * half;
+    vertices[idxStartApex*3 + 2] = wz1 - ndz * half;
+    normals[idxStartApex*3 + 0] = -ndx;
+    normals[idxStartApex*3 + 1] = -ndy;
+    normals[idxStartApex*3 + 2] = -ndz;
+
+    int idxEndApex = 2 * segments + 1;
+    vertices[idxEndApex*3 + 0] = wx2 + ndx * half;
+    vertices[idxEndApex*3 + 1] = wy2 + ndy * half;
+    vertices[idxEndApex*3 + 2] = wz2 + ndz * half;
+    normals[idxEndApex*3 + 0] = ndx;
+    normals[idxEndApex*3 + 1] = ndy;
+    normals[idxEndApex*3 + 2] = ndz;
+
+    for (int i = 0; i < segments; ++i) {
+        int i0 = i;
+        int i1 = (i + 1) % segments;
+        int j0 = i + segments;
+        int j1 = i1 + segments;
+
+        indices.push_back(i0);
+        indices.push_back(i1);
+        indices.push_back(j0);
+
+        indices.push_back(i1);
+        indices.push_back(j1);
+        indices.push_back(j0);
+    }
+
+    for (int i = 0; i < segments; ++i) {
+        int i1 = (i + 1) % segments;
+        indices.push_back(idxStartApex);
+        indices.push_back(i1);
+        indices.push_back(i);
+    }
+
+    for (int i = 0; i < segments; ++i) {
+        int i1 = (i + 1) % segments;
+        indices.push_back(idxEndApex);
+        indices.push_back(i + segments);
+        indices.push_back(i1 + segments);
+    }
+
+    std::vector<float> texcoords(totalVerts * 2, 0.0f);
+
+    draw3DObject(0, 0, 0, r, g, b, nullptr, vertices, indices, texcoords, normals);
 }
 // рисуем 3д объект, указывая вершины треугольников
 void draw3DObject(float cx, float cy, float cz,
