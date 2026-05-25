@@ -1247,6 +1247,9 @@ void flushDrawQueue() {
     drawQueue.clear();
 
     if (!commands3D.empty() || !panoramaCommands.empty()) {
+        if (currentShaderProg == 0)
+            currentShaderProg = defaultLightingShader;
+
         if (!accumulationInited)
             createAccumulationBuffers(window_w, window_h);
 
@@ -1503,7 +1506,7 @@ void flushDrawQueue() {
 
         glBindFramebuffer(GL_FRAMEBUFFER, accumulationFBO);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        useShader(defaultLightingShader);
+        useShader(currentShaderProg);
 
         static GLint loc_raycast = -1, loc_displayMode = -1, loc_invViewProj = -1, loc_camPos = -1;
         static GLint loc_ambient = -1, loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
@@ -1517,52 +1520,52 @@ void flushDrawQueue() {
         static GLint loc_texSlot[8] = {0};
         static bool uniformsCached = false;
         if (!uniformsCached) {
-            loc_raycast = glGetUniformLocation(defaultLightingShader, "raycast");
-            loc_displayMode = glGetUniformLocation(defaultLightingShader, "displayMode");
-            loc_invViewProj = glGetUniformLocation(defaultLightingShader, "invViewProj");
-            loc_camPos = glGetUniformLocation(defaultLightingShader, "camPos");
-            loc_ambient = glGetUniformLocation(defaultLightingShader, "ambientLight");
-            loc_fogColor = glGetUniformLocation(defaultLightingShader, "fogColor");
-            loc_fogStart = glGetUniformLocation(defaultLightingShader, "fogStart");
-            loc_fogEnd = glGetUniformLocation(defaultLightingShader, "fogEnd");
-            loc_numLights = glGetUniformLocation(defaultLightingShader, "numLights");
-            loc_panoramaTex = glGetUniformLocation(defaultLightingShader, "panoramaTex");
-            loc_hasPanorama = glGetUniformLocation(defaultLightingShader, "hasPanorama");
-            loc_triCount = glGetUniformLocation(defaultLightingShader, "triCount");
-            loc_triTexWidth = glGetUniformLocation(defaultLightingShader, "triTexWidth");
-            loc_triTexHeight = glGetUniformLocation(defaultLightingShader, "triTexHeight");
-            loc_triTexPos = glGetUniformLocation(defaultLightingShader, "triTexPos");
-            loc_triTexNorm = glGetUniformLocation(defaultLightingShader, "triTexNorm");
-            loc_triTexColor = glGetUniformLocation(defaultLightingShader, "triTexColor");
-            loc_triTexIndices = glGetUniformLocation(defaultLightingShader, "triTexIndices");
-            loc_triTexUV = glGetUniformLocation(defaultLightingShader, "triTexUV");
-            loc_portalCount = glGetUniformLocation(defaultLightingShader, "portalCount");
-            loc_portalPos = glGetUniformLocation(defaultLightingShader, "portalPos");
-            loc_portalNormal = glGetUniformLocation(defaultLightingShader, "portalNormal");
-            loc_portalD = glGetUniformLocation(defaultLightingShader, "portalD");
-            loc_portalInvWorld = glGetUniformLocation(defaultLightingShader, "portalInvWorld");
-            loc_portalVertCount = glGetUniformLocation(defaultLightingShader, "portalVertCount");
-            loc_portalVerts = glGetUniformLocation(defaultLightingShader, "portalVerts");
-            loc_portalTeleport = glGetUniformLocation(defaultLightingShader, "portalTeleport");
+            loc_raycast = glGetUniformLocation(currentShaderProg, "raycast");
+            loc_displayMode = glGetUniformLocation(currentShaderProg, "displayMode");
+            loc_invViewProj = glGetUniformLocation(currentShaderProg, "invViewProj");
+            loc_camPos = glGetUniformLocation(currentShaderProg, "camPos");
+            loc_ambient = glGetUniformLocation(currentShaderProg, "ambientLight");
+            loc_fogColor = glGetUniformLocation(currentShaderProg, "fogColor");
+            loc_fogStart = glGetUniformLocation(currentShaderProg, "fogStart");
+            loc_fogEnd = glGetUniformLocation(currentShaderProg, "fogEnd");
+            loc_numLights = glGetUniformLocation(currentShaderProg, "numLights");
+            loc_panoramaTex = glGetUniformLocation(currentShaderProg, "panoramaTex");
+            loc_hasPanorama = glGetUniformLocation(currentShaderProg, "hasPanorama");
+            loc_triCount = glGetUniformLocation(currentShaderProg, "triCount");
+            loc_triTexWidth = glGetUniformLocation(currentShaderProg, "triTexWidth");
+            loc_triTexHeight = glGetUniformLocation(currentShaderProg, "triTexHeight");
+            loc_triTexPos = glGetUniformLocation(currentShaderProg, "triTexPos");
+            loc_triTexNorm = glGetUniformLocation(currentShaderProg, "triTexNorm");
+            loc_triTexColor = glGetUniformLocation(currentShaderProg, "triTexColor");
+            loc_triTexIndices = glGetUniformLocation(currentShaderProg, "triTexIndices");
+            loc_triTexUV = glGetUniformLocation(currentShaderProg, "triTexUV");
+            loc_portalCount = glGetUniformLocation(currentShaderProg, "portalCount");
+            loc_portalPos = glGetUniformLocation(currentShaderProg, "portalPos");
+            loc_portalNormal = glGetUniformLocation(currentShaderProg, "portalNormal");
+            loc_portalD = glGetUniformLocation(currentShaderProg, "portalD");
+            loc_portalInvWorld = glGetUniformLocation(currentShaderProg, "portalInvWorld");
+            loc_portalVertCount = glGetUniformLocation(currentShaderProg, "portalVertCount");
+            loc_portalVerts = glGetUniformLocation(currentShaderProg, "portalVerts");
+            loc_portalTeleport = glGetUniformLocation(currentShaderProg, "portalTeleport");
             for (int i = 0; i < MAX_LIGHTS; i++) {
                 char buf[64];
                 snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
-                loc_lightEnabled[i] = glGetUniformLocation(defaultLightingShader, buf);
+                loc_lightEnabled[i] = glGetUniformLocation(currentShaderProg, buf);
                 snprintf(buf, sizeof(buf), "lights[%d].position", i);
-                loc_lightPos[i] = glGetUniformLocation(defaultLightingShader, buf);
+                loc_lightPos[i] = glGetUniformLocation(currentShaderProg, buf);
                 snprintf(buf, sizeof(buf), "lights[%d].direction", i);
-                loc_lightDir[i] = glGetUniformLocation(defaultLightingShader, buf);
+                loc_lightDir[i] = glGetUniformLocation(currentShaderProg, buf);
                 snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
-                loc_lightDiffuse[i] = glGetUniformLocation(defaultLightingShader, buf);
+                loc_lightDiffuse[i] = glGetUniformLocation(currentShaderProg, buf);
                 snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
-                loc_lightCutoff[i] = glGetUniformLocation(defaultLightingShader, buf);
+                loc_lightCutoff[i] = glGetUniformLocation(currentShaderProg, buf);
                 snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
-                loc_lightAtten[i] = glGetUniformLocation(defaultLightingShader, buf);
+                loc_lightAtten[i] = glGetUniformLocation(currentShaderProg, buf);
             }
             for (int i = 0; i < 8; i++) {
                 char name[32];
                 snprintf(name, sizeof(name), "textures[%d]", i);
-                loc_texSlot[i] = glGetUniformLocation(defaultLightingShader, name);
+                loc_texSlot[i] = glGetUniformLocation(currentShaderProg, name);
             }
             uniformsCached = true;
         }
@@ -1742,10 +1745,10 @@ void flushDrawQueue() {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         glDisable(GL_BLEND);
-        useShader(defaultLightingShader);
+        useShader(currentShaderProg);
         if (loc_displayMode != -1) glUniform1i(loc_displayMode, 1);
         if (loc_raycast != -1) glUniform1i(loc_raycast, 0);
-        GLint loc_accumulationTex = glGetUniformLocation(defaultLightingShader, "accumulationTex");
+        GLint loc_accumulationTex = glGetUniformLocation(currentShaderProg, "accumulationTex");
         glUniform1i(loc_accumulationTex, 0);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, accumulationTex);
@@ -2752,6 +2755,8 @@ void draw3DObject(float cx, float cy, float cz,
 void enable_light() {
     if (!lighting_global) {
         initDefaultShader();
+        if (currentShaderProg == 0)
+            currentShaderProg = defaultLightingShader;
         useShader(currentShaderProg);
         lighting_global = true;
         glEnable(GL_COLOR_MATERIAL);
