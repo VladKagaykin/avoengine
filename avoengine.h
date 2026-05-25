@@ -56,7 +56,8 @@ extern CameraParams camera;
 void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
 
 void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness);
-void square(float local_size,float x,float y,double r,double g,double b,float rotate,const float* vertices,const char* tex=nullptr);
+void square(float local_size, float x, float y, double r, double g, double b,
+            float rotate, const float* vertices, const char* tex=nullptr, float alpha = 1.0f);
 
 void draw_text(const char* text,float x,float y,void* font,float r,float g,float b,float a=1.0f);
 
@@ -128,8 +129,16 @@ void draw_line_3d(float x, float y, float z,
                   float x1, float y1, float z1,
                   float x2, float y2, float z2,
                   float r, float g, float b, float a, float thickness,
-                  int segments = 8);
-void draw3DObject(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices,const std::vector<int>& indices,const std::vector<float>& texcoords={},const std::vector<float>& normals={});
+                  int segments, float alpha = 1.0f);
+void draw3DObject(float cx, float cy, float cz,
+                  double r, double g, double b,
+                  const char* tex,
+                  const std::vector<float>& vertices,
+                  const std::vector<int>& indices,
+                  const std::vector<float>& texcoords,
+                  const std::vector<float>& normals,
+                  float yaw = 0.0f, float pitch = 0.0f, float roll = 0.0f,
+                  float alpha = 1.0f);
 void enable_light();
 void disable_light();
 

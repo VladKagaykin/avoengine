@@ -1052,12 +1052,16 @@ struct DrawCommand {
 
     float obj_cx, obj_cy, obj_cz;
     float obj_r, obj_g, obj_b;
+    float obj_alpha;
     std::string obj_tex;
     std::vector<float> obj_vertices;
     std::vector<int> obj_indices;
     std::vector<float> obj_texcoords;
     std::vector<float> obj_normals;
     float radius = 0.0f;
+    float obj_yaw = 0.0f;
+    float obj_pitch = 0.0f;
+    float obj_roll = 0.0f;
 
     const pseudo_3d_entity* entity;
     float cam_x, cam_y, cam_z;
@@ -1235,7 +1239,7 @@ void flushDrawQueue() {
             case CMD_PANORAMA:
                 panoramaCommands.push_back(cmd);
                 break;
-            default: // CMD_3DOBJECT, CMD_PSEUDO3D и всё остальное
+            default:
                 commands3D.push_back(cmd);
                 break;
         }
@@ -1275,7 +1279,7 @@ void flushDrawQueue() {
             int totalPixels = triTexWidth * triTexHeight;
             std::vector<float> posData(totalPixels * 3, 0.0f);
             std::vector<float> normData(totalPixels * 3, 0.0f);
-            std::vector<float> colData(totalPixels * 3, 0.0f);
+            std::vector<float> colData(totalPixels * 4, 0.0f);
             std::vector<float> uvData(totalPixels * 2, 0.0f);
             std::vector<float> idxData(totalPixels * 4, -1.0f);
 
@@ -1293,23 +1297,37 @@ void flushDrawQueue() {
                         if (!cmd.obj_tex.empty()) texID = loadTextureFromFile(cmd.obj_tex.c_str());
                         int slot = getTextureSlot(texID);
 
+                        float yaw = cmd.obj_yaw * M_PI / 180.0f;
+                        float pitch = cmd.obj_pitch * M_PI / 180.0f;
+                        float roll = cmd.obj_roll * M_PI / 180.0f;
+                        glm::mat4 rotMat = glm::mat4(1.0f);
+                        rotMat = glm::rotate(rotMat, yaw, glm::vec3(0,1,0));
+                        rotMat = glm::rotate(rotMat, pitch, glm::vec3(1,0,0));
+                        rotMat = glm::rotate(rotMat, roll, glm::vec3(0,0,1));
+
                         for (size_t i = 0; i + 2 < idxs.size(); i += 3) {
                             if (texIdx >= totalTriangles) break;
                             int i0 = idxs[i]*3, i1 = idxs[i+1]*3, i2 = idxs[i+2]*3;
                             for (int j = 0; j < 3; j++) {
                                 int vidx = (j==0?i0:j==1?i1:i2);
+                                glm::vec4 local(verts[vidx], verts[vidx+1], verts[vidx+2], 1.0f);
+                                glm::vec4 rotated = rotMat * local;
                                 int base = texIdx * 9 + j * 3;
-                                posData[base+0] = verts[vidx] + cx;
-                                posData[base+1] = verts[vidx+1] + cy;
-                                posData[base+2] = verts[vidx+2] + cz;
+                                posData[base+0] = rotated.x + cx;
+                                posData[base+1] = rotated.y + cy;
+                                posData[base+2] = rotated.z + cz;
                                 if (vidx+2 < (int)norms.size()) {
-                                    normData[base+0] = norms[vidx];
-                                    normData[base+1] = norms[vidx+1];
-                                    normData[base+2] = norms[vidx+2];
+                                    glm::vec4 normLocal(norms[vidx], norms[vidx+1], norms[vidx+2], 0.0f);
+                                    glm::vec4 normRotated = rotMat * normLocal;
+                                    normData[base+0] = normRotated.x;
+                                    normData[base+1] = normRotated.y;
+                                    normData[base+2] = normRotated.z;
                                 }
-                                colData[base+0] = cmd.obj_r;
-                                colData[base+1] = cmd.obj_g;
-                                colData[base+2] = cmd.obj_b;
+                                int colBase = texIdx * 12 + j * 4;
+                                colData[colBase+0] = cmd.obj_r;
+                                colData[colBase+1] = cmd.obj_g;
+                                colData[colBase+2] = cmd.obj_b;
+                                colData[colBase+3] = cmd.obj_alpha;
                                 int uvBase = texIdx * 6 + j * 2;
                                 if (vidx/3*2+1 < (int)uvs.size()) {
                                     uvData[uvBase+0] = uvs[vidx/3*2];
@@ -1431,9 +1449,11 @@ void flushDrawQueue() {
                                 normData[base+0] = normal.x;
                                 normData[base+1] = normal.y;
                                 normData[base+2] = normal.z;
-                                colData[base+0] = 1.0f;
-                                colData[base+1] = 1.0f;
-                                colData[base+2] = 1.0f;
+                                int colBase = texIdx * 12 + j * 4;
+                                colData[colBase+0] = 1.0f;
+                                colData[colBase+1] = 1.0f;
+                                colData[colBase+2] = 1.0f;
+                                colData[colBase+3] = 1.0f;
                                 int uvBase = texIdx * 6 + j * 2;
                                 uvData[uvBase+0] = uvsArr[idx].x;
                                 uvData[uvBase+1] = uvsArr[idx].y;
@@ -1463,7 +1483,7 @@ void flushDrawQueue() {
 
             glActiveTexture(GL_TEXTURE4);
             glBindTexture(GL_TEXTURE_2D, triTexColor);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, triTexWidth, triTexHeight, GL_RGB, GL_FLOAT, colData.data());
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, triTexWidth, triTexHeight, GL_RGBA, GL_FLOAT, colData.data());
 
             if (triTexUV == 0) {
                 glGenTextures(1, &triTexUV);
@@ -1757,13 +1777,13 @@ void flushDrawQueue() {
             glGenBuffers(1, &sq_ibo);
             glBindVertexArray(sq_vao);
             glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
-            glBufferData(GL_ARRAY_BUFFER, 4 * 7 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+            glBufferData(GL_ARRAY_BUFFER, 4 * 8 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
             glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)0);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
             glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(2 * sizeof(float)));
+            glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(2 * sizeof(float)));
             glEnableVertexAttribArray(8);
-            glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), (void*)(5 * sizeof(float)));
+            glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
             GLuint indices[6] = {0, 1, 2, 0, 2, 3};
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sq_ibo);
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
@@ -1800,15 +1820,15 @@ void flushDrawQueue() {
                     } else { ensureWhiteTex(); glBindTexture(GL_TEXTURE_2D, whiteTex); }
                     float ar = cmd.rotate * M_PI / -180.0f;
                     float tc[8] = {0,1, 1,1, 1,0, 0,0};
-                    float data[28];
+                    float data[32];
                     for (int i = 0; i < 4; ++i) {
                         float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
                         rotatePoint(px, py, 0, 0, ar);
                         float vx = cmd.cx + px * cmd.scale;
                         float vy = cmd.cy + py * cmd.scale;
-                        data[i*7+0] = vx; data[i*7+1] = vy;
-                        data[i*7+2] = cmd.r; data[i*7+3] = cmd.g; data[i*7+4] = cmd.b;
-                        data[i*7+5] = tc[i*2]; data[i*7+6] = tc[i*2+1];
+                        data[i*8+0] = vx; data[i*8+1] = vy;
+                        data[i*8+2] = cmd.r; data[i*8+3] = cmd.g; data[i*8+4] = cmd.b; data[i*8+5] = cmd.a;
+                        data[i*8+6] = tc[i*2]; data[i*8+7] = tc[i*2+1];
                     }
                     glBindVertexArray(sq_vao);
                     glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
@@ -2003,7 +2023,7 @@ void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, floa
 }
 // квадрат
 void square(float local_size, float x, float y, double r, double g, double b,
-            float rotate, const float* vertices, const char* tex) {
+            float rotate, const float* vertices, const char* tex, float alpha){
     DrawCommand cmd;
     cmd.type = CMD_SQUARE;
     cmd.scale = local_size;
@@ -2012,6 +2032,7 @@ void square(float local_size, float x, float y, double r, double g, double b,
     cmd.r = (float)r;
     cmd.g = (float)g;
     cmd.b = (float)b;
+    cmd.a = alpha;
     cmd.rotate = rotate;
     cmd.vertCount = 4;
     for (int i = 0; i < 8; i++) cmd.verts[i] = vertices[i];
@@ -2576,7 +2597,7 @@ void draw_line_3d(float x, float y, float z,
                   float x1, float y1, float z1,
                   float x2, float y2, float z2,
                   float r, float g, float b, float a, float thickness,
-                  int segments) {
+                  int segments, float alpha) {
     if (segments < 3) segments = 3; 
 
     float wx1 = x + x1, wy1 = y + y1, wz1 = z + z1;
@@ -2690,7 +2711,7 @@ void draw_line_3d(float x, float y, float z,
 
     std::vector<float> texcoords(totalVerts * 2, 0.0f);
 
-    draw3DObject(0, 0, 0, r, g, b, nullptr, vertices, indices, texcoords, normals);
+    draw3DObject(0, 0, 0, r, g, b, nullptr, vertices, indices, texcoords, normals, 0.0f, 0.0f, 0.0f, alpha);
 }
 // рисуем 3д объект, указывая вершины треугольников
 void draw3DObject(float cx, float cy, float cz,
@@ -2699,7 +2720,9 @@ void draw3DObject(float cx, float cy, float cz,
                   const std::vector<float>& vertices,
                   const std::vector<int>& indices,
                   const std::vector<float>& texcoords,
-                  const std::vector<float>& normals) {
+                  const std::vector<float>& normals,
+                  float yaw, float pitch , float roll,
+                  float alpha){
     float maxDist = 0.0f;
     for (size_t i = 0; i < vertices.size(); i += 3) {
         float dx = vertices[i] - cx;
@@ -2713,6 +2736,8 @@ void draw3DObject(float cx, float cy, float cz,
     cmd.type = CMD_3DOBJECT;
     cmd.obj_cx = cx; cmd.obj_cy = cy; cmd.obj_cz = cz;
     cmd.obj_r = (float)r; cmd.obj_g = (float)g; cmd.obj_b = (float)b;
+    cmd.obj_alpha = alpha;
+    cmd.obj_yaw = yaw; cmd.obj_pitch = pitch; cmd.obj_roll = roll;
     if (tex) cmd.obj_tex = tex;
     cmd.obj_vertices = vertices;
     cmd.obj_indices  = indices;
