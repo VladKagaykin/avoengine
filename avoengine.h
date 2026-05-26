@@ -236,17 +236,12 @@ public:
     float yawB, pitchB, rollB;
     std::vector<float> vertices;   
 
-private:
-    friend void flushDrawQueue();
+    glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
 
-    GLuint portalVAO = 0;
-    GLuint portalVBO = 0;
-    int portalIndexCount = 0;
+    bool pointInPortalPolygon(const glm::vec2& point) const;
 
     glm::mat4 getPortalTransform(float fx, float fy, float fz,
                                   float tx, float ty, float tz) const;
-    glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
-    bool pointInPortalPolygon(const glm::vec2& point) const;
 
     struct SideState {
         glm::vec3 prevCamPos = glm::vec3(0.0f);

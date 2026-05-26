@@ -335,23 +335,6 @@ float global_ambient[3] = {0.05f, 0.05f, 0.05f};
 std::vector<pseudo_3d_entity*> allEntities;
 std::vector<Portal*> allPortals;
 
-struct GenericShadowCaster {
-    float pos[3];        
-    float radius;        
-    GLuint textureID;    
-    
-    std::vector<float> vertices;
-    std::vector<int> indices;
-    std::vector<float> normals;
-    std::vector<float> texcoords;
-    
-    bool isLine;
-    float lineStart[3], lineEnd[3];
-    float lineThickness;
-};
-
-static std::vector<GenericShadowCaster*> genericCasters;
-
 //              утилиты 
 // вычисляем то, куда смотрит центр камеры и прочее
 static inline void lookAtForward(float eye_x,float eye_y,float eye_z,float pitch_deg,float yaw_deg,float& cx,float& cy,float& cz,float& dx,float& dy,float& dz){
@@ -525,7 +508,7 @@ static const char* defaultFragmentShader = R"(
 #define MAX_TEXTURES 2         
 #define MAX_PORTALS 8
 #define MAX_PORTAL_VERTS 16
-#define MAX_BOUNCES 4
+#define MAX_BOUNCES 40
 
 struct Light {
     bool enabled;
@@ -967,65 +950,7 @@ static void ensureWhiteTex() {
     }
 }
 
-void registerShadowCaster3D(float cx, float cy, float cz, float radius,
-                            const std::vector<float>& vertices,
-                            const std::vector<int>& indices,
-                            const std::vector<float>& normals,
-                            const std::vector<float>& texcoords,
-                            const char* textureFile) {
-    GenericShadowCaster* caster = new GenericShadowCaster;
-    caster->pos[0] = cx; caster->pos[1] = cy; caster->pos[2] = cz;
-    caster->radius = radius;
-    caster->isLine = false;
-    caster->vertices = vertices;
-    caster->indices = indices;
-    caster->normals = normals;
-    caster->texcoords = texcoords;
-    if (textureFile && textureFile[0]) {
-        caster->textureID = loadTextureFromFile(textureFile);
-    } else {
-        ensureWhiteTex();
-        caster->textureID = whiteTex;
-    }
-    genericCasters.push_back(caster);
-}
-
-void registerShadowCasterLine(float x, float y, float z,
-                              float x1, float y1, float z1,
-                              float x2, float y2, float z2,
-                              float thickness, const char* textureFile) {
-    GenericShadowCaster* caster = new GenericShadowCaster;
-    caster->pos[0] = x;
-    caster->pos[1] = y;
-    caster->pos[2] = z;
-    caster->isLine = true;
-
-    // Мировые координаты начала и конца отрезка
-    caster->lineStart[0] = x + x1;
-    caster->lineStart[1] = y + y1;
-    caster->lineStart[2] = z + z1;
-    caster->lineEnd[0]   = x + x2;
-    caster->lineEnd[1]   = y + y2;
-    caster->lineEnd[2]   = z + z2;
-    caster->lineThickness = thickness;
-
-    if (textureFile && textureFile[0]) {
-        caster->textureID = loadTextureFromFile(textureFile);
-    } else {
-        ensureWhiteTex();
-        caster->textureID = whiteTex;
-    }
-
-    float dx = caster->lineEnd[0] - caster->lineStart[0];
-    float dy = caster->lineEnd[1] - caster->lineStart[1];
-    float dz = caster->lineEnd[2] - caster->lineStart[2];
-    float len = sqrtf(dx*dx + dy*dy + dz*dz);
-    caster->radius = len * 0.5f + thickness;
-
-    genericCasters.push_back(caster);
-}
-
-//              очень ужасное вэбэо
+//              очень ужасный рэй кастинг
 enum DrawCommandType : int {
     CMD_SQUARE,
     CMD_TEXT,
@@ -1076,103 +1001,6 @@ static int skyboxIndexCount = 0;
 
 static std::vector<DrawCommand> drawQueue;
 static std::mutex drawQueueMutex;
-
-// Вспомогательная функция для пересоздания GL-буфера, если его размер меньше требуемого
-static GLuint vao3D = 0;
-static GLuint vbo_pos = 0, vbo_norm = 0, vbo_uv = 0, ibo = 0;
-static size_t cap_pos = 0, cap_norm = 0, cap_uv = 0, cap_idx = 0;
-
-static void ensureBuffer(GLuint &buf, size_t &currentSize, size_t requiredSize, GLenum target) {
-    if (requiredSize > currentSize) {
-        size_t newSize = std::max(requiredSize, currentSize * 2);
-        if (buf) glDeleteBuffers(1, &buf);
-        glGenBuffers(1, &buf);
-        glBindBuffer(target, buf);
-        glBufferData(target, newSize, nullptr, GL_DYNAMIC_DRAW);
-        currentSize = newSize;
-    } else {
-        glBindBuffer(target, buf);
-    }
-}
-
-static float frustumPlanes[6][4]; 
-
-bool sphereInFrustum(float x, float y, float z, float radius) {
-    for (int i = 0; i < 6; i++) {
-        float dist = frustumPlanes[i][0] * x +
-                     frustumPlanes[i][1] * y +
-                     frustumPlanes[i][2] * z +
-                     frustumPlanes[i][3];
-        if (dist <= -radius)
-            return false;
-    }
-    return true;
-} 
-
-void extractFrustumPlanes() {
-    float proj[16], modl[16], clip[16];
-    glGetFloatv(GL_PROJECTION_MATRIX, proj);
-    glGetFloatv(GL_MODELVIEW_MATRIX, modl);
-
-   
-    clip[ 0] = modl[ 0]*proj[ 0] + modl[ 1]*proj[ 4] + modl[ 2]*proj[ 8] + modl[ 3]*proj[12];
-    clip[ 1] = modl[ 0]*proj[ 1] + modl[ 1]*proj[ 5] + modl[ 2]*proj[ 9] + modl[ 3]*proj[13];
-    clip[ 2] = modl[ 0]*proj[ 2] + modl[ 1]*proj[ 6] + modl[ 2]*proj[10] + modl[ 3]*proj[14];
-    clip[ 3] = modl[ 0]*proj[ 3] + modl[ 1]*proj[ 7] + modl[ 2]*proj[11] + modl[ 3]*proj[15];
-    clip[ 4] = modl[ 4]*proj[ 0] + modl[ 5]*proj[ 4] + modl[ 6]*proj[ 8] + modl[ 7]*proj[12];
-    clip[ 5] = modl[ 4]*proj[ 1] + modl[ 5]*proj[ 5] + modl[ 6]*proj[ 9] + modl[ 7]*proj[13];
-    clip[ 6] = modl[ 4]*proj[ 2] + modl[ 5]*proj[ 6] + modl[ 6]*proj[10] + modl[ 7]*proj[14];
-    clip[ 7] = modl[ 4]*proj[ 3] + modl[ 5]*proj[ 7] + modl[ 6]*proj[11] + modl[ 7]*proj[15];
-    clip[ 8] = modl[ 8]*proj[ 0] + modl[ 9]*proj[ 4] + modl[10]*proj[ 8] + modl[11]*proj[12];
-    clip[ 9] = modl[ 8]*proj[ 1] + modl[ 9]*proj[ 5] + modl[10]*proj[ 9] + modl[11]*proj[13];
-    clip[10] = modl[ 8]*proj[ 2] + modl[ 9]*proj[ 6] + modl[10]*proj[10] + modl[11]*proj[14];
-    clip[11] = modl[ 8]*proj[ 3] + modl[ 9]*proj[ 7] + modl[10]*proj[11] + modl[11]*proj[15];
-    clip[12] = modl[12]*proj[ 0] + modl[13]*proj[ 4] + modl[14]*proj[ 8] + modl[15]*proj[12];
-    clip[13] = modl[12]*proj[ 1] + modl[13]*proj[ 5] + modl[14]*proj[ 9] + modl[15]*proj[13];
-    clip[14] = modl[12]*proj[ 2] + modl[13]*proj[ 6] + modl[14]*proj[10] + modl[15]*proj[14];
-    clip[15] = modl[12]*proj[ 3] + modl[13]*proj[ 7] + modl[14]*proj[11] + modl[15]*proj[15];
-
-    
-    frustumPlanes[0][0] = clip[ 3] - clip[ 0];
-    frustumPlanes[0][1] = clip[ 7] - clip[ 4];
-    frustumPlanes[0][2] = clip[11] - clip[ 8];
-    frustumPlanes[0][3] = clip[15] - clip[12];
-   
-    frustumPlanes[1][0] = clip[ 3] + clip[ 0];
-    frustumPlanes[1][1] = clip[ 7] + clip[ 4];
-    frustumPlanes[1][2] = clip[11] + clip[ 8];
-    frustumPlanes[1][3] = clip[15] + clip[12];
-   
-    frustumPlanes[2][0] = clip[ 3] + clip[ 1];
-    frustumPlanes[2][1] = clip[ 7] + clip[ 5];
-    frustumPlanes[2][2] = clip[11] + clip[ 9];
-    frustumPlanes[2][3] = clip[15] + clip[13];
-    
-    frustumPlanes[3][0] = clip[ 3] - clip[ 1];
-    frustumPlanes[3][1] = clip[ 7] - clip[ 5];
-    frustumPlanes[3][2] = clip[11] - clip[ 9];
-    frustumPlanes[3][3] = clip[15] - clip[13];
-  
-    frustumPlanes[4][0] = clip[ 3] - clip[ 2];
-    frustumPlanes[4][1] = clip[ 7] - clip[ 6];
-    frustumPlanes[4][2] = clip[11] - clip[10];
-    frustumPlanes[4][3] = clip[15] - clip[14];
- 
-    frustumPlanes[5][0] = clip[ 3] + clip[ 2];
-    frustumPlanes[5][1] = clip[ 7] + clip[ 6];
-    frustumPlanes[5][2] = clip[11] + clip[10];
-    frustumPlanes[5][3] = clip[15] + clip[14];
-
-    for (int i = 0; i < 6; i++) {
-        float len = sqrtf(frustumPlanes[i][0]*frustumPlanes[i][0] +
-                          frustumPlanes[i][1]*frustumPlanes[i][1] +
-                          frustumPlanes[i][2]*frustumPlanes[i][2]);
-        frustumPlanes[i][0] /= len;
-        frustumPlanes[i][1] /= len;
-        frustumPlanes[i][2] /= len;
-        frustumPlanes[i][3] /= len;
-    }
-}
 
 static bool currentIs2D = false;
 
@@ -3123,7 +2951,7 @@ void draw_performance_hud(int win_w, int win_h) {
 }
 // панорама
 sphere_panorama sphere_sky;
-static GLuint skybox_list = 0; 
+ 
 void set_panorama(const char* path) {
     if (sphere_sky.enabled) remove_panorama();
 
@@ -3242,67 +3070,12 @@ Portal::Portal(float ax, float ay, float az,
     , yawA(yawA), pitchA(pitchA), rollA(rollA)
     , yawB(yawB), pitchB(pitchB), rollB(rollB)
 {
-    int n = (int)vertices.size() / 3;
-    if (n >= 4) {
-        std::vector<float> vboData = {
-            vertices[0], vertices[1], vertices[2],      0,0,1,   0,0,
-            vertices[3], vertices[4], vertices[5],      0,0,1,   1,0,
-            vertices[6], vertices[7], vertices[8],      0,0,1,   1,1,
-            vertices[9], vertices[10], vertices[11],    0,0,1,   0,1
-        };
-        std::vector<unsigned int> indices = { 0,1,2, 0,2,3 };
-        portalIndexCount = (int)indices.size();
-
-        glGenVertexArrays(1, &portalVAO);
-        glGenBuffers(1, &portalVBO);
-        GLuint portalIBO;
-        glGenBuffers(1, &portalIBO);
-
-        glBindVertexArray(portalVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, portalVBO);
-        glBufferData(GL_ARRAY_BUFFER, vboData.size() * sizeof(float), vboData.data(), GL_STATIC_DRAW);
-
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(8);
-        glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, portalIBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
-
-        glBindVertexArray(0);
-        glDeleteBuffers(1, &portalIBO);
-    }
-
     allPortals.push_back(this);
 }
 
 Portal::~Portal() {
-    if (portalVAO) glDeleteVertexArrays(1, &portalVAO);
-    if (portalVBO) glDeleteBuffers(1, &portalVBO);
     auto it = std::find(allPortals.begin(), allPortals.end(), this);
     if (it != allPortals.end()) allPortals.erase(it);
-}
-
-static void portalSetUniforms(GLuint prog, GLuint tex, bool depthOnly) {
-    glUseProgram(prog);
-    if (loc_portalMode != -1) glUniform1i(loc_portalMode, 1);
-    if (loc_portalDepthOnly != -1) glUniform1i(loc_portalDepthOnly, depthOnly ? 1 : 0);
-    if (loc_portalTex != -1) glUniform1i(loc_portalTex, 1);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glActiveTexture(GL_TEXTURE0);
-}
-
-static void portalClearUniforms(GLuint prog) {
-    if (loc_portalMode != -1) glUniform1i(loc_portalMode, 0);
-    if (loc_portalDepthOnly != -1) glUniform1i(loc_portalDepthOnly, 0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0);
-    glUseProgram(0);
 }
 
 bool Portal::pointInPortalPolygon(const glm::vec2& point) const {
