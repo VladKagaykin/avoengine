@@ -70,9 +70,6 @@ public:
 
     void draw(float cam_x, float cam_y, float cam_z) const;
 
-    void setCastShadow(bool enable);
-    bool castsShadow() const { return _castsShadow; }
-
     float getRadius() const { return radius; }
 
     float getX() const { return x; }
@@ -112,13 +109,7 @@ private:
 
     mutable int cachedTexIdx = -1;
     mutable float cachedDirX = 1e9f, cachedDirY = 1e9f, cachedDirZ = 1e9f;
-
-    bool _castsShadow = false;
 };
-
-extern std::vector<pseudo_3d_entity*> shadowCasters;
-
-void applyAllShadows();
 
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void changeSize3D(int w,int h);
@@ -173,7 +164,6 @@ void applyAllLights();
 extern GLuint defaultLightingShader;
 
 void set_ambient_light(float r, float g, float b);
-void apply_material(float r, float g, float b, float alpha = 1.0f, float shininess = 32.0f);
 void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);
 void disable_fog();
 void set_fog_range(float start, float end);

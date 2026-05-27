@@ -593,7 +593,6 @@ MapEntity entityToMapData(const pseudo_3d_entity& ent) {
     me.v_angles = ent.getVAngles();
     me.textures = ent.getTextures();
     me.vertices = ent.getVertices();
-    me.castShadow = ent.castsShadow();
     return me;
 }
 
