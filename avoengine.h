@@ -130,8 +130,6 @@ void draw3DObject(float cx, float cy, float cz,
                   const std::vector<float>& normals,
                   float yaw = 0.0f, float pitch = 0.0f, float roll = 0.0f,
                   float alpha = 1.0f);
-void enable_light();
-void disable_light();
 
 #define MAX_LIGHTS 16
 
