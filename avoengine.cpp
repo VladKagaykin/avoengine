@@ -1325,11 +1325,12 @@ void flushDrawQueue() {
     std::vector<DrawCommand> commands2D;
     std::vector<DrawCommand> commands3D;
     std::vector<DrawCommand> panoramaCommands;
+    std::vector<Portal*> portalCommands;
     bool hasPortalCommand = false;
 
     for (auto& cmd : drawQueue) {
         switch (cmd.type) {
-            case CMD_PORTAL: hasPortalCommand = true; break;
+            case CMD_PORTAL: hasPortalCommand = true; portalCommands.push_back(cmd.portal); break;
             case CMD_SQUARE: case CMD_TEXT: case CMD_LINE_2D: commands2D.push_back(cmd); break;
             case CMD_PANORAMA: panoramaCommands.push_back(cmd); break;
             default: commands3D.push_back(cmd); break;
@@ -1764,7 +1765,13 @@ void flushDrawQueue() {
         float portalTeleport[MAX_PORTALS * 16] = {0};
 
         if (hasPortalCommand) {
-            for (Portal* p : allPortals) {
+            std::vector<Portal*> uniquePortals;
+            for (Portal* p : portalCommands) {
+                if (std::find(uniquePortals.begin(), uniquePortals.end(), p) == uniquePortals.end()) {
+                    uniquePortals.push_back(p);
+                }
+            }
+            for (Portal* p : uniquePortals) {
                 if (portalCount >= MAX_PORTALS) break;
                 auto addPortalSide = [&](float px, float py, float pz, float yaw, float pitch, float roll,
                                          float nx, float ny, float nz, const glm::mat4& teleport) {
