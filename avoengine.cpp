@@ -627,90 +627,140 @@ void fetchBVHNode(int nodeIdx, out vec3 bmin, out int left, out vec3 bmax, out i
     escape = int(d2.z);
 }
 
-float shadowRay(int lightIdx, vec3 hitPos, vec3 N) {
+float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
     Light L = lights[lightIdx];
-    vec3 lightPos = L.position;
+    vec3 lightPos = (portalTransform * vec4(L.position, 1.0)).xyz;
     vec3 lightDir = L.direction;
     bool isSpot = dot(lightDir, lightDir) > 0.000001;
+    if (isSpot) {
+        lightDir = normalize(mat3(portalTransform) * L.direction);
+    }
 
     vec3 toLight = lightPos - hitPos;
     float distToLight = length(toLight);
     if (isSpot) {
         vec3 dirToLight = toLight / distToLight;
-        vec3 Ldir = normalize(lightDir);
-        float cosAngle = dot(-dirToLight, Ldir);
-        if (cosAngle < L.cutoff) return 0.0;
+        float cosAngle = dot(-dirToLight, lightDir);
         if (cosAngle < L.cutoff) return 0.0;
     }
-    vec3 rd = toLight / distToLight;
+
     vec3 ro = hitPos + N * SHADOW_BIAS;
-    float maxDist = distToLight;
+    vec3 rd = normalize(toLight);
+    float remaining = distToLight;
 
     float invTriW = 1.0 / float(triTexWidth);
     float invTriH = 1.0 / float(triTexHeight);
     float triW = float(triTexWidth);
 
-    int nodeIdx = 0;
-    while (nodeIdx >= 0 && nodeIdx < bvhNodeCount) {
-        vec3 bmin, bmax;
-        int left, right, firstTri, triCountNode, escape;
-        fetchBVHNode(nodeIdx, bmin, left, bmax, right, firstTri, triCountNode, escape);
-        
-        float tmin, tmax;
-        if (!intersectAABB(ro, rd, bmin, bmax, tmin, tmax)) {
-            nodeIdx = escape;
-            continue;
-        }
-        if (left < 0) { // лист
-            for (int i = firstTri; i < firstTri + triCountNode; i++) {
-                float base = float(i) * 3.0;
-                float u0 = mod(base, triW) * invTriW;
-                float v0coord = floor(base * invTriW) * invTriH;
-                vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
-                float i0 = idxData0.x;
-                if (i0 < 0.0) continue;
-                float tid_f = idxData0.z;
+    mat4 shadowPortalMat = mat4(1.0);
 
-                float u1 = mod(base+1.0, triW) * invTriW;
-                float v1coord = floor((base+1.0) * invTriW) * invTriH;
-                float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
-                float u2 = mod(base+2.0, triW) * invTriW;
-                float v2coord = floor((base+2.0) * invTriW) * invTriH;
-                float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
+    for (int bounce = 0; bounce < MAX_SHADOW_BOUNCES; bounce++) {
+        float closestObj = remaining;
+        float closestPortal = remaining;
+        int portalIdx = -1;
 
-                float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
-                float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
-                float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
+        int nodeIdx = 0;
+        while (nodeIdx >= 0 && nodeIdx < bvhNodeCount) {
+            vec3 bmin, bmax;
+            int left, right, firstTri, triCountNode, escape;
+            fetchBVHNode(nodeIdx, bmin, left, bmax, right, firstTri, triCountNode, escape);
+            float tminAABB, tmaxAABB;
+            if (!intersectAABB(ro, rd, bmin, bmax, tminAABB, tmaxAABB) || tminAABB > remaining) {
+                nodeIdx = escape;
+                continue;
+            }
+            if (left < 0) {
+                for (int i = firstTri; i < firstTri + triCountNode; i++) {
+                    float base = float(i) * 3.0;
+                    float u0 = mod(base, triW) * invTriW;
+                    float v0coord = floor(base * invTriW) * invTriH;
+                    vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
+                    float i0 = idxData0.x;
+                    if (i0 < 0.0) continue;
+                    if (idxData0.w > 0.5) continue;
+                    float tid_f = idxData0.z;
 
-                vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
-                vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
-                vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
+                    float u1 = mod(base+1.0, triW) * invTriW;
+                    float v1coord = floor((base+1.0) * invTriW) * invTriH;
+                    float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
+                    float u2 = mod(base+2.0, triW) * invTriW;
+                    float v2coord = floor((base+2.0) * invTriW) * invTriH;
+                    float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
 
-                vec3 faceNormal;
-                float u, v;
-                float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
-                if (t > SHADOW_BIAS && t < maxDist) {
-                    int texID = int(floor(tid_f));
-                    bool opaque = true;
-                    if (texID >= 0 && texID < MAX_TEXTURES) {
-                        vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
-                        vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
-                        vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
-                        vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
-                        vec4 texCol;
-                        if (texID == 0) texCol = texture2D(textures[0], uvCoord);
-                        else texCol = texture2D(textures[1], uvCoord);
-                        if (texCol.a < 0.5) opaque = false;
+                    float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
+                    float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
+                    float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
+
+                    vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
+                    vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
+                    vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
+
+                    vec3 faceNormal;
+                    float u, v;
+                    float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
+                    if (t > SHADOW_BIAS && t < closestObj) {
+                        int texID = int(floor(tid_f));
+                        bool opaque = true;
+                        if (texID >= 0 && texID < MAX_TEXTURES) {
+                            vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
+                            vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
+                            vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
+                            vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
+                            vec4 texCol;
+                            if (texID == 0) texCol = texture2D(textures[0], uvCoord);
+                            else texCol = texture2D(textures[1], uvCoord);
+                            if (texCol.a < 0.5) opaque = false;
+                        }
+                        if (opaque) closestObj = t;
                     }
-                    if (opaque) return 0.0;
+                }
+                nodeIdx = escape;
+            } else {
+                nodeIdx = left;
+            }
+        }
+
+        for (int p = 0; p < portalCount; p++) {
+            vec3 Np = portalNormal[p];
+            float denom = dot(rd, Np);
+            if (abs(denom) < 0.0001) continue;
+            float t = -(dot(ro, Np) + portalD[p]) / denom;
+            if (t > 0.001 && t < closestPortal) {
+                vec3 candidatePos = ro + rd * t;
+                vec2 localPt = (portalInvWorld[p] * vec4(candidatePos, 1.0)).xy;
+                int vc = portalVertCount[p];
+                bool inside = false;
+                for (int i = 0, j = vc-1; i < vc; j = i++) {
+                    vec2 vi = portalVerts[p * MAX_PORTAL_VERTS + i];
+                    vec2 vj = portalVerts[p * MAX_PORTAL_VERTS + j];
+                    if (((vi.y > localPt.y) != (vj.y > localPt.y)) &&
+                        (localPt.x < (vj.x-vi.x)*(localPt.y-vi.y)/(vj.y-vi.y)+vi.x))
+                        inside = !inside;
+                }
+                if (inside) {
+                    closestPortal = t;
+                    portalIdx = p;
                 }
             }
-            nodeIdx = escape;
+        }
+
+        if (closestPortal < closestObj && closestPortal < remaining) {
+            ro = ro + rd * closestPortal;
+            remaining -= closestPortal;
+            shadowPortalMat = portalTeleport[portalIdx] * shadowPortalMat;
+            vec4 newRo = portalTeleport[portalIdx] * vec4(ro, 1.0);
+            ro = newRo.xyz;
+            vec3 newToLight = (shadowPortalMat * vec4(lightPos, 1.0)).xyz - ro;
+            remaining = length(newToLight);
+            rd = normalize(newToLight);
+            ro += rd * 0.001;
+        } else if (closestObj < remaining) {
+            return 0.0;
         } else {
-            nodeIdx = left;
+            return 1.0;
         }
     }
-    return 1.0;
+    return 0.0;
 }
 
 void main() {
@@ -734,6 +784,7 @@ void main() {
         worldPos /= worldPos.w;
         vec3 rd = normalize(worldPos.xyz - ro);
         float totalDist = 0.0;
+        mat4 cumulativePortalTransform = mat4(1.0);
 
         float invTriW = 1.0 / float(triTexWidth);
         float invTriH = 1.0 / float(triTexHeight);
@@ -869,6 +920,7 @@ void main() {
 
             if (isPortalHit) {
                 totalDist += closest;
+                cumulativePortalTransform = portalTeleport[portalHitIdx] * cumulativePortalTransform;
                 ro = vec3(portalTeleport[portalHitIdx] * vec4(hitPos, 1.0));
                 rd = normalize(mat3(portalTeleport[portalHitIdx]) * rd);
             } else {
@@ -879,20 +931,28 @@ void main() {
                 for (int j = 0; j < numLights; j++) {
                     if (!lights[j].enabled) continue;
                     if (lights[j].attenuation.x <= 0.0) continue;
+
+                    vec3 Lpos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
+                    vec3 Ldir = lights[j].direction;
+                    bool isSpot = dot(Ldir, Ldir) > 0.000001;
+                    if (isSpot) {
+                        Ldir = normalize(mat3(cumulativePortalTransform) * Ldir);
+                    }
+
                     vec3 L;
                     float atten;
-                    if (dot(lights[j].direction, lights[j].direction) > 0.000001) {
-                        vec3 toPoint = hitPos - lights[j].position;
+                    if (isSpot) {
+                        vec3 toPoint = hitPos - Lpos;
                         float d2 = dot(toPoint, toPoint);
                         if (d2 < 0.000001) continue;
                         float invDist = inversesqrt(d2);
-                        vec3 dirToHit = toPoint * invDist;  
+                        vec3 dirToHit = toPoint * invDist;
                         float d = 1.0 / invDist;
                         atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
-                        if (dot(dirToHit, normalize(lights[j].direction)) < lights[j].cutoff) continue;
+                        if (dot(dirToHit, Ldir) < lights[j].cutoff) continue;
                         L = -dirToHit;
                     } else {
-                        vec3 toLight = lights[j].position - hitPos;
+                        vec3 toLight = Lpos - hitPos;
                         float d2 = dot(toLight, toLight);
                         if (d2 < 0.000001) continue;
                         float invDist = inversesqrt(d2);
@@ -902,7 +962,7 @@ void main() {
                     }
                     float diff = max(dot(N, L), 0.0);
                     if (diff > 0.0) {
-                        float shadow = shadowRay(j, hitPos, N);
+                        float shadow = shadowRay(j, hitPos, N, cumulativePortalTransform);
                         col += lights[j].diffuse * diff * atten * shadow;
                     }
                 }
