@@ -862,17 +862,18 @@ void main() {
                                     vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
                                     vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
                                     vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
+                                    vec3 rawNormal;
                                     if (dot(interpN, interpN) < 0.0000001) {
-                                        hitNormal = normalize(faceNormal);
+                                        rawNormal = normalize(faceNormal);
                                     } else {
-                                        hitNormal = normalize(interpN);
+                                        rawNormal = normalize(interpN);
                                     }
+                                    hitNormal = (dot(rawNormal, rd) > 0.0) ? -rawNormal : rawNormal;
                                 }
                                 hitCol = col;
                                 hitTexID = texID;
                                 isPortalHit = false;
                             }
-                            if (dot(hitNormal, rd) > 0.0) hitNormal = -hitNormal;
                         }
                     }
                     nodeIdx = escape;
@@ -2863,8 +2864,8 @@ void applyAllLights() {
         }
 
         if (loc_lightEnabled[i] != -1) glUniform1i(loc_lightEnabled[i], 1);
-        if (loc_lightPosition[i] != -1) glUniform3fv(loc_lightPosition[i], 1, viewPos);
-        if (loc_lightDirection[i] != -1) glUniform3fv(loc_lightDirection[i], 1, viewDir);
+        if (loc_lightPosition[i] != -1) glUniform3f(loc_lightPosition[i], light->pos[0], light->pos[1], light->pos[2]);
+        if (loc_lightDirection[i] != -1) glUniform3f(loc_lightDirection[i], light->dir[0], light->dir[1], light->dir[2]);
 
         float diff[3] = { light->color[0] * light->intensity,
                           light->color[1] * light->intensity,
@@ -3062,8 +3063,8 @@ void draw_performance_hud(int win_w, int win_h) {
     }
     draw_text(buf, 10.0f, float(win_h) - 20.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
 
-    snprintf(buf, sizeof(buf), "X: %.10f  Y: %.10f  Z: %.10f",
-             camera.eye_x, camera.eye_y, camera.eye_z);
+    snprintf(buf, sizeof(buf), "X: %.10f  Y: %.10f  Z: %.10f P: %.10f  Y: %.10f  R: %.10f",
+    camera.eye_x, camera.eye_y, camera.eye_z,camera.pitch , camera.yaw, camera.roll);
     draw_text(buf, 10.0f, float(win_h) - 32.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
     snprintf(buf, sizeof(buf), "CPU: %s  RAM: %s  GPU: %s",
              cpu_name.c_str(), ram_v.c_str(), gpu_name.c_str());
