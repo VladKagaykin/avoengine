@@ -573,6 +573,12 @@ uniform int bvhNodeCount;
 uniform int bvhTexWidth;   
 uniform int bvhTexHeight;  
 
+uniform bool warpPlaneEnabled;
+uniform vec3 warpPlaneOrigin;
+uniform vec3 warpPlaneAxisU;
+uniform vec3 warpPlaneAxisV;
+uniform sampler2D warpPlaneDisplacementTex;
+
 const float PI = 3.14159265;
 const float TWO_PI = 6.2831853;
 
@@ -655,6 +661,17 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
     mat4 shadowPortalMat = mat4(1.0);
 
     for (int bounce = 0; bounce < MAX_SHADOW_BOUNCES; bounce++) {
+
+        if (warpPlaneEnabled) {
+            vec3 localPos = ro - warpPlaneOrigin;
+            float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+            float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+            if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
+                vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
+                rd = normalize(rd + disp * 0.8);
+            }
+        }
+
         float closestObj = remaining;
         float closestPortal = remaining;
         int portalIdx = -1;
@@ -791,6 +808,18 @@ void main() {
         float triW = float(triTexWidth);
 
         for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
+            if (warpPlaneEnabled) {
+                vec3 localPos = ro - warpPlaneOrigin;
+                float u = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+                float v = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+
+                if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
+                    vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(u, v)).rgb;
+                    // Отклоняем только направление луча, не позицию
+                    rd = normalize(rd + disp * 0.8);
+                }
+            }
+
             float closest = MAX_DIST;
             vec3 hitPos, hitNormal, hitCol;
             int hitTexID = -1;
@@ -933,7 +962,19 @@ void main() {
                     if (!lights[j].enabled) continue;
                     if (lights[j].attenuation.x <= 0.0) continue;
 
-                    vec3 Lpos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
+                    vec3 effectiveLightPos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
+                    if (warpPlaneEnabled) {
+                        vec3 localPos = hitPos - warpPlaneOrigin;
+                        float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+                        float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+                        if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
+                            vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
+                            effectiveLightPos += disp * 2.0;
+                        }
+                    }
+
+                    vec3 Lpos = effectiveLightPos;
+
                     vec3 Ldir = lights[j].direction;
                     bool isSpot = dot(Ldir, Ldir) > 0.000001;
                     if (isSpot) {
@@ -1379,6 +1420,42 @@ GLuint createBVHTexture(const std::vector<float>& packedData, int nodeCount) {
     return tex;
 }
 
+WarpPlane* activeWarpPlane = nullptr;
+
+WarpPlane::WarpPlane() : originX(0), originY(0), originZ(0), yaw(0), pitch(0), roll(0),
+                          sizeU(1), sizeV(1), displacementTex(0), enabled(false) {}
+
+void WarpPlane::setDisplacementTexture(const char* filename) {
+    if (displacementTex) glDeleteTextures(1, &displacementTex);
+    displacementTex = loadTextureFromFile(filename);
+}
+
+void WarpPlane::setDisplacementFromData(int w, int h, const float* data) {
+    if (displacementTex) glDeleteTextures(1, &displacementTex);
+    glGenTextures(1, &displacementTex);
+    glBindTexture(GL_TEXTURE_2D, displacementTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, w, h, 0, GL_RGB, GL_FLOAT, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void WarpPlane::enable() {
+    enabled = true;
+    activeWarpPlane = this;
+}
+
+void WarpPlane::disable() {
+    enabled = false;
+    if (activeWarpPlane == this) activeWarpPlane = nullptr;
+}
+
+void set_active_warp_plane(WarpPlane* wp) {
+    activeWarpPlane = wp;
+}
+
 void flushDrawQueue() {
     applyAllLights();
     if (drawQueue.empty()) return;
@@ -1701,6 +1778,7 @@ void flushDrawQueue() {
         static GLint loc_lightDiffuse[MAX_LIGHTS] = {0}, loc_lightCutoff[MAX_LIGHTS] = {0}, loc_lightAtten[MAX_LIGHTS] = {0};
         static GLint loc_texSlot[8] = {0};
         static GLint loc_bvhTex = -2, loc_bvhNodeCount = -2, loc_bvhTexWidth = -2, loc_bvhTexHeight = -2;
+        static GLint loc_warpEnabled = -1, loc_warpOrigin = -1, loc_warpAxisU = -1, loc_warpAxisV = -1, loc_warpDisplacementTex = -1;
         static bool uniformsCached = false;
         if (!uniformsCached) {
             loc_raycast = glGetUniformLocation(currentShaderProg, "raycast");
@@ -1746,6 +1824,11 @@ void flushDrawQueue() {
             loc_bvhNodeCount = glGetUniformLocation(currentShaderProg, "bvhNodeCount");
             loc_bvhTexWidth = glGetUniformLocation(currentShaderProg, "bvhTexWidth");
             loc_bvhTexHeight = glGetUniformLocation(currentShaderProg, "bvhTexHeight");
+            loc_warpEnabled = glGetUniformLocation(currentShaderProg, "warpPlaneEnabled");
+            loc_warpOrigin = glGetUniformLocation(currentShaderProg, "warpPlaneOrigin");
+            loc_warpAxisU = glGetUniformLocation(currentShaderProg, "warpPlaneAxisU");
+            loc_warpAxisV = glGetUniformLocation(currentShaderProg, "warpPlaneAxisV");
+            loc_warpDisplacementTex = glGetUniformLocation(currentShaderProg, "warpPlaneDisplacementTex");
             uniformsCached = true;
         }
 
@@ -1875,6 +1958,26 @@ void flushDrawQueue() {
             glUniform1iv(loc_portalVertCount, portalCount, portalVertCount);
             glUniform2fv(loc_portalVerts, MAX_PORTALS * MAX_PORTAL_VERTS, portalVerts);
             glUniformMatrix4fv(loc_portalTeleport, portalCount, GL_FALSE, portalTeleport);
+        }
+
+        if (activeWarpPlane && activeWarpPlane->enabled) {
+            glUniform1i(loc_warpEnabled, 1);
+            glUniform3f(loc_warpOrigin, activeWarpPlane->originX, activeWarpPlane->originY, activeWarpPlane->originZ);
+
+            glm::mat4 rot = glm::mat4(1.0f);
+            rot = glm::rotate(rot, glm::radians(activeWarpPlane->yaw), glm::vec3(0,1,0));
+            rot = glm::rotate(rot, glm::radians(activeWarpPlane->pitch), glm::vec3(1,0,0));
+            rot = glm::rotate(rot, glm::radians(activeWarpPlane->roll), glm::vec3(0,0,1));
+            glm::vec3 uAxis = glm::vec3(rot * glm::vec4(activeWarpPlane->sizeU, 0, 0, 0));
+            glm::vec3 vAxis = glm::vec3(rot * glm::vec4(0, activeWarpPlane->sizeV, 0, 0));
+            glUniform3fv(loc_warpAxisU, 1, &uAxis[0]);
+            glUniform3fv(loc_warpAxisV, 1, &vAxis[0]);
+
+            glActiveTexture(GL_TEXTURE11);
+            glBindTexture(GL_TEXTURE_2D, activeWarpPlane->displacementTex);
+            glUniform1i(loc_warpDisplacementTex, 11);
+        } else {
+            glUniform1i(loc_warpEnabled, 0);
         }
 
         glActiveTexture(GL_TEXTURE0);
