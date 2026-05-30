@@ -513,6 +513,7 @@ static const char* defaultFragmentShader = R"(
 #define SHADOW_WARP_STRENGTH 0.05
 #define CAM_STEP_SIZE 0.99
 #define SHADOW_STEP_SIZE 0.99
+#define MAX_SHADOW_BOUNCES 2      // ограничение на число проходов через порталы для теней
 
 struct Light {
     bool enabled;
@@ -765,6 +766,7 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
 
 float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
     Light L = lights[lightIdx];
+    // начальное положение источника в пространстве, скорректированное переданной матрицей порталов
     vec3 lightPos = (portalTransform * vec4(L.position, 1.0)).xyz;
     vec3 lightDir = L.direction;
     bool isSpot = dot(lightDir, lightDir) > 0.000001;
@@ -774,6 +776,7 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
 
     vec3 toLight = lightPos - hitPos;
     float distToLight = length(toLight);
+    // проверяем spot сразу
     if (isSpot) {
         vec3 dirToLight = toLight / distToLight;
         float cosAngle = dot(-dirToLight, lightDir);
@@ -783,11 +786,15 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
     vec3 ro = hitPos + N * SHADOW_BIAS;
     vec3 rd = normalize(toLight);
     float remaining = distToLight;
-    float travelled = 0.0;
+    mat4 currentTransform = portalTransform;
+    int portalBounces = 0;
 
+    // основной цикл марша теневого луча
     for (int i = 0; i < 128; i++) {
         if (remaining <= 0.0) break;
         float step = min(SHADOW_STEP_SIZE, remaining);
+
+        // деформация направления (warp)
         if (warpPlaneEnabled) {
             vec3 localPos = ro - warpPlaneOrigin;
             float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
@@ -798,20 +805,60 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
             }
         }
 
+        // поиск пересечений на текущем отрезке
         float tHit;
-        vec3 junkPos, junkNorm, junkCol;
-        int junkTex;
-        bool junkPortal;
-        int junkIdx;
-        bool segHit = traceSegment(ro, rd, step, tHit, junkPos, junkNorm, junkCol, junkTex, junkPortal, junkIdx);
-        // Игнорируем пересечения ближе SHADOW_BIAS (самозатенение)
-        if (segHit && tHit > SHADOW_BIAS) {
-            return 0.0;
+        vec3 segPos, segNorm, segCol;
+        int segTex;
+        bool isPortalHit;
+        int portalIdx;
+        bool segHit = traceSegment(ro, rd, step, tHit, segPos, segNorm, segCol, segTex, isPortalHit, portalIdx);
+
+        if (segHit) {
+            if (isPortalHit) {
+                // ----- попали в портал: телепортируем луч -----
+                if (portalBounces >= MAX_SHADOW_BOUNCES) return 0.0; // исчерпали лимит
+                portalBounces++;
+
+                // продвигаемся до портала
+                ro = ro + rd * tHit;
+                remaining -= tHit;
+
+                // телепортация и обновление матрицы преобразования
+                currentTransform = portalTeleport[portalIdx] * currentTransform;
+                ro = vec3(portalTeleport[portalIdx] * vec4(ro, 1.0));
+                rd = normalize(mat3(portalTeleport[portalIdx]) * rd);
+
+                // небольшой отступ от портала, чтобы не застрять
+                ro += rd * 0.001;
+
+                // пересчитываем источник в новом пространстве
+                lightPos = (currentTransform * vec4(L.position, 1.0)).xyz;
+                if (isSpot) {
+                    lightDir = normalize(mat3(currentTransform) * L.direction);
+                }
+
+                // пересчитываем расстояние и направление к источнику
+                toLight = lightPos - ro;
+                distToLight = length(toLight);
+                rd = normalize(toLight);
+                remaining = distToLight;
+
+                // проверка spot в новом пространстве
+                if (isSpot) {
+                    float cosAngle = dot(-rd, lightDir);
+                    if (cosAngle < L.cutoff) return 0.0;
+                }
+                continue; // переходим к следующему шагу марша (не прибавляем step)
+            } else {
+                // пересекли непрозрачную геометрию – тень
+                if (tHit > SHADOW_BIAS) return 0.0;
+                // если пересечение слишком близко (самозатенение), игнорируем и продолжаем
+            }
         }
 
+        // продвигаем луч на шаг
         ro = ro + rd * step;
         remaining -= step;
-        travelled += step;
     }
     return 1.0;
 }
@@ -866,7 +913,6 @@ void main() {
                 bool segHit = traceSegment(ro, rd, stepSize, tHit, hitPos, hitNormal, hitCol, hitTexID, isPortalHit, portalHitIdx);
 
                 if (segHit) {
-                    // Учитываем всё пройденное расстояние до попадания
                     totalDist += travelledThisBounce + tHit;
                     hit = true;
                     break;
@@ -891,7 +937,7 @@ void main() {
                 cumulativePortalTransform = portalTeleport[portalHitIdx] * cumulativePortalTransform;
                 ro = vec3(portalTeleport[portalHitIdx] * vec4(hitPos, 1.0));
                 rd = normalize(mat3(portalTeleport[portalHitIdx]) * rd);
-                totalDist = 0.0; // сброс расстояния после портала (дизайнерское решение)
+                totalDist = 0.0;
             } else {
                 float fogCoord = totalDist;
                 vec3 N = normalize(hitNormal);
