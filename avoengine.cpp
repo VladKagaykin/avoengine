@@ -502,14 +502,17 @@ void main() {
 static const char* defaultFragmentShader = R"(
 #version 120
 #define MAX_LIGHTS 16
-#define MAX_BOUNCES 8
+#define MAX_BOUNCES 4
 #define SURF_DIST 0.001
 #define MAX_DIST 1000.0
-#define MAX_TEXTURES 2         
+#define MAX_TEXTURES 2
 #define MAX_PORTALS 8
 #define MAX_PORTAL_VERTS 16
-#define MAX_SHADOW_BOUNCES 2
 #define SHADOW_BIAS 0.001
+#define CAM_WARP_STRENGTH 0.05
+#define SHADOW_WARP_STRENGTH 0.05
+#define CAM_STEP_SIZE 0.99
+#define SHADOW_STEP_SIZE 0.99
 
 struct Light {
     bool enabled;
@@ -550,7 +553,7 @@ uniform sampler2D triTexNorm;
 uniform sampler2D triTexColor;
 uniform sampler2D triTexUV;
 uniform sampler2D triTexIndices;
-uniform sampler2D textures[MAX_TEXTURES];   
+uniform sampler2D textures[MAX_TEXTURES];
 uniform int triCount;
 uniform int triTexWidth;
 uniform int triTexHeight;
@@ -570,8 +573,8 @@ uniform mat4 portalTeleport[MAX_PORTALS];
 
 uniform sampler2D bvhTex;
 uniform int bvhNodeCount;
-uniform int bvhTexWidth;   
-uniform int bvhTexHeight;  
+uniform int bvhTexWidth;
+uniform int bvhTexHeight;
 
 uniform bool warpPlaneEnabled;
 uniform vec3 warpPlaneOrigin;
@@ -633,6 +636,133 @@ void fetchBVHNode(int nodeIdx, out vec3 bmin, out int left, out vec3 bmax, out i
     escape = int(d2.z);
 }
 
+bool traceSegment(vec3 ro, vec3 rd, float maxT,
+                  out float hitT, out vec3 hitPos, out vec3 hitNormal,
+                  out vec3 hitCol, out int hitTexID, out bool isPortalHit,
+                  out int portalIdx) {
+    float closest = maxT;
+    hitT = maxT;
+    isPortalHit = false;
+    portalIdx = -1;
+
+    float invTriW = 1.0 / float(triTexWidth);
+    float invTriH = 1.0 / float(triTexHeight);
+    float triW = float(triTexWidth);
+
+    int nodeIdx = 0;
+    while (nodeIdx >= 0 && nodeIdx < bvhNodeCount) {
+        vec3 bmin, bmax;
+        int left, right, firstTri, triCountNode, escape;
+        fetchBVHNode(nodeIdx, bmin, left, bmax, right, firstTri, triCountNode, escape);
+        float tminAABB, tmaxAABB;
+        if (!intersectAABB(ro, rd, bmin, bmax, tminAABB, tmaxAABB) || tminAABB > maxT) {
+            nodeIdx = escape;
+            continue;
+        }
+        if (left < 0) {
+            for (int i = firstTri; i < firstTri + triCountNode; i++) {
+                float base = float(i) * 3.0;
+                float u0 = mod(base, triW) * invTriW;
+                float v0coord = floor(base * invTriW) * invTriH;
+                vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
+                float i0 = idxData0.x;
+                if (i0 < 0.0) continue;
+                float billFlag = idxData0.y;
+                float tid_f = idxData0.z;
+
+                float u1 = mod(base+1.0, triW) * invTriW;
+                float v1coord = floor((base+1.0) * invTriW) * invTriH;
+                float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
+                float u2 = mod(base+2.0, triW) * invTriW;
+                float v2coord = floor((base+2.0) * invTriW) * invTriH;
+                float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
+
+                float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
+                float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
+                float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
+
+                vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
+                vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
+                vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
+
+                vec3 faceNormal;
+                float u, v;
+                float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
+                if (t > 0.0 && t < closest) {
+                    int texID = int(floor(tid_f));
+                    bool opaque = true;
+                    vec3 col = texture2D(triTexColor, vec2(p0x, p0y)).rgb;
+                    if (texID >= 0 && texID < MAX_TEXTURES) {
+                        vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
+                        vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
+                        vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
+                        vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
+                        vec4 texCol;
+                        if (texID == 0) texCol = texture2D(textures[0], uvCoord);
+                        else texCol = texture2D(textures[1], uvCoord);
+                        if (texCol.a < 0.5) opaque = false;
+                        col = texCol.rgb * col;
+                    }
+                    if (opaque) {
+                        closest = t;
+                        hitPos = ro + rd * t;
+                        if (billFlag < 0.5) {
+                            hitNormal = -rd;
+                        } else {
+                            vec3 n0 = texture2D(triTexNorm, vec2(p0x, p0y)).rgb;
+                            vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
+                            vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
+                            vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
+                            vec3 rawNormal;
+                            if (dot(interpN, interpN) < 0.0000001) {
+                                rawNormal = normalize(faceNormal);
+                            } else {
+                                rawNormal = normalize(interpN);
+                            }
+                            hitNormal = (dot(rawNormal, rd) > 0.0) ? -rawNormal : rawNormal;
+                        }
+                        hitCol = col;
+                        hitTexID = texID;
+                        isPortalHit = false;
+                    }
+                }
+            }
+            nodeIdx = escape;
+        } else {
+            nodeIdx = left;
+        }
+    }
+
+    for (int p = 0; p < portalCount; p++) {
+        vec3 Np = portalNormal[p];
+        float denom = dot(rd, Np);
+        if (abs(denom) < 0.0001) continue;
+        float t = -(dot(ro, Np) + portalD[p]) / denom;
+        if (t > 0.001 && t < closest) {
+            vec3 candidatePos = ro + rd * t;
+            vec2 localPt = (portalInvWorld[p] * vec4(candidatePos, 1.0)).xy;
+            int vc = portalVertCount[p];
+            bool inside = false;
+            for (int i = 0, j = vc-1; i < vc; j = i++) {
+                vec2 vi = portalVerts[p * MAX_PORTAL_VERTS + i];
+                vec2 vj = portalVerts[p * MAX_PORTAL_VERTS + j];
+                if (((vi.y > localPt.y) != (vj.y > localPt.y)) &&
+                    (localPt.x < (vj.x-vi.x)*(localPt.y-vi.y)/(vj.y-vi.y)+vi.x))
+                    inside = !inside;
+            }
+            if (inside) {
+                closest = t;
+                hitPos = candidatePos;
+                isPortalHit = true;
+                portalIdx = p;
+            }
+        }
+    }
+
+    hitT = closest;
+    return closest < maxT;
+}
+
 float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
     Light L = lights[lightIdx];
     vec3 lightPos = (portalTransform * vec4(L.position, 1.0)).xyz;
@@ -653,131 +783,37 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform) {
     vec3 ro = hitPos + N * SHADOW_BIAS;
     vec3 rd = normalize(toLight);
     float remaining = distToLight;
+    float travelled = 0.0;
 
-    float invTriW = 1.0 / float(triTexWidth);
-    float invTriH = 1.0 / float(triTexHeight);
-    float triW = float(triTexWidth);
-
-    mat4 shadowPortalMat = mat4(1.0);
-
-    for (int bounce = 0; bounce < MAX_SHADOW_BOUNCES; bounce++) {
-
+    for (int i = 0; i < 128; i++) {
+        if (remaining <= 0.0) break;
+        float step = min(SHADOW_STEP_SIZE, remaining);
         if (warpPlaneEnabled) {
             vec3 localPos = ro - warpPlaneOrigin;
             float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
             float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
             if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
                 vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
-                rd = normalize(rd + disp * 0.8);
+                rd = normalize(rd + disp * SHADOW_WARP_STRENGTH);
             }
         }
 
-        float closestObj = remaining;
-        float closestPortal = remaining;
-        int portalIdx = -1;
-
-        int nodeIdx = 0;
-        while (nodeIdx >= 0 && nodeIdx < bvhNodeCount) {
-            vec3 bmin, bmax;
-            int left, right, firstTri, triCountNode, escape;
-            fetchBVHNode(nodeIdx, bmin, left, bmax, right, firstTri, triCountNode, escape);
-            float tminAABB, tmaxAABB;
-            if (!intersectAABB(ro, rd, bmin, bmax, tminAABB, tmaxAABB) || tminAABB > remaining) {
-                nodeIdx = escape;
-                continue;
-            }
-            if (left < 0) {
-                for (int i = firstTri; i < firstTri + triCountNode; i++) {
-                    float base = float(i) * 3.0;
-                    float u0 = mod(base, triW) * invTriW;
-                    float v0coord = floor(base * invTriW) * invTriH;
-                    vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
-                    float i0 = idxData0.x;
-                    if (i0 < 0.0) continue;
-                    if (idxData0.w > 0.5) continue;
-                    float tid_f = idxData0.z;
-
-                    float u1 = mod(base+1.0, triW) * invTriW;
-                    float v1coord = floor((base+1.0) * invTriW) * invTriH;
-                    float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
-                    float u2 = mod(base+2.0, triW) * invTriW;
-                    float v2coord = floor((base+2.0) * invTriW) * invTriH;
-                    float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
-
-                    float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
-                    float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
-                    float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
-
-                    vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
-                    vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
-                    vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
-
-                    vec3 faceNormal;
-                    float u, v;
-                    float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
-                    if (t > SHADOW_BIAS && t < closestObj) {
-                        int texID = int(floor(tid_f));
-                        bool opaque = true;
-                        if (texID >= 0 && texID < MAX_TEXTURES) {
-                            vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
-                            vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
-                            vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
-                            vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
-                            vec4 texCol;
-                            if (texID == 0) texCol = texture2D(textures[0], uvCoord);
-                            else texCol = texture2D(textures[1], uvCoord);
-                            if (texCol.a < 0.5) opaque = false;
-                        }
-                        if (opaque) closestObj = t;
-                    }
-                }
-                nodeIdx = escape;
-            } else {
-                nodeIdx = left;
-            }
-        }
-
-        for (int p = 0; p < portalCount; p++) {
-            vec3 Np = portalNormal[p];
-            float denom = dot(rd, Np);
-            if (abs(denom) < 0.0001) continue;
-            float t = -(dot(ro, Np) + portalD[p]) / denom;
-            if (t > 0.001 && t < closestPortal) {
-                vec3 candidatePos = ro + rd * t;
-                vec2 localPt = (portalInvWorld[p] * vec4(candidatePos, 1.0)).xy;
-                int vc = portalVertCount[p];
-                bool inside = false;
-                for (int i = 0, j = vc-1; i < vc; j = i++) {
-                    vec2 vi = portalVerts[p * MAX_PORTAL_VERTS + i];
-                    vec2 vj = portalVerts[p * MAX_PORTAL_VERTS + j];
-                    if (((vi.y > localPt.y) != (vj.y > localPt.y)) &&
-                        (localPt.x < (vj.x-vi.x)*(localPt.y-vi.y)/(vj.y-vi.y)+vi.x))
-                        inside = !inside;
-                }
-                if (inside) {
-                    closestPortal = t;
-                    portalIdx = p;
-                }
-            }
-        }
-
-        if (closestPortal < closestObj && closestPortal < remaining) {
-            ro = ro + rd * closestPortal;
-            remaining -= closestPortal;
-            shadowPortalMat = portalTeleport[portalIdx] * shadowPortalMat;
-            vec4 newRo = portalTeleport[portalIdx] * vec4(ro, 1.0);
-            ro = newRo.xyz;
-            vec3 newToLight = (shadowPortalMat * vec4(lightPos, 1.0)).xyz - ro;
-            remaining = length(newToLight);
-            rd = normalize(newToLight);
-            ro += rd * 0.001;
-        } else if (closestObj < remaining) {
+        float tHit;
+        vec3 junkPos, junkNorm, junkCol;
+        int junkTex;
+        bool junkPortal;
+        int junkIdx;
+        bool segHit = traceSegment(ro, rd, step, tHit, junkPos, junkNorm, junkCol, junkTex, junkPortal, junkIdx);
+        // Игнорируем пересечения ближе SHADOW_BIAS (самозатенение)
+        if (segHit && tHit > SHADOW_BIAS) {
             return 0.0;
-        } else {
-            return 1.0;
         }
+
+        ro = ro + rd * step;
+        remaining -= step;
+        travelled += step;
     }
-    return 0.0;
+    return 1.0;
 }
 
 void main() {
@@ -803,141 +839,44 @@ void main() {
         float totalDist = 0.0;
         mat4 cumulativePortalTransform = mat4(1.0);
 
-        float invTriW = 1.0 / float(triTexWidth);
-        float invTriH = 1.0 / float(triTexHeight);
-        float triW = float(triTexWidth);
-
         for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
-            if (warpPlaneEnabled) {
-                vec3 localPos = ro - warpPlaneOrigin;
-                float u = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
-                float v = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
-
-                if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
-                    vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(u, v)).rgb;
-                    // Отклоняем только направление луча, не позицию
-                    rd = normalize(rd + disp * 0.8);
-                }
-            }
-
-            float closest = MAX_DIST;
+            float travelledThisBounce = 0.0;
+            bool hit = false;
             vec3 hitPos, hitNormal, hitCol;
-            int hitTexID = -1;
-            bool isPortalHit = false;
-            int portalHitIdx = -1;
+            int hitTexID;
+            bool isPortalHit;
+            int portalHitIdx;
 
-            int nodeIdx = 0;
-            while (nodeIdx >= 0 && nodeIdx < bvhNodeCount) {
-                vec3 bmin, bmax;
-                int left, right, firstTri, triCountNode, escape;
-                fetchBVHNode(nodeIdx, bmin, left, bmax, right, firstTri, triCountNode, escape);
+            for (int step = 0; step < 200; step++) {
+                if (travelledThisBounce >= MAX_DIST) break;
 
-                float tminAABB, tmaxAABB;
-                if (!intersectAABB(ro, rd, bmin, bmax, tminAABB, tmaxAABB)) {
-                    nodeIdx = escape;
-                    continue;
-                }
-                if (left < 0) {
-                    for (int i = firstTri; i < firstTri + triCountNode; i++) {
-                        float base = float(i) * 3.0;
-                        float u0 = mod(base, triW) * invTriW;
-                        float v0coord = floor(base * invTriW) * invTriH;
-                        vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
-                        float i0 = idxData0.x;
-                        if (i0 < 0.0) continue;
-                        float billFlag = idxData0.y;
-                        float tid_f = idxData0.z;
+                float stepSize = min(CAM_STEP_SIZE, MAX_DIST - travelledThisBounce);
 
-                        float u1 = mod(base+1.0, triW) * invTriW;
-                        float v1coord = floor((base+1.0) * invTriW) * invTriH;
-                        float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
-                        float u2 = mod(base+2.0, triW) * invTriW;
-                        float v2coord = floor((base+2.0) * invTriW) * invTriH;
-                        float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
-
-                        float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
-                        float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
-                        float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
-
-                        vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
-                        vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
-                        vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
-
-                        vec3 faceNormal;
-                        float u, v;
-                        float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
-                        if (t > 0.0 && t < closest) {
-                            int texID = int(floor(tid_f));
-                            bool opaque = true;
-                            vec3 col = texture2D(triTexColor, vec2(p0x, p0y)).rgb;
-                            if (texID >= 0 && texID < MAX_TEXTURES) {
-                                vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
-                                vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
-                                vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
-                                vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
-                                vec4 texCol;
-                                if (texID == 0) texCol = texture2D(textures[0], uvCoord);
-                                else texCol = texture2D(textures[1], uvCoord);
-                                if (texCol.a < 0.5) opaque = false;
-                                col = texCol.rgb * col;
-                            }
-                            if (opaque) {
-                                closest = t;
-                                hitPos = ro + rd * t;
-                                if (billFlag < 0.5) {
-                                    hitNormal = -rd;
-                                } else {
-                                    vec3 n0 = texture2D(triTexNorm, vec2(p0x, p0y)).rgb;
-                                    vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
-                                    vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
-                                    vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
-                                    vec3 rawNormal;
-                                    if (dot(interpN, interpN) < 0.0000001) {
-                                        rawNormal = normalize(faceNormal);
-                                    } else {
-                                        rawNormal = normalize(interpN);
-                                    }
-                                    hitNormal = (dot(rawNormal, rd) > 0.0) ? -rawNormal : rawNormal;
-                                }
-                                hitCol = col;
-                                hitTexID = texID;
-                                isPortalHit = false;
-                            }
-                        }
+                if (warpPlaneEnabled) {
+                    vec3 localPos = ro - warpPlaneOrigin;
+                    float u = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+                    float v = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+                    if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
+                        vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(u, v)).rgb;
+                        rd = normalize(rd + disp * CAM_WARP_STRENGTH);
                     }
-                    nodeIdx = escape;
-                } else {
-                    nodeIdx = left;
                 }
+
+                float tHit;
+                bool segHit = traceSegment(ro, rd, stepSize, tHit, hitPos, hitNormal, hitCol, hitTexID, isPortalHit, portalHitIdx);
+
+                if (segHit) {
+                    // Учитываем всё пройденное расстояние до попадания
+                    totalDist += travelledThisBounce + tHit;
+                    hit = true;
+                    break;
+                }
+
+                ro = ro + rd * stepSize;
+                travelledThisBounce += stepSize;
             }
 
-            for (int p = 0; p < portalCount; p++) {
-                vec3 N = portalNormal[p];
-                float denom = dot(rd, N);
-                if (abs(denom) < 0.0001) continue;
-                float t = -(dot(ro, N) + portalD[p]) / denom;
-                if (t > 0.001 && t < closest) {
-                    vec3 candidatePos = ro + rd * t;
-                    vec2 localPt = (portalInvWorld[p] * vec4(candidatePos, 1.0)).xy;
-                    int vc = portalVertCount[p];
-                    bool inside = false;
-                    for (int i = 0, j = vc-1; i < vc; j = i++) {
-                        vec2 vi = portalVerts[p * MAX_PORTAL_VERTS + i];
-                        vec2 vj = portalVerts[p * MAX_PORTAL_VERTS + j];
-                        if (((vi.y > localPt.y) != (vj.y > localPt.y)) &&
-                            (localPt.x < (vj.x-vi.x)*(localPt.y-vi.y)/(vj.y-vi.y)+vi.x))
-                            inside = !inside;
-                    }
-                    if (inside) {
-                        closest = t;
-                        hitPos = candidatePos;
-                        isPortalHit = true;
-                        portalHitIdx = p;
-                    }
-                }
-            }
-
-            if (closest == MAX_DIST) {
+            if (!hit) {
                 if (hasPanorama) {
                     float panU = 0.5 + atan(rd.z, rd.x) / TWO_PI;
                     float panV = 0.5 + asin(rd.y) / PI;
@@ -949,12 +888,12 @@ void main() {
             }
 
             if (isPortalHit) {
-                totalDist += closest;
                 cumulativePortalTransform = portalTeleport[portalHitIdx] * cumulativePortalTransform;
                 ro = vec3(portalTeleport[portalHitIdx] * vec4(hitPos, 1.0));
                 rd = normalize(mat3(portalTeleport[portalHitIdx]) * rd);
+                totalDist = 0.0; // сброс расстояния после портала (дизайнерское решение)
             } else {
-                float fogCoord = totalDist + closest;
+                float fogCoord = totalDist;
                 vec3 N = normalize(hitNormal);
                 vec3 col = ambientLight;
 
@@ -969,12 +908,11 @@ void main() {
                         float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
                         if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
                             vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
-                            effectiveLightPos += disp * 2.0;
+                            effectiveLightPos += disp * SHADOW_WARP_STRENGTH * 2.0;
                         }
                     }
 
                     vec3 Lpos = effectiveLightPos;
-
                     vec3 Ldir = lights[j].direction;
                     bool isSpot = dot(Ldir, Ldir) > 0.000001;
                     if (isSpot) {
