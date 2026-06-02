@@ -47,6 +47,8 @@ public:
 extern WarpPlane* activeWarpPlane;
 void set_active_warp_plane(WarpPlane* wp);
 
+extern bool is_raycast;
+
 void flushDrawQueue();
 
 GLuint loadTextureFromFile(const char* filename);
@@ -177,7 +179,8 @@ public:
 
 void applyAllLights();
 
-extern GLuint defaultLightingShader;
+extern GLuint defaultRayCastingLightingShader;
+extern GLuint defaultVBOLightingShader;
 
 void set_ambient_light(float r, float g, float b);
 void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);
