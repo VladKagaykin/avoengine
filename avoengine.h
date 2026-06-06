@@ -252,6 +252,42 @@ public:
     glm::mat4 getPortalTransform(float fx, float fy, float fz,
                                   float tx, float ty, float tz) const;
 
+    void setSceneDrawCallback(std::function<void()> cb);
+
+    void drawPortalSurface(float px, float py, float pz, GLuint tex, bool sideB);
+
+    struct FBO {
+        GLuint fbo = 0;
+        GLuint colorTex = 0;
+        GLuint depthTex = 0;
+        int w = 0, h = 0;
+    };
+
+    FBO fboA, fboB;
+    std::function<void()> sceneDraw;
+
+    void initFBOs(int w, int h);
+    void destroyFBOs();
+    void resizeFBOs(int w, int h);
+
+    GLuint portalVAO = 0;
+    GLuint portalVBO = 0;
+    int portalIndexCount = 0;
+
+    glm::vec3 prevCamPos = glm::vec3(0.0f);  
+    float prevSignedDist = 0.0f;              
+    bool prevValid = false;
+    glm::vec3 getCenterA(const glm::mat4& worldMat) const {
+        glm::vec3 center(ax, ay, az);
+        int n = vertices.size() / 3;
+        for (int i = 0; i < n; ++i) {
+            glm::vec4 local(vertices[i*3], vertices[i*3+1], vertices[i*3+2], 1.0f);
+            glm::vec3 world = glm::vec3(worldMat * local);
+            center += world;
+        }
+        return center / float(n + 1);
+    }
+
     struct SideState {
         glm::vec3 prevCamPos = glm::vec3(0.0f);
         float prevSignedDist = 0.0f;
