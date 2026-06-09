@@ -49,7 +49,9 @@ void set_active_warp_plane(WarpPlane* wp);
 
 extern bool is_raycast;
 
-void flushDrawQueue();
+#define RECURSION_LEVEL 2
+
+void flushDrawQueue(int depth = 0);
 
 GLuint loadTextureFromFile(const char* filename);
 void clearTextureCache();
