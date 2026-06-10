@@ -802,7 +802,7 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform, int sam
         int portalBounces = 0;
 
         float shadowContrib = 1.0;
-        for (int i = 0; i < 128; i++) {
+        for (int i = 0; i < int(ceil(length(lights[lightIdx].diffuse) * 100.0 / shadowStepSize)); i++) {
             if (remaining <= 0.0) break;
             float step = min(shadowStepSize, remaining);
 
@@ -884,7 +884,7 @@ void main() {
             float totalDist = 0.0;
             mat4 cumulativePortalTransform = mat4(1.0);
 
-            for (int bounce = 0; bounce < 100; bounce++) {
+            for (int bounce = 0; bounce < portalCount+1; bounce++) {
                 if (bounce >= maxBounces) break;
 
                 float travelledThisBounce = 0.0;
@@ -894,7 +894,7 @@ void main() {
                 bool isPortalHit;
                 int portalHitIdx;
 
-                for (int step = 0; step < 200; step++) {
+                for (int step = 0; step < int(ceil(maxDist / camStepSize)); step++) {
                     if (travelledThisBounce >= maxDist) break;
 
                     float stepSize = min(camStepSize, maxDist - travelledThisBounce);
@@ -1243,9 +1243,6 @@ void ensureTriTextures(int triNeeded) {
     createFloatTex(triTexIndices, w, h, 3);
 }
 
-static std::vector<int> bvhTriCounts; 
-static std::vector<int> bvhTriOffsets;
-
 struct AABB {
     glm::vec3 min;
     glm::vec3 max;
@@ -1278,34 +1275,6 @@ struct BVHNode {
 };
 
 static std::vector<BVHNode> bvhNodes;
-static std::vector<int> bvhCommandIndices; 
-static int bvhRoot = -1;
-
-static void extractFrustumPlanes(const glm::mat4& VP, glm::vec4 planes[6]) {
-    for (int i = 0; i < 3; i++) {
-        planes[i*2 + 0] = glm::vec4(VP[0][3] + VP[0][i], VP[1][3] + VP[1][i], VP[2][3] + VP[2][i], VP[3][3] + VP[3][i]);
-        planes[i*2 + 1] = glm::vec4(VP[0][3] - VP[0][i], VP[1][3] - VP[1][i], VP[2][3] - VP[2][i], VP[3][3] - VP[3][i]);
-    }
-    for (int i = 0; i < 6; i++) {
-        float len = glm::length(glm::vec3(planes[i]));
-        if (len > 1e-6f)
-            planes[i] /= len;
-    }
-}
-
-static bool frustumCullSphere(const glm::vec4 planes[6], const glm::vec3& center, float radius) {
-    for (int i = 0; i < 6; i++) {
-        float dist = glm::dot(glm::vec3(planes[i]), center) + planes[i].w;
-        if (dist < -radius) return false;   
-    }
-    return true; 
-}
-
-static bool frustumCullAABB(const glm::vec4 planes[6], const AABB& box) {
-    glm::vec3 c = box.center();
-    float r = box.radius();
-    return frustumCullSphere(planes, c, r);
-}
 
 int buildBVHRecursive(std::vector<BVHNode>& nodes,
                        const std::vector<Triangle>& triangles,
@@ -1391,7 +1360,7 @@ GLuint createBVHTexture(const std::vector<float>& packedData, int nodeCount) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4, nodeCount, 0, GL_RGBA, GL_FLOAT, packedData.data());
     return tex;
 }
-
+// гравитационное искажение
 WarpPlane* activeWarpPlane = nullptr;
 
 WarpPlane::WarpPlane() : originX(0), originY(0), originZ(0), yaw(0), pitch(0), roll(0),
@@ -1423,7 +1392,7 @@ void WarpPlane::disable() {
     enabled = false;
     if (activeWarpPlane == this) activeWarpPlane = nullptr;
 }
-
+//
 void set_active_warp_plane(WarpPlane* wp) {
     activeWarpPlane = wp;
 }
@@ -2488,7 +2457,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     }
     glfwSetWindowPos(window, screen_w / 4, screen_h / 8);
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
+    glfwSwapInterval(0);
 
     glewExperimental = GL_TRUE;
     if (glewInit() != GLEW_OK) {

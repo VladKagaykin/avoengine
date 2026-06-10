@@ -57,7 +57,7 @@ extern ma_engine audio_engine;
 struct CameraParams{
     float fov=58.0f;
     float znear=0.1f;
-    float zfar=1000.0f;
+    float zfar=256.0f;
     float eye_x=0,eye_y=0,eye_z=0;
     float ctr_x=0,ctr_y=0,ctr_z=1;
     float up_x=0,up_y=1,up_z=0;
@@ -83,7 +83,7 @@ struct settings{
     float CAM_STEP_SIZE= 0.99;
     float SHADOW_STEP_SIZE= 0.99;
     int MAX_SHADOW_BOUNCES= 2;
-    float RAY_MULTIPLY=0.7;
+    float RAY_MULTIPLY=0.9;
 };
 
 extern settings Engine_settings;
