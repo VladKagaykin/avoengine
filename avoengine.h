@@ -47,11 +47,7 @@ public:
 extern WarpPlane* activeWarpPlane;
 void set_active_warp_plane(WarpPlane* wp);
 
-extern bool is_raycast;
-
-#define RECURSION_LEVEL 2
-
-void flushDrawQueue(int depth = 0);
+void flushDrawQueue();
 
 GLuint loadTextureFromFile(const char* filename);
 void clearTextureCache();
@@ -74,6 +70,24 @@ struct CameraParams{
 };
 
 extern CameraParams camera;
+
+struct settings{
+    int MAX_LIGHTS=16;
+    int MAX_BOUNCES= 4;
+    float MAX_DIST=camera.zfar;
+    int MAX_TEXTURES= 2;
+    int MAX_PORTALS= 8;
+    int MAX_PORTAL_VERTS= 16;
+    float SHADOW_BIAS= 0.001;
+    float CAM_WARP_STRENGTH= 0.05;
+    float SHADOW_WARP_STRENGTH= 0.05;
+    float CAM_STEP_SIZE= 0.99;
+    float SHADOW_STEP_SIZE= 0.99;
+    int MAX_SHADOW_BOUNCES= 2;
+    float RAY_MULTIPLY=0.7;
+};
+
+extern settings Engine_settings;
 
 void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
 
@@ -153,8 +167,6 @@ void draw3DObject(float cx, float cy, float cz,
                   float yaw = 0.0f, float pitch = 0.0f, float roll = 0.0f,
                   float alpha = 1.0f);
 
-#define MAX_LIGHTS 16
-
 class Light {
 public:
     Light();
@@ -181,8 +193,7 @@ public:
 
 void applyAllLights();
 
-extern GLuint defaultRayCastingLightingShader;
-extern GLuint defaultVBOLightingShader;
+extern GLuint defaultLightingShader;
 
 void set_ambient_light(float r, float g, float b);
 void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);
@@ -253,42 +264,6 @@ public:
 
     glm::mat4 getPortalTransform(float fx, float fy, float fz,
                                   float tx, float ty, float tz) const;
-
-    void setSceneDrawCallback(std::function<void()> cb);
-
-    void drawPortalSurface(float px, float py, float pz, GLuint tex, bool sideB);
-
-    struct FBO {
-        GLuint fbo = 0;
-        GLuint colorTex = 0;
-        GLuint depthTex = 0;
-        int w = 0, h = 0;
-    };
-
-    FBO fboA, fboB;
-    std::function<void()> sceneDraw;
-
-    void initFBOs(int w, int h);
-    void destroyFBOs();
-    void resizeFBOs(int w, int h);
-
-    GLuint portalVAO = 0;
-    GLuint portalVBO = 0;
-    int portalIndexCount = 0;
-
-    glm::vec3 prevCamPos = glm::vec3(0.0f);  
-    float prevSignedDist = 0.0f;              
-    bool prevValid = false;
-    glm::vec3 getCenterA(const glm::mat4& worldMat) const {
-        glm::vec3 center(ax, ay, az);
-        int n = vertices.size() / 3;
-        for (int i = 0; i < n; ++i) {
-            glm::vec4 local(vertices[i*3], vertices[i*3+1], vertices[i*3+2], 1.0f);
-            glm::vec3 world = glm::vec3(worldMat * local);
-            center += world;
-        }
-        return center / float(n + 1);
-    }
 
     struct SideState {
         glm::vec3 prevCamPos = glm::vec3(0.0f);
