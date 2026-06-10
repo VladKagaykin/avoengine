@@ -360,7 +360,6 @@ static inline void bindTexture(GLuint id){
 }
 
 //              шейдеры
-static bool lighting_global = false;
 // Переменная для хранения текущей программы шейдеров
 GLuint currentShaderProg = 0;
 // Функция для проверки ошибок компиляции
@@ -962,27 +961,19 @@ void main() {
                         bool isSpot = dot(Ldir, Ldir) > 0.000001;
                         if (isSpot) Ldir = normalize(mat3(cumulativePortalTransform) * Ldir);
 
-                        vec3 L;
-                        float atten;
+                        vec3 delta = Lpos - hitPos;
+                        float d2 = dot(delta, delta);
+                        if (d2 < 0.000001) continue;
+                        float invDist = inversesqrt(d2);
+                        float d = 1.0 / invDist;
+                        float atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
+
                         if (isSpot) {
-                            vec3 toPoint = hitPos - Lpos;
-                            float d2 = dot(toPoint, toPoint);
-                            if (d2 < 0.000001) continue;
-                            float invDist = inversesqrt(d2);
-                            vec3 dirToHit = toPoint * invDist;
-                            float d = 1.0 / invDist;
-                            atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
+                            vec3 dirToHit = -delta * invDist;
                             if (dot(dirToHit, Ldir) < lights[j].cutoff) continue;
-                            L = -dirToHit;
-                        } else {
-                            vec3 toLight = Lpos - hitPos;
-                            float d2 = dot(toLight, toLight);
-                            if (d2 < 0.000001) continue;
-                            float invDist = inversesqrt(d2);
-                            L = toLight * invDist;
-                            float d = 1.0 / invDist;
-                            atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
                         }
+                        vec3 L = delta * invDist;
+
                         float diff = max(dot(N, L), 0.0);
                         if (diff > 0.0) {
                             float shadow = shadowRay(j, hitPos, N, cumulativePortalTransform, samples);
@@ -1468,7 +1459,6 @@ void flushDrawQueue() {
         raySamples = 1;
     }
 
-    // Uniform locations (static, visible everywhere in this function)
     static GLint loc_raycast = -1, loc_invViewProj = -1, loc_camPos = -1;
     static GLint loc_ambient = -1, loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
     static GLint loc_numLights = -1, loc_panoramaTex = -1, loc_hasPanorama = -1;
@@ -1924,15 +1914,13 @@ void flushDrawQueue() {
             glUniform1i(loc_hasPanorama, 0);
         }
 
-        const int maxPortals = Engine_settings.MAX_PORTALS;
-        const int maxPortalVerts = Engine_settings.MAX_PORTAL_VERTS;
-        std::vector<float> portalPos(maxPortals * 3, 0.0f);
-        std::vector<float> portalNormal(maxPortals * 3, 0.0f);
-        std::vector<float> portalD(maxPortals, 0.0f);
-        std::vector<float> portalInvWorld(maxPortals * 16, 0.0f);
-        std::vector<int>   portalVertCount(maxPortals, 0);
-        std::vector<float> portalVerts(maxPortals * maxPortalVerts * 2, 0.0f);
-        std::vector<float> portalTeleport(maxPortals * 16, 0.0f);
+        std::vector<float> portalPos(Engine_settings.MAX_PORTALS * 3, 0.0f);
+        std::vector<float> portalNormal(Engine_settings.MAX_PORTALS * 3, 0.0f);
+        std::vector<float> portalD(Engine_settings.MAX_PORTALS, 0.0f);
+        std::vector<float> portalInvWorld(Engine_settings.MAX_PORTALS * 16, 0.0f);
+        std::vector<int>   portalVertCount(Engine_settings.MAX_PORTALS, 0);
+        std::vector<float> portalVerts(Engine_settings.MAX_PORTALS * Engine_settings.MAX_PORTAL_VERTS * 2, 0.0f);
+        std::vector<float> portalTeleport(Engine_settings.MAX_PORTALS * 16, 0.0f);
         int portalCount = 0;
 
         if (hasPortalCommand) {
@@ -1943,7 +1931,7 @@ void flushDrawQueue() {
                 }
             }
             for (Portal* p : uniquePortals) {
-                if (portalCount >= maxPortals) break;
+                if (portalCount >= Engine_settings.MAX_PORTALS) break;
                 auto addPortalSide = [&](float px, float py, float pz, float yaw, float pitch, float roll,
                                          float nx, float ny, float nz, const glm::mat4& teleport) {
                     portalPos[portalCount*3+0] = px; portalPos[portalCount*3+1] = py; portalPos[portalCount*3+2] = pz;
@@ -1958,9 +1946,9 @@ void flushDrawQueue() {
                         portalInvWorld[portalCount*16 + c*4 + r] = invWorld[c][r];
                     int vCount = (int)p->vertices.size() / 3;
                     portalVertCount[portalCount] = vCount;
-                    for (int i = 0; i < vCount && i < maxPortalVerts; ++i) {
-                        portalVerts[portalCount * maxPortalVerts * 2 + i*2 + 0] = p->vertices[i*3 + 0];
-                        portalVerts[portalCount * maxPortalVerts * 2 + i*2 + 1] = p->vertices[i*3 + 1];
+                    for (int i = 0; i < vCount && i < Engine_settings.MAX_PORTAL_VERTS; ++i) {
+                        portalVerts[portalCount * Engine_settings.MAX_PORTAL_VERTS * 2 + i*2 + 0] = p->vertices[i*3 + 0];
+                        portalVerts[portalCount * Engine_settings.MAX_PORTAL_VERTS * 2 + i*2 + 1] = p->vertices[i*3 + 1];
                     }
                     for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r)
                         portalTeleport[portalCount*16 + c*4 + r] = teleport[c][r];
@@ -1969,7 +1957,7 @@ void flushDrawQueue() {
                 glm::vec3 nA = p->portalNormal(p->ax, p->ay, p->az, false);
                 glm::mat4 teleAtoB = p->getPortalTransform(p->ax, p->ay, p->az, p->bx, p->by, p->bz);
                 addPortalSide(p->ax, p->ay, p->az, p->yawA, p->pitchA, p->rollA, nA.x, nA.y, nA.z, teleAtoB);
-                if (portalCount < maxPortals) {
+                if (portalCount < Engine_settings.MAX_PORTALS) {
                     glm::vec3 nB = p->portalNormal(p->bx, p->by, p->bz, true);
                     glm::mat4 teleBtoA = p->getPortalTransform(p->bx, p->by, p->bz, p->ax, p->ay, p->az);
                     addPortalSide(p->bx, p->by, p->bz, p->yawB, p->pitchB, p->rollB, nB.x, nB.y, nB.z, teleBtoA);
@@ -1983,7 +1971,7 @@ void flushDrawQueue() {
             glUniform1fv(loc_portalD, portalCount, portalD.data());
             glUniformMatrix4fv(loc_portalInvWorld, portalCount, GL_FALSE, portalInvWorld.data());
             glUniform1iv(loc_portalVertCount, portalCount, portalVertCount.data());
-            glUniform2fv(loc_portalVerts, maxPortals * maxPortalVerts, portalVerts.data());
+            glUniform2fv(loc_portalVerts, Engine_settings.MAX_PORTALS * Engine_settings.MAX_PORTAL_VERTS, portalVerts.data());
             glUniformMatrix4fv(loc_portalTeleport, portalCount, GL_FALSE, portalTeleport.data());
         }
 
@@ -2216,53 +2204,6 @@ GLuint loadTextureFromFile(const char* filename) {
     lock_guard<mutex> lock(textureCacheMutex);
     return textureCache[filename] = id;
 }
-// загружаем много текстур параллельно
-void preloadTextures(const vector<string>& filenames) {
-    struct RawTex { string name; unsigned char* data; int w, h, channels; };
-    vector<RawTex> loaded(filenames.size());
-
-    #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < (int)filenames.size(); ++i) {
-        {
-            lock_guard<mutex> lock(textureCacheMutex);
-            if (textureCache.count(filenames[i])) {
-                loaded[i] = {filenames[i], nullptr, 0, 0, 0};
-                continue;
-            }
-        }
-        int w, h, channels;
-        unsigned char* img = SOIL_load_image(filenames[i].c_str(), &w, &h, &channels, SOIL_LOAD_AUTO);
-        loaded[i] = {filenames[i], img, w, h, channels};
-    }
-
-    for (auto& t : loaded) {
-        if (!t.data) continue;
-        GLuint id;
-        glGenTextures(1, &id);
-        glBindTexture(GL_TEXTURE_2D, id);
-        boundTextureID = id;
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        GLenum format = (t.channels == 4) ? GL_RGBA : GL_RGB;
-        GLint internalFormat = format;
-        if (t.channels == 4 && glewIsSupported("GL_EXT_texture_compression_s3tc"))
-            internalFormat = GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
-        else if (t.channels == 3 && glewIsSupported("GL_EXT_texture_compression_s3tc"))
-            internalFormat = GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
-
-        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, t.w, t.h, 0, format, GL_UNSIGNED_BYTE, t.data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-
-        SOIL_free_image_data(t.data);
-
-        lock_guard<mutex> lock(textureCacheMutex);
-        textureCache[t.name] = id;
-    }
-}
 // удаляем все текстуры из памяти
 void clearTextureCache(){
     // перебираем все имена и id и удаляем их
@@ -2466,11 +2407,6 @@ GLuint pseudo_3d_entity::getTextureFromDirection(float lx, float ly, float lz) c
 
 GLuint pseudo_3d_entity::getShadowTexture(float lx, float ly, float lz) const {
     return getTextureFromDirection(lx, ly, lz);
-}
-
-static void sound_end_callback(void* pUserData, ma_sound* pSound) {
-    ma_sound_uninit(pSound);
-    delete pSound;
 }
 
 //              opengl
@@ -2919,11 +2855,7 @@ void Light::disable() {
 }
 
 void applyAllLights() {
-    static float lastCamPos[3] = {0,0,0};
-    static float lastCamDir[3] = {0,0,0};
-    static int lastActiveCount = -1;
-    GLuint prog = currentShaderProg;
-    if (prog == 0) return;
+    if (currentShaderProg == 0) return;
 
     std::vector<Light*> candidates;
     for (Light* light : activeLights) {

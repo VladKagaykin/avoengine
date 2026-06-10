@@ -51,7 +51,6 @@ void flushDrawQueue();
 
 GLuint loadTextureFromFile(const char* filename);
 void clearTextureCache();
-void preloadTextures(const std::vector<std::string>& filenames);
 
 extern ma_engine audio_engine;
 
