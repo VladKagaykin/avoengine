@@ -76,7 +76,7 @@ struct CameraParams{
 };
 
 extern CameraParams camera;
-
+// сила искажения должна быть в ~10 раз меньше шага, чем больше шаг, тем больше артефакты
 struct settings{
     int MAX_LIGHTS=16;
     int MAX_BOUNCES= 4;
@@ -85,12 +85,12 @@ struct settings{
     int MAX_PORTALS= 8;
     int MAX_PORTAL_VERTS= 16;
     float SHADOW_BIAS= 0.001;
-    float CAM_WARP_STRENGTH= 0.05;
-    float SHADOW_WARP_STRENGTH= 0.05;
-    float CAM_STEP_SIZE= 0.99;
-    float SHADOW_STEP_SIZE= 0.99;
+    float CAM_WARP_STRENGTH= 0.2;
+    float SHADOW_WARP_STRENGTH= 0.2;
+    float CAM_STEP_SIZE= 2;
+    float SHADOW_STEP_SIZE= 2;
     int MAX_SHADOW_BOUNCES= 2;
-    float RAY_MULTIPLY=0.9;
+    float RAY_MULTIPLY=1;
 };
 
 extern settings Engine_settings;
