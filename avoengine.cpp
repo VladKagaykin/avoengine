@@ -76,7 +76,6 @@ static std::string getRAMTotal_Win() {
 }
 
 static std::string getGPUName_OpenGL() {
-    // Должен быть активный контекст OpenGL
     const char* renderer = (const char*)glGetString(GL_RENDERER);
     return renderer ? std::string(renderer) : "Unknown GPU";
 }
@@ -105,11 +104,9 @@ static std::string getRAMTotal_Linux() {
         if (line.rfind("MemTotal:", 0) == 0) {
             size_t pos = line.find(":");
             std::string val = line.substr(pos + 1);
-            // удаляем " kB" в конце
             size_t kbpos = val.find("kB");
             if (kbpos != std::string::npos)
                 val = val.substr(0, kbpos);
-            // убираем пробелы
             val.erase(0, val.find_first_not_of(" \t"));
             val.erase(val.find_last_not_of(" \t") + 1);
             long kb = std::stol(val);
@@ -167,7 +164,7 @@ static std::vector<float> getProcessCPUUsage_Win() {
         PDH_FMT_COUNTERVALUE Value;
         for (size_t i = 0; i < counters.size(); ++i) {
             if (PdhGetFormattedCounterValue(counters[i], PDH_FMT_DOUBLE, &dwType, &Value) == ERROR_SUCCESS) {
-                usages.push_back((float)Value.doubleValue);
+                usages.push_back((float)Value.doubleValue / 10.0f);
             }
         }
     }
@@ -271,7 +268,7 @@ static std::vector<float> getProcessCPUUsage_Linux() {
         unsigned long long totalDiff = curTotal - prevTotal;
         unsigned long long idleDiff = curIdleTotal - prevIdleTotal;
         if (totalDiff > 0)
-            usages.push_back((1.0f - (float)idleDiff / totalDiff) * 100.0f);
+            usages.push_back((1.0f - (float)idleDiff / totalDiff) * 10.0f);
         else
             usages.push_back(0.0f);
     }
@@ -3494,7 +3491,7 @@ void draw_performance_hud(int win_w, int win_h) {
         cpu_line = "CPU:";
         for (size_t i = 0; i < cpu_per_core.size(); ++i) {
             char core_buf[16];
-            snprintf(core_buf, sizeof(core_buf), "%.0f", cpu_per_core[i]);
+            snprintf(core_buf, sizeof(core_buf), "%.1f", cpu_per_core[i]);
             cpu_line += " " + std::to_string(i) + ":" + std::string(core_buf) + "%";
         }
     } else {
