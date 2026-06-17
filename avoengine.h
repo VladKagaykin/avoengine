@@ -47,6 +47,13 @@ public:
 extern WarpPlane* activeWarpPlane;
 void set_active_warp_plane(WarpPlane* wp);
 
+extern bool is_scene_changed;
+using Function = void(*)();
+extern Function current_scene;
+
+void fixed_scene(Function scene);
+void clean_scene();
+
 void flushDrawQueue();
 
 GLuint loadTextureFromFile(const char* filename);
