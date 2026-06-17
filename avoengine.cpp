@@ -137,42 +137,41 @@ static std::string getGPUName_OpenGL() {
 #endif
 
 #ifdef _WIN32
-static double getProcessCPUUsage_Win() {
-    static ULARGE_INTEGER lastCPU, lastSysCPU;
-    static int numProcessors = 0;
+static std::vector<float> getProcessCPUUsage_Win() {
+    static PDH_HQUERY cpuQuery = NULL;
+    static std::vector<PDH_HCOUNTER> counters;
     static bool initialized = false;
-
-    HANDLE self = GetCurrentProcess();
-    FILETIME ftime, fsys, fuser;
-    GetProcessTimes(self, &ftime, &ftime, &fsys, &fuser);
-    ULARGE_INTEGER nowCPU, nowSysCPU;
-    nowCPU.LowPart = fuser.dwLowDateTime; nowCPU.HighPart = fuser.dwHighDateTime;
-    nowSysCPU.LowPart = fsys.dwLowDateTime; nowSysCPU.HighPart = fsys.dwHighDateTime;
+    std::vector<float> usages;
 
     if (!initialized) {
-        lastCPU = nowCPU; lastSysCPU = nowSysCPU;
-        SYSTEM_INFO sysInfo;
-        GetSystemInfo(&sysInfo);
-        numProcessors = sysInfo.dwNumberOfProcessors;
+        if (PdhOpenQuery(NULL, 0, &cpuQuery) != ERROR_SUCCESS) return usages;
+        char path[256];
+        for (int i = 0; ; i++) {
+            sprintf(path, "\\Processor(%d)\\%% Processor Time", i);
+            PDH_HCOUNTER counter;
+            if (PdhAddCounter(cpuQuery, path, 0, &counter) == ERROR_SUCCESS) {
+                counters.push_back(counter);
+            } else {
+                break;
+            }
+        }
+        if (!counters.empty()) {
+            PdhCollectQueryData(cpuQuery);
+        }
         initialized = true;
-        return 0.0;
     }
 
-    ULONGLONG totalCPU = (nowCPU.QuadPart - lastCPU.QuadPart) +
-                         (nowSysCPU.QuadPart - lastSysCPU.QuadPart);
-    lastCPU = nowCPU; lastSysCPU = nowSysCPU;
-
-    FILETIME ftime2;
-    GetSystemTimeAsFileTime(&ftime2);
-    ULARGE_INTEGER nowSysTime;
-    nowSysTime.LowPart = ftime2.dwLowDateTime;
-    nowSysTime.HighPart = ftime2.dwHighDateTime;
-    static ULARGE_INTEGER lastSysTime = nowSysTime;
-    double elapsed = (nowSysTime.QuadPart - lastSysTime.QuadPart) / 10000000.0;
-    lastSysTime = nowSysTime;
-
-    if (elapsed <= 0.0) return 0.0;
-    return (totalCPU / 10000.0) / (elapsed * numProcessors) * 100.0;
+    if (!counters.empty()) {
+        PdhCollectQueryData(cpuQuery);
+        DWORD dwType;
+        PDH_FMT_COUNTERVALUE Value;
+        for (size_t i = 0; i < counters.size(); ++i) {
+            if (PdhGetFormattedCounterValue(counters[i], PDH_FMT_DOUBLE, &dwType, &Value) == ERROR_SUCCESS) {
+                usages.push_back((float)Value.doubleValue);
+            }
+        }
+    }
+    return usages;
 }
 
 static long getProcessRAMUsage_Win() {
@@ -183,22 +182,109 @@ static long getProcessRAMUsage_Win() {
 }
 
 static float getGPUUsage_Win() {
-    return -1.0f;
+    static PDH_HQUERY gpuQuery = NULL;
+    static std::vector<PDH_HCOUNTER> gpuCounters;
+    static bool initialized = false;
+
+    if (!initialized) {
+        if (PdhOpenQuery(NULL, 0, &gpuQuery) != ERROR_SUCCESS) return -1.0f;
+        char path[256];
+        for (int i = 0; ; i++) {
+            sprintf(path, "\\GPU Engine(%d engtype_3D)\\Utilization Percentage", i);
+            PDH_HCOUNTER counter;
+            if (PdhAddCounter(gpuQuery, path, 0, &counter) == ERROR_SUCCESS) {
+                gpuCounters.push_back(counter);
+            } else {
+                break;
+            }
+        }
+        if (!gpuCounters.empty()) {
+            PdhCollectQueryData(gpuQuery);
+        }
+        initialized = true;
+    }
+
+    if (gpuCounters.empty()) return -1.0f;
+
+    PdhCollectQueryData(gpuQuery);
+    DWORD dwType;
+    PDH_FMT_COUNTERVALUE Value;
+    float total = 0.0f;
+    int valid = 0;
+    for (size_t i = 0; i < gpuCounters.size(); ++i) {
+        if (PdhGetFormattedCounterValue(gpuCounters[i], PDH_FMT_DOUBLE, &dwType, &Value) == ERROR_SUCCESS) {
+            total += (float)Value.doubleValue;
+            valid++;
+        }
+    }
+    return valid > 0 ? total / valid : -1.0f;
 }
 #else
-static double getProcessCPUUsage_Linux(long &prev_cpu_total) {
-    long utime, stime;
-    FILE* stat = fopen("/proc/self/stat", "r");
-    if (!stat) return 0.0;
-    fscanf(stat, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %ld %ld", &utime, &stime);
-    fclose(stat);
+static std::vector<float> getProcessCPUUsage_Linux() {
+    static std::vector<unsigned long long> prevUser, prevNice, prevSystem, prevIdle, prevIowait, prevIrq, prevSoftirq, prevSteal;
+    static bool initialized = false;
+    std::vector<float> usages;
 
-    long cur_cpu = utime + stime;
-    static long numCores = sysconf(_SC_NPROCESSORS_ONLN);   
+    std::ifstream stat("/proc/stat");
+    if (!stat) return usages;
+    std::string line;
+    std::vector<unsigned long long> curUser, curNice, curSystem, curIdle, curIowait, curIrq, curSoftirq, curSteal;
+    while (std::getline(stat, line)) {
+        if (line.compare(0, 3, "cpu") == 0) {
+            if (line[3] >= '0' && line[3] <= '9') {
+                std::istringstream iss(line);
+                std::string cpu;
+                unsigned long long user, nice, system, idle, iowait, irq, softirq, steal = 0;
+                iss >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq;
+                if (iss >> steal) {}
+                curUser.push_back(user);
+                curNice.push_back(nice);
+                curSystem.push_back(system);
+                curIdle.push_back(idle);
+                curIowait.push_back(iowait);
+                curIrq.push_back(irq);
+                curSoftirq.push_back(softirq);
+                curSteal.push_back(steal);
+            }
+        }
+    }
 
-    double pct = (cur_cpu - prev_cpu_total) * 100.0 / (double)sysconf(_SC_CLK_TCK) / 1.0 / numCores;
-    prev_cpu_total = cur_cpu;
-    return pct;
+    if (!initialized) {
+        prevUser = curUser;
+        prevNice = curNice;
+        prevSystem = curSystem;
+        prevIdle = curIdle;
+        prevIowait = curIowait;
+        prevIrq = curIrq;
+        prevSoftirq = curSoftirq;
+        prevSteal = curSteal;
+        initialized = true;
+        return usages;
+    }
+
+    size_t cores = std::min(prevUser.size(), curUser.size());
+    for (size_t i = 0; i < cores; ++i) {
+        unsigned long long prevIdleTotal = prevIdle[i] + prevIowait[i];
+        unsigned long long curIdleTotal = curIdle[i] + curIowait[i];
+        unsigned long long prevTotal = prevUser[i] + prevNice[i] + prevSystem[i] + prevIdleTotal + prevIrq[i] + prevSoftirq[i] + prevSteal[i];
+        unsigned long long curTotal = curUser[i] + curNice[i] + curSystem[i] + curIdleTotal + curIrq[i] + curSoftirq[i] + curSteal[i];
+        unsigned long long totalDiff = curTotal - prevTotal;
+        unsigned long long idleDiff = curIdleTotal - prevIdleTotal;
+        if (totalDiff > 0)
+            usages.push_back((1.0f - (float)idleDiff / totalDiff) * 100.0f);
+        else
+            usages.push_back(0.0f);
+    }
+
+    prevUser = curUser;
+    prevNice = curNice;
+    prevSystem = curSystem;
+    prevIdle = curIdle;
+    prevIowait = curIowait;
+    prevIrq = curIrq;
+    prevSoftirq = curSoftirq;
+    prevSteal = curSteal;
+    return usages;
 }
 
 static long getProcessRAMUsage_Linux() {
@@ -282,7 +368,7 @@ static float getGPUUsage_Linux() {
         pclose(nv_fp);
     }
 
-    return -1.0f; 
+    return -1.0f;
 }
 #endif
 
@@ -3368,9 +3454,9 @@ void draw_performance_hud(int win_w, int win_h) {
     static int frame_cnt = 0;
     static double fps = 0.0;
     static auto prev_time = std::chrono::steady_clock::now();
-    static double cpu_usage = 0.0;
+    static std::vector<float> cpu_per_core;
     static long ram_usage_mb = 0;
-    static float gpu_usage = -1.0f; // -1 = N/A
+    static float gpu_usage = -1.0f;
 
     ++frame_cnt;
     auto now = std::chrono::steady_clock::now();
@@ -3381,12 +3467,11 @@ void draw_performance_hud(int win_w, int win_h) {
         frame_cnt = 0;
 
 #ifdef _WIN32
-        cpu_usage = getProcessCPUUsage_Win();
+        cpu_per_core = getProcessCPUUsage_Win();
         ram_usage_mb = getProcessRAMUsage_Win();
         gpu_usage = getGPUUsage_Win();
 #else
-        static long prev_cpu_total = 0;
-        cpu_usage = getProcessCPUUsage_Linux(prev_cpu_total);
+        cpu_per_core = getProcessCPUUsage_Linux();
         ram_usage_mb = getProcessRAMUsage_Linux();
         gpu_usage = getGPUUsage_Linux();
 #endif
@@ -3394,8 +3479,7 @@ void draw_performance_hud(int win_w, int win_h) {
     }
 
     char buf[256];
-    snprintf(buf, sizeof(buf), "FPS: %.0f  RAM: %ld MB  CPU: %.1f%%  GPU: ",
-             fps, ram_usage_mb, cpu_usage);
+    snprintf(buf, sizeof(buf), "FPS: %.0f  RAM: %ld MB  GPU: ", fps, ram_usage_mb);
     if (gpu_usage >= 0.0f) {
         char gpu_str[32];
         snprintf(gpu_str, sizeof(gpu_str), "%.1f%%", gpu_usage);
@@ -3405,12 +3489,26 @@ void draw_performance_hud(int win_w, int win_h) {
     }
     draw_text(buf, 10.0f, float(win_h) - 20.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
 
+    std::string cpu_line;
+    if (!cpu_per_core.empty()) {
+        cpu_line = "CPU:";
+        for (size_t i = 0; i < cpu_per_core.size(); ++i) {
+            char core_buf[16];
+            snprintf(core_buf, sizeof(core_buf), "%.0f", cpu_per_core[i]);
+            cpu_line += " " + std::to_string(i) + ":" + std::string(core_buf) + "%";
+        }
+    } else {
+        cpu_line = "CPU: N/A";
+    }
+    draw_text(cpu_line.c_str(), 10.0f, float(win_h) - 32.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+
     snprintf(buf, sizeof(buf), "X: %.10f  Y: %.10f  Z: %.10f P: %.10f  Y: %.10f  R: %.10f",
-    camera.eye_x, camera.eye_y, camera.eye_z,camera.pitch , camera.yaw, camera.roll);
-    draw_text(buf, 10.0f, float(win_h) - 32.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+             camera.eye_x, camera.eye_y, camera.eye_z, camera.pitch, camera.yaw, camera.roll);
+    draw_text(buf, 10.0f, float(win_h) - 44.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+
     snprintf(buf, sizeof(buf), "CPU: %s  RAM: %s  GPU: %s",
              cpu_name.c_str(), ram_v.c_str(), gpu_name.c_str());
-    draw_text(buf, 10.0f, float(win_h) - 44.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    draw_text(buf, 10.0f, float(win_h) - 56.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
 }
 // панорама
 sphere_panorama sphere_sky;
