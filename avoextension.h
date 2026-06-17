@@ -2,9 +2,7 @@
 #define AVOEXTENSION_H
 #include <vector>
 #include <string>
-#include <GL/glew.h>
 #include <vector>
-#include <GL/gl.h>
 #include "avoengine.h"
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -31,8 +29,10 @@ void set_mouse_capture(GLFWwindow* window, bool capture);
 void update_mouse();
 void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices);
 
-void delay_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop = false);
-void disappearing_text(const char* text,float x,float y,void* font,float r,float g,float b,float a,int ticks,bool loop = false);
+void delay_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                float r, float g, float b, float a, int ticks, bool loop=0);
+void disappearing_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                       float r, float g, float b, float a, int ticks, bool loop=0);
 
 void play_white_noise_3d(float x, float y, float z, float volume);
 

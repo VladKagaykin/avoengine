@@ -35,11 +35,8 @@ extern "C" {
 #include <mutex>
 
 //              графика
-// вспомогательные утилиты для opengl(матрицы, проекции и прочие нежности для немощей)
-#include <GL/glu.h>
 // основная библиотека opengl
 #include <GLFW/glfw3.h>
-#include <GL/glut.h>
 // библиотека для импорта текстур
 #include <SOIL/SOIL.h>
 
@@ -569,17 +566,19 @@ varying vec3 vWorldPos;
 varying vec4 vClipPos;
 varying vec2 vUV;
 
+uniform mat4 u_projection;
+uniform mat4 u_modelView;
 uniform bool raycast;
 uniform bool displayMode;
 
 void main() {
-    vN = normalize(gl_NormalMatrix * aNormal);
-    vec4 mvPos = gl_ModelViewMatrix * aVertex;
+    vec4 mvPos = u_modelView * aVertex;
+    vN = normalize(mat3(u_modelView) * aNormal);
     vP = mvPos.xyz;
     vColor = aColor;
     vTexCoord = aTexCoord;
     vWorldPos = aVertex.xyz;
-    gl_Position = gl_ModelViewProjectionMatrix * aVertex;
+    gl_Position = u_projection * mvPos;
     vClipPos = gl_Position;
     if (raycast || displayMode)
         vUV = (aVertex.xy + 1.0) * 0.5;
@@ -1066,6 +1065,22 @@ static std::vector<GLint> loc_lightDiffuse;
 static std::vector<GLint> loc_lightCutoff;
 static std::vector<GLint> loc_lightAttenuation;
 
+static glm::mat4 g_projectionMatrix(1.0f);
+static glm::mat4 g_modelViewMatrix(1.0f);
+static GLint loc_u_projection_default = -1;
+static GLint loc_u_modelView_default = -1;
+static GLint loc_u_projection_2d = -1;
+static GLint loc_u_modelView_2d = -1;
+
+static GLuint simple2DShader = 0;
+
+static void updateMatrixUniforms() {
+    if (loc_u_projection_default != -1) glUniformMatrix4fv(loc_u_projection_default, 1, GL_FALSE, &g_projectionMatrix[0][0]);
+    if (loc_u_modelView_default != -1) glUniformMatrix4fv(loc_u_modelView_default, 1, GL_FALSE, &g_modelViewMatrix[0][0]);
+    if (loc_u_projection_2d != -1) glUniformMatrix4fv(loc_u_projection_2d, 1, GL_FALSE, &g_projectionMatrix[0][0]);
+    if (loc_u_modelView_2d != -1) glUniformMatrix4fv(loc_u_modelView_2d, 1, GL_FALSE, &g_modelViewMatrix[0][0]);
+}
+
 static void initDefaultShader() {
     if (defaultLightingShader == 0) {
         defaultLightingShader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
@@ -1081,6 +1096,9 @@ static void initDefaultShader() {
         loc_displayMode = glGetUniformLocation(defaultLightingShader, "displayMode");
         loc_accumulationTex = glGetUniformLocation(defaultLightingShader, "accumulationTex");
         loc_frameCount = glGetUniformLocation(defaultLightingShader, "frameCount");
+
+        loc_u_projection_default = glGetUniformLocation(defaultLightingShader, "u_projection");
+        loc_u_modelView_default = glGetUniformLocation(defaultLightingShader, "u_modelView");
 
         int maxLights = Engine_settings.MAX_LIGHTS;
         loc_lightEnabled.resize(maxLights, -1);
@@ -1110,9 +1128,12 @@ static void initDefaultShader() {
 
 static const char* simple2DVertexShader = R"(
 #version 120
-attribute vec4 aVertex;    
-attribute vec4 aColor;     
-attribute vec2 aTexCoord;  
+attribute vec4 aVertex;
+attribute vec4 aColor;
+attribute vec2 aTexCoord;
+
+uniform mat4 u_projection;
+uniform mat4 u_modelView;
 
 varying vec4 vColor;
 varying vec2 vTexCoord;
@@ -1120,7 +1141,7 @@ varying vec2 vTexCoord;
 void main() {
     vColor = aColor;
     vTexCoord = aTexCoord;
-    gl_Position = gl_ModelViewProjectionMatrix * aVertex;
+    gl_Position = u_projection * u_modelView * aVertex;
 }
 )";
 
@@ -1129,18 +1150,28 @@ static const char* simple2DFragmentShader = R"(
 varying vec4 vColor;
 varying vec2 vTexCoord;
 uniform sampler2D tex;
+uniform int isText;
 void main() {
-    gl_FragColor = texture2D(tex, vTexCoord) * vColor;
+    vec4 texColor = texture2D(tex, vTexCoord);
+    if (isText == 1) {
+        float val = texColor.r;
+        float alpha = step(0.5, val);
+        if (alpha < 0.01) discard;
+        gl_FragColor = vec4(vColor.rgb, vColor.a * alpha);
+    } else {
+        gl_FragColor = texColor * vColor;
+    }
 }
 )";
 
-static GLuint simple2DShader = 0;
 static GLint loc_tex_2d = -1;
 
 void initSimple2DShader() {
     if (simple2DShader) return;
     simple2DShader = createShaderProgram(simple2DVertexShader, simple2DFragmentShader);
     loc_tex_2d = glGetUniformLocation(simple2DShader, "tex");
+    loc_u_projection_2d = glGetUniformLocation(simple2DShader, "u_projection");
+    loc_u_modelView_2d = glGetUniformLocation(simple2DShader, "u_modelView");
 }
 static GLuint lineVAO = 0, lineVBO = 0;
 static bool lineInit = false;
@@ -1220,6 +1251,8 @@ struct DrawCommand {
     GLuint shaderID = 0;
 
     Portal* portal = nullptr;
+
+    bool isText = false;
 };
 
 static GLuint skyboxVAO = 0, skyboxVBO = 0, skyboxIBO = 0;
@@ -1945,8 +1978,6 @@ void flushDrawQueue() {
                 if (cachedBvhTex) glDeleteTextures(1, &cachedBvhTex);
                 std::vector<float> packed = packBVH(bvhNodes);
                 cachedBvhTex = createBVHTexture(packed, bvhNodes.size());
-                // NOTE: we do NOT update cachedPosData etc., so the static scene remains pure
-                // for the next frame. Dynamic geometry will be rebuilt from scratch.
 
                 glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D, triTexPos);
@@ -1971,7 +2002,6 @@ void flushDrawQueue() {
                 glBindTexture(GL_TEXTURE_2D, triTexIndices);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, triTexWidth, triTexHeight, GL_RGBA, GL_FLOAT, idxData.data());
             } else {
-                // No static BVH, build purely dynamic (unchanged)
                 ensureTriTextures(totalDynamicTriangles * 3);
                 int totalPixels = triTexWidth * triTexHeight;
                 std::vector<float> posData(totalPixels * 3, 0.0f);
@@ -2232,18 +2262,21 @@ void flushDrawQueue() {
         } else {
             triCount = 0;
         }
+        glm::mat4 prevProj = g_projectionMatrix;
+        glm::mat4 prevModel = g_modelViewMatrix;
+        g_projectionMatrix = glm::mat4(1.0f);
+        g_modelViewMatrix = glm::mat4(1.0f);
         glViewport(0, 0, renderW, renderH);
         glBindFramebuffer(GL_FRAMEBUFFER, accumulationFBO);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         useShader(currentShaderProg);
+        if (currentShaderProg) updateMatrixUniforms();
         glUniform1i(loc_displayMode, 0);
         glUniform1i(loc_raycast, 1);
-        float proj[16], view[16];
-        glGetFloatv(GL_PROJECTION_MATRIX, proj);
-        glGetFloatv(GL_MODELVIEW_MATRIX, view);
-        glm::mat4 projMat, viewMat;
-        memcpy(&projMat[0][0], proj, 16*sizeof(float));
-        memcpy(&viewMat[0][0], view, 16*sizeof(float));
+        glm::mat4 projMat = glm::perspective(glm::radians(camera.fov), (float)renderW/(float)renderH, camera.znear, camera.zfar);
+        glm::mat4 viewMat = glm::lookAt(glm::vec3(camera.eye_x, camera.eye_y, camera.eye_z),
+                                        glm::vec3(camera.ctr_x, camera.ctr_y, camera.ctr_z),
+                                        glm::vec3(camera.up_x, camera.up_y, camera.up_z));
         glm::mat4 invVP = glm::inverse(projMat * viewMat);
         glUniformMatrix4fv(loc_invViewProj, 1, GL_FALSE, &invVP[0][0]);
         glUniform3f(loc_camPos, camera.eye_x, camera.eye_y, camera.eye_z);
@@ -2392,27 +2425,30 @@ void flushDrawQueue() {
             glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
             glBindVertexArray(0);
         }
-        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
-        glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
         glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
         glBindVertexArray(fullScreenVAO);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
-        glMatrixMode(GL_PROJECTION); glPopMatrix();
-        glMatrixMode(GL_MODELVIEW); glPopMatrix();
+        g_projectionMatrix = prevProj;
+        g_modelViewMatrix = prevModel;
+        if (currentShaderProg) updateMatrixUniforms();
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, window_w, window_h);
     glClear(GL_COLOR_BUFFER_BIT);
     glDisable(GL_BLEND);
     useShader(currentShaderProg);
+    if (currentShaderProg) updateMatrixUniforms();
     glUniform1i(loc_displayMode, 1);
     glUniform1i(loc_raycast, 0);
     glUniform1i(glGetUniformLocation(currentShaderProg, "accumulationTex"), 0);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, accumulationTex);
-    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
-    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glm::mat4 prevProj2 = g_projectionMatrix;
+    glm::mat4 prevModel2 = g_modelViewMatrix;
+    g_projectionMatrix = glm::mat4(1.0f);
+    g_modelViewMatrix = glm::mat4(1.0f);
+    if (currentShaderProg) updateMatrixUniforms();
     glDisable(GL_DEPTH_TEST); glDepthMask(GL_FALSE);
     {
         static GLuint fullScreenVAO2 = 0, fullScreenVBO2 = 0;
@@ -2431,8 +2467,9 @@ void flushDrawQueue() {
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
     glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
-    glMatrixMode(GL_PROJECTION); glPopMatrix();
-    glMatrixMode(GL_MODELVIEW); glPopMatrix();
+    g_projectionMatrix = prevProj2;
+    g_modelViewMatrix = prevModel2;
+    if (currentShaderProg) updateMatrixUniforms();
     glBindTexture(GL_TEXTURE_2D, 0);
     glEnable(GL_BLEND);
     if (!commands2D.empty()) {
@@ -2456,15 +2493,19 @@ void flushDrawQueue() {
             glBindVertexArray(0);
             ensureWhiteTex();
         }
-        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
-        glOrtho(0, window_w, 0, window_h, -1, 1);
-        glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
-        glDisable(GL_DEPTH_TEST); glDisable(GL_LIGHTING); glDisable(GL_FOG); glDisable(GL_CULL_FACE);
-        glColor4f(1,1,1,1);
+        glm::mat4 prevProj2d = g_projectionMatrix;
+        glm::mat4 prevModel2d = g_modelViewMatrix;
+        g_projectionMatrix = glm::ortho(0.0f, (float)window_w, 0.0f, (float)window_h, -1.0f, 1.0f);
+        g_modelViewMatrix = glm::mat4(1.0f);
+        glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         useShader(simple2DShader);
+        if (currentShaderProg) updateMatrixUniforms();
         glUniform1i(loc_tex_2d, 0);
+        static GLint loc_isText = -1;
+        if (loc_isText == -1) loc_isText = glGetUniformLocation(simple2DShader, "isText");
         for (auto& cmd : commands2D) {
+            glUniform1i(loc_isText, cmd.isText ? 1 : 0);
             switch (cmd.type) {
                 case CMD_SQUARE: {
                     const char* texName = cmd.tex.empty() ? nullptr : cmd.tex.c_str();
@@ -2489,17 +2530,6 @@ void flushDrawQueue() {
                     glBindVertexArray(0);
                     break;
                 }
-                case CMD_TEXT: {
-                    GLuint prevShader = currentShaderProg;
-                    stopShader();
-                    glDisable(GL_TEXTURE_2D);
-                    glColor4f(cmd.r, cmd.g, cmd.b, cmd.a);
-                    glWindowPos2f(cmd.x, cmd.y);
-                    for (const char* c = cmd.text.c_str(); *c; ++c) glutBitmapCharacter(cmd.font, *c);
-                    glEnable(GL_TEXTURE_2D);
-                    if (prevShader) useShader(prevShader);
-                    break;
-                }
                 case CMD_LINE_2D: {
                     float data[18] = {
                         cmd.verts[0], cmd.verts[1], 0, cmd.r, cmd.g, cmd.b, cmd.a, 0, 0,
@@ -2520,11 +2550,10 @@ void flushDrawQueue() {
                     break;
             }
         }
-        glMatrixMode(GL_MODELVIEW); glPopMatrix();
-        glMatrixMode(GL_PROJECTION); glPopMatrix();
-        glMatrixMode(GL_MODELVIEW);
+        g_projectionMatrix = prevProj2d;
+        g_modelViewMatrix = prevModel2d;
+        if (currentShaderProg) updateMatrixUniforms();
         glEnable(GL_DEPTH_TEST);
-        glEnable(GL_TEXTURE_2D);
         glEnable(GL_CULL_FACE);
     }
 }
@@ -2641,15 +2670,150 @@ void square(float local_size, float x, float y, double r, double g, double b,
     drawQueue.push_back(cmd);
 }
 // рисовка текста
-void draw_text(const char* text, float x, float y, void* font, float r, float g, float b, float a) {
-    DrawCommand cmd;
-    cmd.type = CMD_TEXT;
-    cmd.text = text;
-    cmd.x = x;  cmd.y = y;
-    cmd.font = font;
-    cmd.r = r;  cmd.g = g;  cmd.b = b;  cmd.a = a;
-    cmd.shaderID = simple2DShader;
-    drawQueue.push_back(cmd);
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+
+void draw_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+               float r, float g, float b, float a) {
+    static std::unordered_map<std::string, std::pair<std::vector<unsigned char>, stbtt_fontinfo>> fontCache;
+
+    auto fontIt = fontCache.find(fontPath);
+    if (fontIt == fontCache.end()) {
+        std::ifstream file(fontPath, std::ios::binary | std::ios::ate);
+        if (!file) return;
+        size_t size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        std::vector<unsigned char> buffer(size);
+        file.read((char*)buffer.data(), size);
+        stbtt_fontinfo info;
+        if (!stbtt_InitFont(&info, buffer.data(), 0)) return;
+        fontCache[fontPath] = {std::move(buffer), info};
+        fontIt = fontCache.find(fontPath);
+    }
+    stbtt_fontinfo& font = fontIt->second.second;
+
+    float scale = stbtt_ScaleForPixelHeight(&font, (float)fontSize);
+    int ascent, descent, lineGap;
+    stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
+    float baseline = y + ascent * scale;
+
+    const int SUPERSAMPLE = 4;
+    float internalScale = stbtt_ScaleForPixelHeight(&font, (float)fontSize * SUPERSAMPLE);
+
+    float curX = x;
+    for (const char* c = text; *c; ++c) {
+        int glyphIdx = stbtt_FindGlyphIndex(&font, *c);
+        int advance, lsb;
+        stbtt_GetGlyphHMetrics(&font, glyphIdx, &advance, &lsb);
+
+        int ix0, iy0, ix1, iy1;
+        stbtt_GetGlyphBitmapBox(&font, glyphIdx, internalScale, internalScale, &ix0, &iy0, &ix1, &iy1);
+        int gw = ix1 - ix0;
+        int gh = iy1 - iy0;
+        if (gw <= 0 || gh <= 0) {
+            curX += advance * scale;
+            if (*(c+1))
+                curX += stbtt_GetGlyphKernAdvance(&font, glyphIdx,
+                                    stbtt_FindGlyphIndex(&font, *(c+1))) * scale;
+            continue;
+        }
+
+        char key[256];
+        snprintf(key, sizeof(key), "__glyph_%s_%d_%d", fontPath, (int)(*c), fontSize);
+
+        GLuint glyphTex = 0;
+        int texW = 0, texH = 0, offsetX = 0, offsetY = 0;
+        {
+            std::lock_guard<std::mutex> lock(textureCacheMutex);
+            auto it = textureCache.find(key);
+            if (it != textureCache.end()) {
+                glyphTex = it->second;
+            }
+        }
+
+        if (glyphTex == 0) {
+            std::vector<unsigned char> glyphBitmap(gw * gh);
+            stbtt_MakeGlyphBitmap(&font, glyphBitmap.data(), gw, gh, gw,
+                                  internalScale, internalScale, glyphIdx);
+
+            const int PADDING = SUPERSAMPLE * 2;
+            texW = gw + 2 * PADDING;
+            texH = gh + PADDING;                
+            offsetX = (texW - gw) / 2;         
+            offsetY = texH - gh;                
+
+            std::vector<unsigned char> paddedBitmap(texW * texH, 0);
+            for (int row = 0; row < gh; ++row)
+                memcpy(&paddedBitmap[(offsetY + row) * texW + offsetX],
+                       &glyphBitmap[row * gw], gw);
+
+
+            glGenTextures(1, &glyphTex);
+            glBindTexture(GL_TEXTURE_2D, glyphTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, texW, texH, 0, GL_RED, GL_UNSIGNED_BYTE, paddedBitmap.data());
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glBindTexture(GL_TEXTURE_2D, 0);
+
+            {
+                std::lock_guard<std::mutex> lock(textureCacheMutex);
+                textureCache[key] = glyphTex;
+            }
+        } else {
+            const int PADDING = SUPERSAMPLE * 2;
+            texW = gw + 2 * PADDING;
+            texH = gh + PADDING;
+            offsetX = (texW - gw) / 2;
+            offsetY = texH - gh;
+        }
+
+        float sx = scale / internalScale;
+        float x0 = ix0 * sx;
+        float y0 = iy0 * sx;
+        float x1 = ix1 * sx;
+        float y1 = iy1 * sx;
+        float glyphW = x1 - x0;
+        float glyphH = y1 - y0;
+
+        float offX = (texW * sx - glyphW) * 0.5f;
+        float qx = curX + x0 - offX;
+        float qy = baseline + y0;
+        float qw = texW * sx;
+        float qh = texH * sx;
+
+        DrawCommand cmd;
+        cmd.type = CMD_SQUARE;
+        cmd.scale = 1.0f;
+        cmd.cx = 0; cmd.cy = 0;
+        cmd.r = r; cmd.g = g; cmd.b = b; cmd.a = a;
+        cmd.rotate = 0;
+        cmd.vertCount = 4;
+
+        cmd.verts[0] = qx;          cmd.verts[1] = qy;
+        cmd.verts[2] = qx + qw;     cmd.verts[3] = qy;
+        cmd.verts[4] = qx + qw;     cmd.verts[5] = qy + qh;
+        cmd.verts[6] = qx;          cmd.verts[7] = qy + qh;
+
+        float tx0 = (float)offsetX / texW;
+        float tx1 = (float)(offsetX + gw) / texW;
+        float v_top    = (float)offsetY / texH;              
+        float v_bottom = (float)(offsetY + gh) / texH;       
+        cmd.obj_texcoords = { tx0, v_bottom, tx1, v_bottom, tx1, v_top, tx0, v_top };
+
+        cmd.shaderID = simple2DShader;
+        cmd.tex = key;
+        cmd.isText = true;
+
+        {
+            std::lock_guard<std::mutex> lock(drawQueueMutex);
+            drawQueue.push_back(cmd);
+        }
+
+        curX += advance * scale;
+        if (*(c+1))
+            curX += stbtt_GetGlyphKernAdvance(&font, glyphIdx,
+                                stbtt_FindGlyphIndex(&font, *(c+1))) * scale;
+    }
 }
 
 //              класс для рисовки псевдо 3д существ
@@ -2781,45 +2945,27 @@ GLuint pseudo_3d_entity::getShadowTexture(float lx, float ly, float lz) const {
 
 //              opengl
 // настройка изменения размеров в 3д режиме
-void changeSize3D(int w,int h){
-    // проверка чтобы избежать деления на 0
-    if(h==0)h=1;
-    // задаём область вывода от координат 0,0 до координат w,h 
-    glViewport(0,0,w,h);
-    // переключение матрицы в проекцию(хз что это значит)
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    // настройка перспективы
-    // fov | соотношение сторон / ближняя плоскость где не отображаем / дальняя плоскость где не отображаем 
-    gluPerspective(camera.fov,float(w)/float(h),camera.znear,camera.zfar);
-    // переключение матрицы обратно в модельно-видовую(хз что это значит) 
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    // настройка камеры
-    gluLookAt(camera.eye_x,camera.eye_y,camera.eye_z,
-              camera.ctr_x,camera.ctr_y,camera.ctr_z,
-              camera.up_x,camera.up_y,camera.up_z);
-    window_w=w;
-    window_h=h;
+void changeSize3D(int w, int h) {
+    if (h == 0) h = 1;
+    glViewport(0, 0, w, h);
+    float aspect = float(w) / float(h);
+    g_projectionMatrix = glm::perspective(glm::radians(camera.fov), aspect, camera.znear, camera.zfar);
+    g_modelViewMatrix = glm::lookAt(glm::vec3(camera.eye_x, camera.eye_y, camera.eye_z),
+                                    glm::vec3(camera.ctr_x, camera.ctr_y, camera.ctr_z),
+                                    glm::vec3(camera.up_x, camera.up_y, camera.up_z));
+    window_w = w;
+    window_h = h;
+    updateMatrixUniforms();
 }
 // настройка изменения размеров в 2д режиме
-void changeSize2D(int w,int h){
-    // уже было
-    if(h==0)h=1;
-    glViewport(0,0,w,h);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    // соотношение сторон
-    const float ratio=float(w)/float(h);
-    // установка 2д проекции чтобы всегда была одна и таже система координат
-    if(w<=h)glOrtho(-1,1,-1/ratio,1/ratio,1,-1);
-    else glOrtho(-ratio,ratio,-1,1,1,-1);
-    // уже было
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    // выводим размеры окна в переменные, чтобы разработчик игры их мог использовать
-    window_w=w;
-    window_h=h;
+void changeSize2D(int w, int h) {
+    if (h == 0) h = 1;
+    glViewport(0, 0, w, h);
+    g_projectionMatrix = glm::ortho(0.0f, (float)w, 0.0f, (float)h, -1.0f, 1.0f);
+    g_modelViewMatrix = glm::mat4(1.0f);
+    window_w = w;
+    window_h = h;
+    updateMatrixUniforms();
 }
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     window_w = width;
@@ -2894,14 +3040,11 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
 //                                                                                      КОЛХОЗ!!! ПОТОМ СРОЧНО ИСПРАВИТЬ!!!
 float global_pitch,global_yaw;
 // настройка камеры
-void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll){
-    // задаём параметры камеры
-    camera.fov=fov;
-    camera.znear=0.1f;
-    camera.zfar=1000.0f;
-    camera.eye_x=eye_x; 
-    camera.eye_y=eye_y;
-    camera.eye_z=eye_z;
+void setup_camera(float fov, float eye_x, float eye_y, float eye_z, float pitch, float yaw, float roll) {
+    camera.fov = fov;
+    camera.eye_x = eye_x; 
+    camera.eye_y = eye_y;
+    camera.eye_z = eye_z;
 
     float norm_pitch = fmod(pitch, 360.0f);
     if (norm_pitch < 0) norm_pitch += 360.0f;
@@ -2909,11 +3052,7 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     float adj_pitch = norm_pitch;
     float up_x = 0, up_y = 1, up_z = 0;
 
-    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
-    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
-
     bool is_inverted = (norm_pitch > 90.0f && norm_pitch < 270.0f);
-
     if (is_inverted != camera.was_inverted) {
         yaw += 180.0f; 
     }
@@ -2921,15 +3060,13 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
 
     if (is_inverted) {
         adj_pitch = 180.0f - norm_pitch; 
-        up_y = -1.0f;                    
-        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f); 
+        up_y = -1.0f;
     } else {
         if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
         up_y = 1.0f;
-        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
     }
-    // вычисляем точку взгляда
-    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z,camera.dir_x, camera.dir_y, camera.dir_z);
+
+    lookAtForward(eye_x, eye_y, eye_z, adj_pitch, yaw, camera.ctr_x, camera.ctr_y, camera.ctr_z, camera.dir_x, camera.dir_y, camera.dir_z);
 
     if (roll != 0.0f) {
         float rad = roll * M_PI / 180.0f;
@@ -2944,28 +3081,31 @@ void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,floa
     camera.up_y = up_y;
     camera.up_z = up_z;
 
-    // настройка матрицы на проекцию
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    const float aspect=(window_h>0)? float(window_w)/float(window_h):1.0f;
-    gluPerspective(fov,aspect,camera.znear,camera.zfar);
-
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
+    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
+    ma_engine_listener_set_direction(&audio_engine, 0, camera.dir_x, camera.dir_y, camera.dir_z);
+    if (is_inverted)
+        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f);
+    else
+        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
 
     global_pitch = pitch;
     global_yaw = yaw;
     camera.pitch = pitch;
     camera.yaw   = yaw;
     camera.roll  = roll;
+
+    float aspect = (window_h > 0) ? float(window_w) / float(window_h) : 1.0f;
+    g_projectionMatrix = glm::perspective(glm::radians(fov), aspect, camera.znear, camera.zfar);
+    g_modelViewMatrix = glm::lookAt(glm::vec3(eye_x, eye_y, eye_z),
+                                    glm::vec3(camera.ctr_x, camera.ctr_y, camera.ctr_z),
+                                    glm::vec3(up_x, up_y, up_z));
+    updateMatrixUniforms();
 }
 // перемещение камеры
-void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll){
-
-    camera.eye_x=eye_x; 
-    camera.eye_y=eye_y;
-    camera.eye_z=eye_z;
+void move_camera(float eye_x, float eye_y, float eye_z, float pitch, float yaw, float roll) {
+    camera.eye_x = eye_x; 
+    camera.eye_y = eye_y;
+    camera.eye_z = eye_z;
 
     float norm_pitch = fmod(pitch, 360.0f);
     if (norm_pitch < 0) norm_pitch += 360.0f;
@@ -2973,11 +3113,7 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
     float adj_pitch = norm_pitch;
     float up_x = 0, up_y = 1, up_z = 0;
 
-    ma_engine_listener_set_position(&audio_engine,0,eye_x,eye_y,eye_z);
-    ma_engine_listener_set_direction(&audio_engine,0,camera.dir_x, camera.dir_y, camera.dir_z);
-
     bool is_inverted = (norm_pitch > 90.0f && norm_pitch < 270.0f);
-
     if (is_inverted != camera.was_inverted) {
         yaw += 180.0f; 
     }
@@ -2985,16 +3121,13 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
 
     if (is_inverted) {
         adj_pitch = 180.0f - norm_pitch; 
-        up_y = -1.0f;                    
-        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f); 
+        up_y = -1.0f;
     } else {
         if (norm_pitch > 270.0f) adj_pitch = norm_pitch - 360.0f;
         up_y = 1.0f;
-        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
     }
 
-    // считаем направление взгляда
-    lookAtForward(eye_x,eye_y,eye_z,adj_pitch,yaw,camera.ctr_x,camera.ctr_y,camera.ctr_z, camera.dir_x, camera.dir_y, camera.dir_z);
+    lookAtForward(eye_x, eye_y, eye_z, adj_pitch, yaw, camera.ctr_x, camera.ctr_y, camera.ctr_z, camera.dir_x, camera.dir_y, camera.dir_z);
 
     if (roll != 0.0f) {
         float rad = roll * M_PI / 180.0f;
@@ -3009,16 +3142,25 @@ void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float
     camera.up_y = up_y;
     camera.up_z = up_z;
 
-    // обновляем матрицу
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    gluLookAt(eye_x,eye_y,eye_z,camera.ctr_x,camera.ctr_y,camera.ctr_z, up_x, up_y, up_z);
+    ma_engine_listener_set_position(&audio_engine, 0, eye_x, eye_y, eye_z);
+    ma_engine_listener_set_direction(&audio_engine, 0, camera.dir_x, camera.dir_y, camera.dir_z);
+    if (is_inverted)
+        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, -1.0f, 0.0f);
+    else
+        ma_engine_listener_set_world_up(&audio_engine, 0, 0.0f, 1.0f, 0.0f);
 
     global_pitch = pitch;
     global_yaw = yaw;
     camera.pitch = pitch;
     camera.yaw   = yaw;
     camera.roll  = roll;
+
+    float aspect = (window_h > 0) ? float(window_w) / float(window_h) : 1.0f;
+    g_projectionMatrix = glm::perspective(glm::radians(camera.fov), aspect, camera.znear, camera.zfar);
+    g_modelViewMatrix = glm::lookAt(glm::vec3(eye_x, eye_y, eye_z),
+                                    glm::vec3(camera.ctr_x, camera.ctr_y, camera.ctr_z),
+                                    glm::vec3(up_x, up_y, up_z));
+    updateMatrixUniforms();
 }
 
 //              3д(может быть потом ещё что-то будет)
@@ -3447,7 +3589,7 @@ void stop_all_looping_sounds(){
 }
 //              оверлей
 // сколько заполнено оперативки/процессора
-void draw_performance_hud(int win_w, int win_h) {
+void draw_performance_hud(int win_w, int win_h, const char* font_path){
     static int frame_cnt = 0;
     static double fps = 0.0;
     static auto prev_time = std::chrono::steady_clock::now();
@@ -3463,15 +3605,15 @@ void draw_performance_hud(int win_w, int win_h) {
         fps = frame_cnt / elapsed;
         frame_cnt = 0;
 
-#ifdef _WIN32
-        cpu_per_core = getProcessCPUUsage_Win();
-        ram_usage_mb = getProcessRAMUsage_Win();
-        gpu_usage = getGPUUsage_Win();
-#else
-        cpu_per_core = getProcessCPUUsage_Linux();
-        ram_usage_mb = getProcessRAMUsage_Linux();
-        gpu_usage = getGPUUsage_Linux();
-#endif
+        #ifdef _WIN32
+                cpu_per_core = getProcessCPUUsage_Win();
+                ram_usage_mb = getProcessRAMUsage_Win();
+                gpu_usage = getGPUUsage_Win();
+        #else
+                cpu_per_core = getProcessCPUUsage_Linux();
+                ram_usage_mb = getProcessRAMUsage_Linux();
+                gpu_usage = getGPUUsage_Linux();
+        #endif
         prev_time = now;
     }
 
@@ -3484,7 +3626,7 @@ void draw_performance_hud(int win_w, int win_h) {
     } else {
         strcat(buf, "N/A");
     }
-    draw_text(buf, 10.0f, float(win_h) - 20.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    draw_text(buf, 10.0f, float(win_h) - 20.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
 
     std::string cpu_line;
     if (!cpu_per_core.empty()) {
@@ -3497,15 +3639,15 @@ void draw_performance_hud(int win_w, int win_h) {
     } else {
         cpu_line = "CPU: N/A";
     }
-    draw_text(cpu_line.c_str(), 10.0f, float(win_h) - 32.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    draw_text(cpu_line.c_str(), 10.0f, float(win_h) - 32.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
 
     snprintf(buf, sizeof(buf), "X: %.10f  Y: %.10f  Z: %.10f P: %.10f  Y: %.10f  R: %.10f",
              camera.eye_x, camera.eye_y, camera.eye_z, camera.pitch, camera.yaw, camera.roll);
-    draw_text(buf, 10.0f, float(win_h) - 44.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    draw_text(buf, 10.0f, float(win_h) - 44.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
 
     snprintf(buf, sizeof(buf), "CPU: %s  RAM: %s  GPU: %s",
              cpu_name.c_str(), ram_v.c_str(), gpu_name.c_str());
-    draw_text(buf, 10.0f, float(win_h) - 56.0f, GLUT_BITMAP_HELVETICA_12, 1.0f, 1.0f, 1.0f);
+    draw_text(buf, 10.0f, float(win_h) - 56.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
 }
 // панорама
 sphere_panorama sphere_sky;

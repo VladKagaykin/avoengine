@@ -101,7 +101,7 @@ void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, floa
 void square(float local_size, float x, float y, double r, double g, double b,
             float rotate, const float* vertices, const char* tex=nullptr, float alpha = 1.0f);
 
-void draw_text(const char* text,float x,float y,void* font,float r,float g,float b,float a=1.0f);
+void draw_text(const char* text, float x, float y, const char* fontPath, int fontSize, float r, float g, float b, float a=1);
 
 class pseudo_3d_entity {
 public:
@@ -213,7 +213,7 @@ void play_sound_loop(const char* filename,float volume=1.0f);
 void play_sound_3d(const char* filename,float x,float y,float z,float volume=1.0f);
 void play_sound_3d_loop(const char* filename,float x,float y,float z,float volume=1.0f);
 void stop_all_looping_sounds();
-void draw_performance_hud(int win_w,int win_h);
+void draw_performance_hud(int win_w,int win_h, const char* font_path);
 
 struct sphere_panorama {
     bool enabled = false;
