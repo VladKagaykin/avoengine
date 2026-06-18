@@ -2695,10 +2695,10 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
     float scale = stbtt_ScaleForPixelHeight(&font, (float)fontSize);
     int ascent, descent, lineGap;
     stbtt_GetFontVMetrics(&font, &ascent, &descent, &lineGap);
-    float baseline = y + ascent * scale;
+    float baseline = y;  
 
-    const int SUPERSAMPLE = 4;
-    float internalScale = stbtt_ScaleForPixelHeight(&font, (float)fontSize * SUPERSAMPLE);
+    float internalScale = stbtt_ScaleForPixelHeight(&font, (float)fontSize * Engine_settings.TEXT_SAMPLE);
+    float sx = scale / internalScale;     
 
     float curX = x;
     for (const char* c = text; *c; ++c) {
@@ -2712,17 +2712,17 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
         int gh = iy1 - iy0;
         if (gw <= 0 || gh <= 0) {
             curX += advance * scale;
-            if (*(c+1))
+            if (*(c + 1))
                 curX += stbtt_GetGlyphKernAdvance(&font, glyphIdx,
-                                    stbtt_FindGlyphIndex(&font, *(c+1))) * scale;
+                                    stbtt_FindGlyphIndex(&font, *(c + 1))) * scale;
             continue;
         }
 
         char key[256];
         snprintf(key, sizeof(key), "__glyph_%s_%d_%d", fontPath, (int)(*c), fontSize);
-
         GLuint glyphTex = 0;
         int texW = 0, texH = 0, offsetX = 0, offsetY = 0;
+
         {
             std::lock_guard<std::mutex> lock(textureCacheMutex);
             auto it = textureCache.find(key);
@@ -2736,17 +2736,17 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
             stbtt_MakeGlyphBitmap(&font, glyphBitmap.data(), gw, gh, gw,
                                   internalScale, internalScale, glyphIdx);
 
-            const int PADDING = SUPERSAMPLE * 2;
+            const int PADDING = Engine_settings.TEXT_SAMPLE * 2;
             texW = gw + 2 * PADDING;
-            texH = gh + PADDING;                
-            offsetX = (texW - gw) / 2;         
-            offsetY = texH - gh;                
+            texH = gh + 2 * PADDING;
+            offsetX = PADDING;
+            offsetY = PADDING;
 
             std::vector<unsigned char> paddedBitmap(texW * texH, 0);
-            for (int row = 0; row < gh; ++row)
+            for (int row = 0; row < gh; ++row) {
                 memcpy(&paddedBitmap[(offsetY + row) * texW + offsetX],
                        &glyphBitmap[row * gw], gw);
-
+            }
 
             glGenTextures(1, &glyphTex);
             glBindTexture(GL_TEXTURE_2D, glyphTex);
@@ -2760,26 +2760,30 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
                 textureCache[key] = glyphTex;
             }
         } else {
-            const int PADDING = SUPERSAMPLE * 2;
+            const int PADDING = Engine_settings.TEXT_SAMPLE * 2;
             texW = gw + 2 * PADDING;
-            texH = gh + PADDING;
-            offsetX = (texW - gw) / 2;
-            offsetY = texH - gh;
+            texH = gh + 2 * PADDING;
+            offsetX = PADDING;
+            offsetY = PADDING;
         }
 
-        float sx = scale / internalScale;
-        float x0 = ix0 * sx;
-        float y0 = iy0 * sx;
-        float x1 = ix1 * sx;
-        float y1 = iy1 * sx;
-        float glyphW = x1 - x0;
-        float glyphH = y1 - y0;
+        float left   = curX + ix0 * sx;
+        float right  = curX + ix1 * sx;
+        float top    = baseline - iy0 * sx;  
+        float bottom = baseline - iy1 * sx;   
 
-        float offX = (texW * sx - glyphW) * 0.5f;
-        float qx = curX + x0 - offX;
-        float qy = baseline + y0;
+        float qx = left - offsetX * sx;
+        float qy = bottom - (texH - (offsetY + gh)) * sx;  
         float qw = texW * sx;
         float qh = texH * sx;
+
+        float tx0 = (float)offsetX / texW;
+        float tx1 = (float)(offsetX + gw) / texW;
+        float v_top_stb    = (float)offsetY / texH;       
+        float v_bottom_stb = (float)(offsetY + gh) / texH;   
+       
+        float v_top_gl    = 1.0f - v_top_stb;
+        float v_bottom_gl = 1.0f - v_bottom_stb;
 
         DrawCommand cmd;
         cmd.type = CMD_SQUARE;
@@ -2794,11 +2798,12 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
         cmd.verts[4] = qx + qw;     cmd.verts[5] = qy + qh;
         cmd.verts[6] = qx;          cmd.verts[7] = qy + qh;
 
-        float tx0 = (float)offsetX / texW;
-        float tx1 = (float)(offsetX + gw) / texW;
-        float v_top    = (float)offsetY / texH;              
-        float v_bottom = (float)(offsetY + gh) / texH;       
-        cmd.obj_texcoords = { tx0, v_bottom, tx1, v_bottom, tx1, v_top, tx0, v_top };
+        cmd.obj_texcoords = {
+            tx0, v_bottom_gl,
+            tx1, v_bottom_gl,
+            tx1, v_top_gl,
+            tx0, v_top_gl
+        };
 
         cmd.shaderID = simple2DShader;
         cmd.tex = key;
@@ -2810,9 +2815,9 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
         }
 
         curX += advance * scale;
-        if (*(c+1))
+        if (*(c + 1))
             curX += stbtt_GetGlyphKernAdvance(&font, glyphIdx,
-                                stbtt_FindGlyphIndex(&font, *(c+1))) * scale;
+                                stbtt_FindGlyphIndex(&font, *(c + 1))) * scale;
     }
 }
 

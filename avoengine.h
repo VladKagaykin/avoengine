@@ -91,6 +91,7 @@ struct settings{
     float SHADOW_STEP_SIZE= 2;
     int MAX_SHADOW_BOUNCES= 2;
     float RAY_MULTIPLY=1;
+    int TEXT_SAMPLE=4;
 };
 
 extern settings Engine_settings;
