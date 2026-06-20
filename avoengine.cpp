@@ -2,7 +2,7 @@
 // указываем что здесь реализация библиотеки, т.к. miniaudio это только заголовочный файл и даём понять что
 // это главная программа
 #define MINIAUDIO_IMPLEMENTATION
-// указываем что пользуемся только указанным api для воспроизведения звука(pulseaudio и прочая шняга)(шиндовс или линукс)
+// указываем что пользуемся только указанным api для воспроизведения звука(шиндовс или линукс)
 #ifdef _WIN32
   #define MA_ENABLE_WASAPI
 #else
@@ -51,7 +51,6 @@ extern "C" {
 #include <string>
 
 static std::string getCPUName_Win() {
-    // Использование CPUID для получения строки процессора
     char brand[49] = {0};
     int cpuInfo[4] = {0};
     __cpuid(cpuInfo, 0x80000000);
@@ -171,7 +170,7 @@ static std::vector<float> getProcessCPUUsage_Win() {
 static long getProcessRAMUsage_Win() {
     PROCESS_MEMORY_COUNTERS_EX pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc)))
-        return pmc.WorkingSetSize / (1024 * 1024); // МБ
+        return pmc.WorkingSetSize / (1024 * 1024);
     return 0;
 }
 
@@ -369,15 +368,15 @@ static float getGPUUsage_Linux() {
 // математика(п, синусы, косинусы)
 #include <cmath>
 #include <algorithm>
-// удобная запись в переменные через printf и прочую хрень
+// удобная запись в переменные через printf и прочий ужас
 #include <cstdio>
 // взаимодействия с консолью
 #include <iostream>
 // таблица номер-значение, поможет для текстур
 #include <unordered_map>
-// нелоховские массивы
+// массивы
 #include <vector>
-// лоховской текст
+// простофильный текст
 #include <string>
 
 //              объявления
@@ -2612,7 +2611,7 @@ void clearTextureCache(){
     boundTextureID=0;
 }
 
-//              хз как это назвать
+//              утилиты
 // поворачиваем текстуру вокруг точки
 void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad){
     // перенос в 0 для удобного рассчёта
