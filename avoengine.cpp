@@ -505,15 +505,36 @@ GLuint defaultLightingShader = 0;
 static const char* defaultVertexShader = R"(
 #version 120
 attribute vec4 aVertex;
+attribute vec3 aNormal;
+attribute vec4 aColor;
+attribute vec2 aTexCoord;
+
+varying vec3 vN;
+varying vec3 vP;
+varying vec4 vColor;
+varying vec2 vTexCoord;
+varying vec3 vWorldPos;
+varying vec4 vClipPos;
+varying vec2 vUV;
+
 uniform mat4 u_projection;
 uniform mat4 u_modelView;
-varying vec2 vUV;
-varying vec4 vClipPos;
+uniform bool raycast;
+uniform bool displayMode;
+
 void main() {
     vec4 mvPos = u_modelView * aVertex;
+    vN = normalize(mat3(u_modelView) * aNormal);
+    vP = mvPos.xyz;
+    vColor = aColor;
+    vTexCoord = aTexCoord;
+    vWorldPos = aVertex.xyz;
     gl_Position = u_projection * mvPos;
     vClipPos = gl_Position;
-    vUV = (aVertex.xy + 1.0) * 0.5;
+    if (raycast || displayMode)
+        vUV = (aVertex.xy + 1.0) * 0.5;
+    else
+        vUV = vec2(0.0);
 }
 )";
 
@@ -527,8 +548,13 @@ struct Light {
     float cutoff;
     vec3 attenuation;
 };
-varying vec2 vUV;
+varying vec3 vN;
+varying vec3 vP;
+varying vec4 vColor;
+varying vec2 vTexCoord;
 varying vec4 vClipPos;
+varying vec2 vUV;
+uniform sampler2D tex;
 uniform Light lights[16];
 uniform int numLights;
 uniform vec3 ambientLight;
@@ -538,6 +564,7 @@ uniform float fogEnd;
 uniform bool portalMode;
 uniform bool portalDepthOnly;
 uniform sampler2D portalTex;
+uniform bool raycast;
 uniform vec3 camPos;
 uniform mat4 invViewProj;
 uniform sampler2D panoramaTex;
@@ -551,6 +578,7 @@ uniform sampler2D textures[2];
 uniform int triCount;
 uniform int triTexWidth;
 uniform int triTexHeight;
+uniform bool displayMode;
 uniform int portalCount;
 uniform vec3 portalPos[8];
 uniform vec3 portalNormal[8];
@@ -559,6 +587,10 @@ uniform mat4 portalInvWorld[8];
 uniform int portalVertCount[8];
 uniform vec2 portalVerts[8 * 16];
 uniform mat4 portalTeleport[8];
+uniform sampler2D bvhTex;
+uniform int bvhNodeCount;
+uniform int bvhTexWidth;
+uniform int bvhTexHeight;
 uniform bool warpPlaneEnabled;
 uniform vec3 warpPlaneOrigin;
 uniform vec3 warpPlaneAxisU;
@@ -599,6 +631,33 @@ float rayTriangleIntersect(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2,
     }
     return -1.0;
 }
+bool intersectAABB(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax,
+                   out float tmin, out float tmax) {
+    vec3 invR = 1.0 / rd;
+    vec3 t0 = (bmin - ro) * invR;
+    vec3 t1 = (bmax - ro) * invR;
+    vec3 tmin3 = min(t0, t1);
+    vec3 tmax3 = max(t0, t1);
+    tmin = max(max(tmin3.x, tmin3.y), tmin3.z);
+    tmax = min(min(tmax3.x, tmax3.y), tmax3.z);
+    return tmax >= max(0.0, tmin);
+}
+void fetchBVHNode(int nodeIdx, out vec3 bmin, out int left, out vec3 bmax, out int right,
+                  out int firstTri, out int triCountNode, out int escape) {
+    float texW = float(bvhTexWidth);
+    float texH = float(bvhTexHeight);
+    float v = (float(nodeIdx) + 0.5) / texH;
+    vec4 d0 = texture2D(bvhTex, vec2((0.5) / texW, v));
+    vec4 d1 = texture2D(bvhTex, vec2((1.5) / texW, v));
+    vec4 d2 = texture2D(bvhTex, vec2((2.5) / texW, v));
+    bmin = d0.xyz;
+    left = int(d0.w);
+    bmax = d1.xyz;
+    right = int(d1.w);
+    firstTri = int(d2.x);
+    triCountNode = int(d2.y);
+    escape = int(d2.z);
+}
 bool traceSegment(vec3 ro, vec3 rd, float maxT,
                   out float hitT, out vec3 hitPos, out vec3 hitNormal,
                   out vec3 hitCol, out int hitTexID, out bool isPortalHit,
@@ -610,64 +669,80 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
     float invTriW = 1.0 / float(triTexWidth);
     float invTriH = 1.0 / float(triTexHeight);
     float triW = float(triTexWidth);
-    for (int i = 0; i < triCount; i++) {
-        float base = float(i) * 3.0;
-        float u0 = mod(base, triW) * invTriW, v0coord = floor(base * invTriW) * invTriH;
-        vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
-        float i0 = idxData0.x;
-        if (i0 < 0.0) continue;
-        float billFlag = idxData0.y;
-        float tid_f = idxData0.z;
-        float u1 = mod(base+1.0, triW) * invTriW, v1coord = floor((base+1.0) * invTriW) * invTriH;
-        float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
-        float u2 = mod(base+2.0, triW) * invTriW, v2coord = floor((base+2.0) * invTriW) * invTriH;
-        float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
-        float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
-        float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
-        float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
-        vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
-        vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
-        vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
-        vec3 faceNormal;
-        float u, v;
-        float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
-        if (t > 0.0 && t < closest) {
-            int texID = int(floor(tid_f));
-            bool opaque = true;
-            vec3 col = texture2D(triTexColor, vec2(p0x, p0y)).rgb;
-            if (texID >= 0 && texID < 2) {
-                vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
-                vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
-                vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
-                vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
-                vec4 texCol;
-                if (texID == 0) texCol = texture2D(textures[0], uvCoord);
-                else texCol = texture2D(textures[1], uvCoord);
-                if (texCol.a < 0.5) opaque = false;
-                col = texCol.rgb * col;
-            }
-            if (opaque) {
-                closest = t;
-                hitPos = ro + rd * t;
-                if (billFlag < 0.5) {
-                    hitNormal = -rd;
-                } else {
-                    vec3 n0 = texture2D(triTexNorm, vec2(p0x, p0y)).rgb;
-                    vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
-                    vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
-                    vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
-                    vec3 rawNormal;
-                    if (dot(interpN, interpN) < 0.0000001) {
-                        rawNormal = normalize(faceNormal);
-                    } else {
-                        rawNormal = normalize(interpN);
+    int nodeIdx = 0;
+    while (nodeIdx >= 0 && nodeIdx < bvhNodeCount) {
+        vec3 bmin, bmax;
+        int left, right, firstTri, triCountNode, escape;
+        fetchBVHNode(nodeIdx, bmin, left, bmax, right, firstTri, triCountNode, escape);
+        float tminAABB, tmaxAABB;
+        if (!intersectAABB(ro, rd, bmin, bmax, tminAABB, tmaxAABB) || tminAABB > maxT) {
+            nodeIdx = escape;
+            continue;
+        }
+        if (left < 0) {
+            for (int i = firstTri; i < firstTri + triCountNode; i++) {
+                float base = float(i) * 3.0;
+                float u0 = mod(base, triW) * invTriW, v0coord = floor(base * invTriW) * invTriH;
+                vec4 idxData0 = texture2D(triTexIndices, vec2(u0, v0coord));
+                float i0 = idxData0.x;
+                if (i0 < 0.0) continue;
+                float billFlag = idxData0.y;
+                float tid_f = idxData0.z;
+                float u1 = mod(base+1.0, triW) * invTriW, v1coord = floor((base+1.0) * invTriW) * invTriH;
+                float i1 = texture2D(triTexIndices, vec2(u1, v1coord)).x;
+                float u2 = mod(base+2.0, triW) * invTriW, v2coord = floor((base+2.0) * invTriW) * invTriH;
+                float i2 = texture2D(triTexIndices, vec2(u2, v2coord)).x;
+                float p0x = mod(i0, triW) * invTriW, p0y = floor(i0 * invTriW) * invTriH;
+                float p1x = mod(i1, triW) * invTriW, p1y = floor(i1 * invTriW) * invTriH;
+                float p2x = mod(i2, triW) * invTriW, p2y = floor(i2 * invTriW) * invTriH;
+                vec3 v0 = texture2D(triTexPos, vec2(p0x, p0y)).rgb;
+                vec3 v1 = texture2D(triTexPos, vec2(p1x, p1y)).rgb;
+                vec3 v2 = texture2D(triTexPos, vec2(p2x, p2y)).rgb;
+                vec3 faceNormal;
+                float u, v;
+                float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
+                if (t > 0.0 && t < closest) {
+                    int texID = int(floor(tid_f));
+                    bool opaque = true;
+                    vec3 col = texture2D(triTexColor, vec2(p0x, p0y)).rgb;
+                    if (texID >= 0 && texID < 2) {
+                        vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
+                        vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
+                        vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
+                        vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
+                        vec4 texCol;
+                        if (texID == 0) texCol = texture2D(textures[0], uvCoord);
+                        else texCol = texture2D(textures[1], uvCoord);
+                        if (texCol.a < 0.5) opaque = false;
+                        col = texCol.rgb * col;
                     }
-                    hitNormal = (dot(rawNormal, rd) > 0.0) ? -rawNormal : rawNormal;
+                    if (opaque) {
+                        closest = t;
+                        hitPos = ro + rd * t;
+                        if (billFlag < 0.5) {
+                            hitNormal = -rd;
+                        } else {
+                            vec3 n0 = texture2D(triTexNorm, vec2(p0x, p0y)).rgb;
+                            vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
+                            vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
+                            vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
+                            vec3 rawNormal;
+                            if (dot(interpN, interpN) < 0.0000001) {
+                                rawNormal = normalize(faceNormal);
+                            } else {
+                                rawNormal = normalize(interpN);
+                            }
+                            hitNormal = (dot(rawNormal, rd) > 0.0) ? -rawNormal : rawNormal;
+                        }
+                        hitCol = col;
+                        hitTexID = texID;
+                        isPortalHit = false;
+                    }
                 }
-                hitCol = col;
-                hitTexID = texID;
-                isPortalHit = false;
             }
+            nodeIdx = escape;
+        } else {
+            nodeIdx = left;
         }
     }
     for (int p = 0; p < portalCount; p++) {
@@ -890,9 +965,8 @@ void main() {
 }
 )";
 
-static GLuint triTexUV = 0;
-
 // кэш uniform-локаций для основного шейдера
+static GLint loc_tex = -1;
 static GLint loc_numLights = -1;
 static GLint loc_ambientLight = -1;
 static GLint loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
@@ -923,6 +997,7 @@ static void updateMatrixUniforms() {
 static void initDefaultShader() {
     if (defaultLightingShader == 0) {
         defaultLightingShader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
+        loc_tex = glGetUniformLocation(defaultLightingShader, "tex");
         loc_numLights = glGetUniformLocation(defaultLightingShader, "numLights");
         loc_ambientLight = glGetUniformLocation(defaultLightingShader, "ambientLight");
         loc_fogColor = glGetUniformLocation(defaultLightingShader, "fogColor");
@@ -1140,6 +1215,123 @@ void ensureTriTextures(int triNeeded) {
     createFloatTex(triTexIndices, w, h, 3);
 }
 
+struct AABB {
+    glm::vec3 min;
+    glm::vec3 max;
+
+    AABB() : min(FLT_MAX), max(-FLT_MAX) {}
+    AABB(const glm::vec3& p) : min(p), max(p) {}
+    void expand(const glm::vec3& p) {
+        min = glm::min(min, p);
+        max = glm::max(max, p);
+    }
+    void expand(const AABB& box) {
+        min = glm::min(min, box.min);
+        max = glm::max(max, box.max);
+    }
+    glm::vec3 center() const { return (min + max) * 0.5f; }
+    glm::vec3 extents() const { return max - min; }
+    float radius() const { return glm::length(extents()) * 0.5f; }
+};
+
+struct Triangle {
+    float v0[3], v1[3], v2[3];
+    float centroid[3];
+};
+
+struct BVHNode {
+    float bmin[3], bmax[3];
+    int left, right;
+    int firstTri, triCount;
+    int escape;
+};
+
+static std::vector<BVHNode> bvhNodes;
+
+int buildBVHRecursive(std::vector<BVHNode>& nodes,
+                       const std::vector<Triangle>& triangles,
+                       std::vector<int>& triIndices, int start, int end, int depth) {
+    BVHNode node;
+    node.bmin[0] = node.bmin[1] = node.bmin[2] = std::numeric_limits<float>::max();
+    node.bmax[0] = node.bmax[1] = node.bmax[2] = -std::numeric_limits<float>::max();
+    for (int i = start; i < end; ++i) {
+        const Triangle& t = triangles[triIndices[i]];
+        for (int k = 0; k < 3; ++k) {
+            node.bmin[k] = std::min(node.bmin[k], std::min({t.v0[k], t.v1[k], t.v2[k]}));
+            node.bmax[k] = std::max(node.bmax[k], std::max({t.v0[k], t.v1[k], t.v2[k]}));
+        }
+    }
+    node.left = node.right = -1;
+    node.firstTri = start;
+    node.triCount = end - start;
+    int idx = (int)nodes.size();
+    nodes.push_back(node);
+
+    if (node.triCount <= 4 || depth > 20) return idx;
+
+    int axis = 0;
+    float ext = node.bmax[0] - node.bmin[0];
+    if (node.bmax[1] - node.bmin[1] > ext) { axis = 1; ext = node.bmax[1] - node.bmin[1]; }
+    if (node.bmax[2] - node.bmin[2] > ext) { axis = 2; }
+
+    int mid = start + (end - start) / 2;
+    std::nth_element(triIndices.begin() + start, triIndices.begin() + mid, triIndices.begin() + end,
+        [&triangles, axis](int a, int b) {
+            return triangles[a].centroid[axis] < triangles[b].centroid[axis];
+        });
+
+    int leftIdx = buildBVHRecursive(nodes, triangles, triIndices, start, mid, depth + 1);
+    int rightIdx = buildBVHRecursive(nodes, triangles, triIndices, mid, end, depth + 1);
+
+    nodes[idx].left = leftIdx;
+    nodes[idx].right = rightIdx;
+    nodes[idx].firstTri = 0;
+    nodes[idx].triCount = 0;
+    return idx;
+}
+
+static GLuint bvhNodeTex = 0, bvhNode2Tex = 0, bvhTriRefTex = 0;
+static int bvhTexWidth = 0, bvhTexHeight = 0;
+static GLuint bvhBoxTex = 0, bvhTriTex = 0;
+static int bvhNodeCount = 0;
+static int bvhBoxWidth = 0;  
+static int bvhTriWidth = 0;
+
+void computeEscapeIndicesFixed(std::vector<BVHNode>& nodes, int nodeIdx, int parentEscape = -1) {
+    BVHNode& n = nodes[nodeIdx];
+    if (n.left == -1) {
+        n.escape = parentEscape;
+        return;
+    }
+    computeEscapeIndicesFixed(nodes, n.left, n.right);
+    computeEscapeIndicesFixed(nodes, n.right, parentEscape);
+    n.escape = parentEscape;
+}
+
+std::vector<float> packBVH(const std::vector<BVHNode>& nodes) {
+    std::vector<float> data(nodes.size() * 4 * 4);
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const BVHNode& n = nodes[i];
+        float* base = &data[i * 16];
+        base[0] = n.bmin[0]; base[1] = n.bmin[1]; base[2] = n.bmin[2]; base[3] = (float)n.left;
+        base[4] = n.bmax[0]; base[5] = n.bmax[1]; base[6] = n.bmax[2]; base[7] = (float)n.right;
+        base[8] = (float)n.firstTri; base[9] = (float)n.triCount; base[10] = (float)n.escape; base[11] = 0.0f;
+        base[12] = base[13] = base[14] = base[15] = 0.0f;
+    }
+    return data;
+}
+
+GLuint createBVHTexture(const std::vector<float>& packedData, int nodeCount) {
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4, nodeCount, 0, GL_RGBA, GL_FLOAT, packedData.data());
+    return tex;
+}
 // гравитационное искажение
 WarpPlane* activeWarpPlane = nullptr;
 
@@ -1197,10 +1389,14 @@ void flushDrawQueue() {
     static std::vector<float> cachedColData;
     static std::vector<float> cachedUvData;
     static std::vector<float> cachedIdxData;
+    static GLuint cachedBvhTex = 0;
     static int cachedTriCount = 0;
     static int cachedTriTexWidth = 0, cachedTriTexHeight = 0;
+    static bool bvhValid = false;
     static std::vector<GLuint> cachedTextureIDs;
     static std::vector<int> cachedTextureSlots;
+    static GLuint triTexUV = 0;
+
     if (is_scene_changed && current_scene) {
         std::vector<DrawCommand> tempQueue;
         drawQueue.swap(tempQueue);
@@ -1293,23 +1489,59 @@ void flushDrawQueue() {
                 }
             }
             cachedTriCount = totalTriangles;
-            cachedPosData = posData;
-            cachedNormData = normData;
-            cachedColData = colData;
-            cachedUvData = uvData;
-            cachedIdxData = idxData;
+            std::vector<Triangle> triangles(cachedTriCount);
+            for (int i = 0; i < cachedTriCount; i++) {
+                float* base = &posData[i * 9];
+                Triangle t;
+                memcpy(t.v0, base + 0, 3 * sizeof(float));
+                memcpy(t.v1, base + 3, 3 * sizeof(float));
+                memcpy(t.v2, base + 6, 3 * sizeof(float));
+                for (int k = 0; k < 3; k++)
+                    t.centroid[k] = (t.v0[k] + t.v1[k] + t.v2[k]) / 3.0f;
+                triangles[i] = t;
+            }
+            std::vector<int> triIndices(cachedTriCount);
+            for (int i = 0; i < cachedTriCount; i++) triIndices[i] = i;
+            bvhNodes.clear();
+            buildBVHRecursive(bvhNodes, triangles, triIndices, 0, cachedTriCount, 0);
+            computeEscapeIndicesFixed(bvhNodes, 0, -1);
+            std::vector<float> posDataNew(totalPixels * 3, 0.0f);
+            std::vector<float> normDataNew(totalPixels * 3, 0.0f);
+            std::vector<float> colDataNew(totalPixels * 4, 0.0f);
+            std::vector<float> uvDataNew(totalPixels * 2, 0.0f);
+            std::vector<float> idxDataNew(totalPixels * 4, -1.0f);
+            for (int newIdx = 0; newIdx < cachedTriCount; ++newIdx) {
+                int oldIdx = triIndices[newIdx];
+                memcpy(&posDataNew[newIdx * 9], &posData[oldIdx * 9], 9 * sizeof(float));
+                memcpy(&normDataNew[newIdx * 9], &normData[oldIdx * 9], 9 * sizeof(float));
+                memcpy(&colDataNew[newIdx * 12], &colData[oldIdx * 12], 12 * sizeof(float));
+                memcpy(&uvDataNew[newIdx * 6], &uvData[oldIdx * 6], 6 * sizeof(float));
+                memcpy(&idxDataNew[newIdx * 12], &idxData[oldIdx * 12], 12 * sizeof(float));
+            }
+            for (int i = 0; i < cachedTriCount; ++i)
+                for (int j = 0; j < 3; ++j)
+                    idxDataNew[(i * 3 + j) * 4 + 0] = (float)(i * 3 + j);
+            cachedPosData = std::move(posDataNew);
+            cachedNormData = std::move(normDataNew);
+            cachedColData = std::move(colDataNew);
+            cachedUvData = std::move(uvDataNew);
+            cachedIdxData = std::move(idxDataNew);
             cachedTriTexWidth = triTexWidth;
             cachedTriTexHeight = triTexHeight;
+            if (cachedBvhTex) glDeleteTextures(1, &cachedBvhTex);
+            std::vector<float> packed = packBVH(bvhNodes);
+            cachedBvhTex = createBVHTexture(packed, bvhNodes.size());
             cachedTextureIDs = activeTextures;
             cachedTextureSlots.clear();
             for (size_t i = 0; i < activeTextures.size(); ++i) cachedTextureSlots.push_back(i);
+            bvhValid = true;
         } else {
-            cachedTriCount = 0;
+            bvhValid = false;
         }
         is_scene_changed = 0;
     }
     if (!current_scene) {
-        cachedTriCount = 0;
+        bvhValid = false;
     }
     std::vector<DrawCommand> commands2D;
     std::vector<DrawCommand> commands3D;
@@ -1335,7 +1567,7 @@ void flushDrawQueue() {
         renderH = std::max(1, (int)(window_h * factor));
         raySamples = 1;
     }
-    static GLint loc_invViewProj = -1, loc_camPos = -1;
+    static GLint loc_raycast = -1, loc_invViewProj = -1, loc_camPos = -1;
     static GLint loc_ambient = -1, loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
     static GLint loc_numLights = -1, loc_panoramaTex = -1, loc_hasPanorama = -1;
     static GLint loc_triCount = -1, loc_triTexWidth = -1, loc_triTexHeight = -1;
@@ -1349,6 +1581,7 @@ void flushDrawQueue() {
     static std::vector<GLint> locLightCutoff;
     static std::vector<GLint> locLightAttenuation;
     static std::vector<GLint> locTexSlot;
+    static GLint loc_bvhTex = -2, loc_bvhNodeCount = -2, loc_bvhTexWidth = -2, loc_bvhTexHeight = -2;
     static GLint loc_warpEnabled = -1, loc_warpOrigin = -1, loc_warpAxisU = -1, loc_warpAxisV = -1, loc_warpDisplacementTex = -1;
     static GLint loc_maxDist = -1, loc_shadowBias = -1, loc_camWarpStrength = -1;
     static GLint loc_shadowWarpStrength = -1, loc_camStepSize = -1, loc_shadowStepSize = -1;
@@ -1356,6 +1589,7 @@ void flushDrawQueue() {
     static GLint loc_raySamples = -1;
     static bool uniformsCached = false;
     if (!uniformsCached && currentShaderProg) {
+        loc_raycast = glGetUniformLocation(currentShaderProg, "raycast");
         loc_invViewProj = glGetUniformLocation(currentShaderProg, "invViewProj");
         loc_camPos = glGetUniformLocation(currentShaderProg, "camPos");
         loc_ambient = glGetUniformLocation(currentShaderProg, "ambientLight");
@@ -1407,6 +1641,10 @@ void flushDrawQueue() {
         for (int i = 0; i < 8; i++) {
             char name[32]; snprintf(name, sizeof(name), "textures[%d]", i); locTexSlot[i] = glGetUniformLocation(currentShaderProg, name);
         }
+        loc_bvhTex = glGetUniformLocation(currentShaderProg, "bvhTex");
+        loc_bvhNodeCount = glGetUniformLocation(currentShaderProg, "bvhNodeCount");
+        loc_bvhTexWidth = glGetUniformLocation(currentShaderProg, "bvhTexWidth");
+        loc_bvhTexHeight = glGetUniformLocation(currentShaderProg, "bvhTexHeight");
         loc_warpEnabled = glGetUniformLocation(currentShaderProg, "warpPlaneEnabled");
         loc_warpOrigin = glGetUniformLocation(currentShaderProg, "warpPlaneOrigin");
         loc_warpAxisU = glGetUniformLocation(currentShaderProg, "warpPlaneAxisU");
@@ -1423,7 +1661,7 @@ void flushDrawQueue() {
         loc_raySamples = glGetUniformLocation(currentShaderProg, "raySamples");
         uniformsCached = true;
     }
-    if (!commands3D.empty() || !panoramaCommands.empty()) {
+    if (bvhValid || !commands3D.empty() || !panoramaCommands.empty()) {
         std::unordered_map<GLuint, int> textureSlotMap;
         std::vector<GLuint> activeTextures;
         activeTextures.reserve(8);
@@ -1443,7 +1681,7 @@ void flushDrawQueue() {
             else if (cmd.type == CMD_PSEUDO3D) totalDynamicTriangles += 2;
         }
         if (totalDynamicTriangles > 0) {
-            if (cachedTriCount > 0) {
+            if (bvhValid) {
                 int combinedTriCount = cachedTriCount + totalDynamicTriangles;
                 ensureTriTextures(combinedTriCount * 3);
                 int totalPixels = triTexWidth * triTexHeight;
@@ -1608,6 +1846,48 @@ void flushDrawQueue() {
                     }
                 }
                 triCount = combinedTriCount;
+                std::vector<Triangle> triangles(triCount);
+                for (int i = 0; i < triCount; i++) {
+                    float* base = &posData[i * 9];
+                    Triangle t;
+                    memcpy(t.v0, base + 0, 3 * sizeof(float));
+                    memcpy(t.v1, base + 3, 3 * sizeof(float));
+                    memcpy(t.v2, base + 6, 3 * sizeof(float));
+                    for (int k = 0; k < 3; k++)
+                        t.centroid[k] = (t.v0[k] + t.v1[k] + t.v2[k]) / 3.0f;
+                    triangles[i] = t;
+                }
+                std::vector<int> triIndices(triCount);
+                for (int i = 0; i < triCount; i++) triIndices[i] = i;
+                bvhNodes.clear();
+                buildBVHRecursive(bvhNodes, triangles, triIndices, 0, triCount, 0);
+                computeEscapeIndicesFixed(bvhNodes, 0, -1);
+                std::vector<float> posDataNew(totalPixels * 3, 0.0f);
+                std::vector<float> normDataNew(totalPixels * 3, 0.0f);
+                std::vector<float> colDataNew(totalPixels * 4, 0.0f);
+                std::vector<float> uvDataNew(totalPixels * 2, 0.0f);
+                std::vector<float> idxDataNew(totalPixels * 4, -1.0f);
+                for (int newIdx = 0; newIdx < triCount; ++newIdx) {
+                    int oldIdx = triIndices[newIdx];
+                    memcpy(&posDataNew[newIdx * 9], &posData[oldIdx * 9], 9 * sizeof(float));
+                    memcpy(&normDataNew[newIdx * 9], &normData[oldIdx * 9], 9 * sizeof(float));
+                    memcpy(&colDataNew[newIdx * 12], &colData[oldIdx * 12], 12 * sizeof(float));
+                    memcpy(&uvDataNew[newIdx * 6], &uvData[oldIdx * 6], 6 * sizeof(float));
+                    memcpy(&idxDataNew[newIdx * 12], &idxData[oldIdx * 12], 12 * sizeof(float));
+                }
+                for (int i = 0; i < triCount; ++i)
+                    for (int j = 0; j < 3; ++j)
+                        idxDataNew[(i * 3 + j) * 4 + 0] = (float)(i * 3 + j);
+                posData = std::move(posDataNew);
+                normData = std::move(normDataNew);
+                colData = std::move(colDataNew);
+                uvData = std::move(uvDataNew);
+                idxData = std::move(idxDataNew);
+
+                if (cachedBvhTex) glDeleteTextures(1, &cachedBvhTex);
+                std::vector<float> packed = packBVH(bvhNodes);
+                cachedBvhTex = createBVHTexture(packed, bvhNodes.size());
+
                 glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D, triTexPos);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, triTexWidth, triTexHeight, GL_RGB, GL_FLOAT, posData.data());
@@ -1786,15 +2066,67 @@ void flushDrawQueue() {
                     }
                 }
                 triCount = totalDynamicTriangles;
+                std::vector<Triangle> triangles(triCount);
+                for (int i = 0; i < triCount; i++) {
+                    float* base = &posData[i * 9];
+                    Triangle t;
+                    memcpy(t.v0, base + 0, 3 * sizeof(float));
+                    memcpy(t.v1, base + 3, 3 * sizeof(float));
+                    memcpy(t.v2, base + 6, 3 * sizeof(float));
+                    for (int k = 0; k < 3; k++)
+                        t.centroid[k] = (t.v0[k] + t.v1[k] + t.v2[k]) / 3.0f;
+                    triangles[i] = t;
+                }
+                std::vector<int> triIndices(triCount);
+                for (int i = 0; i < triCount; i++) triIndices[i] = i;
+                bvhNodes.clear();
+                buildBVHRecursive(bvhNodes, triangles, triIndices, 0, triCount, 0);
+                computeEscapeIndicesFixed(bvhNodes, 0, -1);
+                std::vector<float> posDataNew(totalPixels * 3, 0.0f);
+                std::vector<float> normDataNew(totalPixels * 3, 0.0f);
+                std::vector<float> colDataNew(totalPixels * 4, 0.0f);
+                std::vector<float> uvDataNew(totalPixels * 2, 0.0f);
+                std::vector<float> idxDataNew(totalPixels * 4, -1.0f);
+                for (int newIdx = 0; newIdx < triCount; ++newIdx) {
+                    int oldIdx = triIndices[newIdx];
+                    memcpy(&posDataNew[newIdx * 9], &posData[oldIdx * 9], 9 * sizeof(float));
+                    memcpy(&normDataNew[newIdx * 9], &normData[oldIdx * 9], 9 * sizeof(float));
+                    memcpy(&colDataNew[newIdx * 12], &colData[oldIdx * 12], 12 * sizeof(float));
+                    memcpy(&uvDataNew[newIdx * 6], &uvData[oldIdx * 6], 6 * sizeof(float));
+                    memcpy(&idxDataNew[newIdx * 12], &idxData[oldIdx * 12], 12 * sizeof(float));
+                }
+                for (int i = 0; i < triCount; ++i)
+                    for (int j = 0; j < 3; ++j)
+                        idxDataNew[(i * 3 + j) * 4 + 0] = (float)(i * 3 + j);
+                posData = std::move(posDataNew);
+                normData = std::move(normDataNew);
+                colData = std::move(colDataNew);
+                uvData = std::move(uvDataNew);
+                idxData = std::move(idxDataNew);
+                if (cachedBvhTex) glDeleteTextures(1, &cachedBvhTex);
+                std::vector<float> packed = packBVH(bvhNodes);
+                cachedBvhTex = createBVHTexture(packed, bvhNodes.size());
+                bvhValid = true;
+                cachedTriCount = triCount;
+                cachedPosData = posData;
+                cachedNormData = normData;
+                cachedColData = colData;
+                cachedUvData = uvData;
+                cachedIdxData = idxData;
+                cachedTriTexWidth = triTexWidth;
+                cachedTriTexHeight = triTexHeight;
+                cachedTextureIDs = activeTextures;
+                cachedTextureSlots.clear();
+                for (size_t i = 0; i < activeTextures.size(); ++i) cachedTextureSlots.push_back(i);
                 glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D, triTexPos);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, triTexWidth, triTexHeight, 0, GL_RGB, GL_FLOAT, posData.data());
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, triTexWidth, triTexHeight, 0, GL_RGB, GL_FLOAT, cachedPosData.data());
                 glActiveTexture(GL_TEXTURE3);
                 glBindTexture(GL_TEXTURE_2D, triTexNorm);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, triTexWidth, triTexHeight, 0, GL_RGB, GL_FLOAT, normData.data());
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, triTexWidth, triTexHeight, 0, GL_RGB, GL_FLOAT, cachedNormData.data());
                 glActiveTexture(GL_TEXTURE4);
                 glBindTexture(GL_TEXTURE_2D, triTexColor);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, triTexWidth, triTexHeight, 0, GL_RGBA, GL_FLOAT, colData.data());
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, triTexWidth, triTexHeight, 0, GL_RGBA, GL_FLOAT, cachedColData.data());
                 if (triTexUV == 0) {
                     glGenTextures(1, &triTexUV);
                     glBindTexture(GL_TEXTURE_2D, triTexUV);
@@ -1804,12 +2136,12 @@ void flushDrawQueue() {
                 }
                 glActiveTexture(GL_TEXTURE6);
                 glBindTexture(GL_TEXTURE_2D, triTexUV);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, triTexWidth, triTexHeight, 0, GL_RG, GL_FLOAT, uvData.data());
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, triTexWidth, triTexHeight, 0, GL_RG, GL_FLOAT, cachedUvData.data());
                 glActiveTexture(GL_TEXTURE5);
                 glBindTexture(GL_TEXTURE_2D, triTexIndices);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, triTexWidth, triTexHeight, 0, GL_RGBA, GL_FLOAT, idxData.data());
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, triTexWidth, triTexHeight, 0, GL_RGBA, GL_FLOAT, cachedIdxData.data());
             }
-        } else if (cachedTriCount > 0) {
+        } else if (bvhValid) {
             triCount = cachedTriCount;
             activeTextures = cachedTextureIDs;
             for (size_t i = 0; i < activeTextures.size(); ++i)
@@ -1843,10 +2175,11 @@ void flushDrawQueue() {
         glm::mat4 prevModel = g_modelViewMatrix;
         g_projectionMatrix = glm::mat4(1.0f);
         g_modelViewMatrix = glm::mat4(1.0f);
-        glViewport(0, 0, renderW, renderH);
+        glViewport(0, 0, window_w, window_h);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         useShader(currentShaderProg);
         if (currentShaderProg) updateMatrixUniforms();
+        glUniform1i(loc_raycast, 1);
         glm::mat4 projMat = glm::perspective(glm::radians(camera.fov), (float)renderW/(float)renderH, camera.znear, camera.zfar);
         glm::mat4 viewMat = glm::lookAt(glm::vec3(camera.eye_x, camera.eye_y, camera.eye_z),
                                         glm::vec3(camera.ctr_x, camera.ctr_y, camera.ctr_z),
@@ -1877,6 +2210,16 @@ void flushDrawQueue() {
         glUniform1i(loc_triTexColor, 4);
         glUniform1i(loc_triTexIndices, 5);
         glUniform1i(loc_triTexUV, 6);
+        if (bvhValid && cachedBvhTex != 0 && bvhNodes.size() > 0) {
+            glActiveTexture(GL_TEXTURE10);
+            glBindTexture(GL_TEXTURE_2D, cachedBvhTex);
+            glUniform1i(loc_bvhTex, 10);
+            glUniform1i(loc_bvhNodeCount, (int)bvhNodes.size());
+            glUniform1i(loc_bvhTexWidth, 4);
+            glUniform1i(loc_bvhTexHeight, (int)bvhNodes.size());
+        } else {
+            glUniform1i(loc_bvhNodeCount, 0);
+        }
         for (int i = 0; i < (int)activeTextures.size(); i++) {
             glActiveTexture(GL_TEXTURE7 + i);
             glBindTexture(GL_TEXTURE_2D, activeTextures[i]);
@@ -1976,6 +2319,7 @@ void flushDrawQueue() {
         glUniform1i(loc_maxBounces, Engine_settings.MAX_BOUNCES);
         glUniform1i(loc_maxShadowBounces, Engine_settings.MAX_SHADOW_BOUNCES);
         glUniform1i(loc_raySamples, raySamples);
+        glActiveTexture(GL_TEXTURE0);
         static GLuint fullScreenVAO = 0, fullScreenVBO = 0;
         if (fullScreenVAO == 0) {
             float quad[] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f, 1.0f, 1.0f };
@@ -1996,7 +2340,9 @@ void flushDrawQueue() {
         g_modelViewMatrix = prevModel;
         if (currentShaderProg) updateMatrixUniforms();
     }
-    glViewport(0, 0, window_w, window_h);
+
+    // Рендеринг 2D поверх уже отрисованной 3D сцены
+    glEnable(GL_BLEND);
     if (!commands2D.empty()) {
         static GLuint sq_vao = 0, sq_vbo = 0, sq_ibo = 0;
         static bool sq_init = false;
@@ -2023,7 +2369,7 @@ void flushDrawQueue() {
         g_projectionMatrix = glm::ortho(0.0f, (float)window_w, 0.0f, (float)window_h, -1.0f, 1.0f);
         g_modelViewMatrix = glm::mat4(1.0f);
         glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE);
-        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         useShader(simple2DShader);
         if (currentShaderProg) updateMatrixUniforms();
         glUniform1i(loc_tex_2d, 0);
