@@ -579,6 +579,8 @@ uniform int triCount;
 uniform int triTexWidth;
 uniform int triTexHeight;
 uniform bool displayMode;
+uniform sampler2D accumulationTex;
+uniform float frameCount;
 uniform int portalCount;
 uniform vec3 portalPos[8];
 uniform vec3 portalNormal[8];
@@ -660,8 +662,8 @@ void fetchBVHNode(int nodeIdx, out vec3 bmin, out int left, out vec3 bmax, out i
 }
 bool traceSegment(vec3 ro, vec3 rd, float maxT,
                   out float hitT, out vec3 hitPos, out vec3 hitNormal,
-                  out vec3 hitCol, out int hitTexID, out bool isPortalHit,
-                  out int portalIdx) {
+                  out vec3 hitCol, out float hitAlpha, out int hitTexID,
+                  out bool isPortalHit, out int portalIdx) {
     float closest = maxT;
     hitT = maxT;
     isPortalHit = false;
@@ -703,8 +705,9 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
                 float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
                 if (t > 0.0 && t < closest) {
                     int texID = int(floor(tid_f));
-                    bool opaque = true;
-                    vec3 col = texture2D(triTexColor, vec2(p0x, p0y)).rgb;
+                    vec4 objColor = texture2D(triTexColor, vec2(p0x, p0y));
+                    vec3 col = objColor.rgb;
+                    float alpha = objColor.a;
                     if (texID >= 0 && texID < 2) {
                         vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
                         vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
@@ -713,31 +716,31 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
                         vec4 texCol;
                         if (texID == 0) texCol = texture2D(textures[0], uvCoord);
                         else texCol = texture2D(textures[1], uvCoord);
-                        if (texCol.a < 0.5) opaque = false;
+                        alpha *= texCol.a;
                         col = texCol.rgb * col;
                     }
-                    if (opaque) {
-                        closest = t;
-                        hitPos = ro + rd * t;
-                        if (billFlag < 0.5) {
-                            hitNormal = -rd;
+                    if (alpha < 0.005) continue;
+                    closest = t;
+                    hitPos = ro + rd * t;
+                    if (billFlag < 0.5) {
+                        hitNormal = -rd;
+                    } else {
+                        vec3 n0 = texture2D(triTexNorm, vec2(p0x, p0y)).rgb;
+                        vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
+                        vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
+                        vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
+                        vec3 rawNormal;
+                        if (dot(interpN, interpN) < 0.0000001) {
+                            rawNormal = normalize(faceNormal);
                         } else {
-                            vec3 n0 = texture2D(triTexNorm, vec2(p0x, p0y)).rgb;
-                            vec3 n1 = texture2D(triTexNorm, vec2(p1x, p1y)).rgb;
-                            vec3 n2 = texture2D(triTexNorm, vec2(p2x, p2y)).rgb;
-                            vec3 interpN = (1.0-u-v)*n0 + u*n1 + v*n2;
-                            vec3 rawNormal;
-                            if (dot(interpN, interpN) < 0.0000001) {
-                                rawNormal = normalize(faceNormal);
-                            } else {
-                                rawNormal = normalize(interpN);
-                            }
-                            hitNormal = (dot(rawNormal, rd) > 0.0) ? -rawNormal : rawNormal;
+                            rawNormal = normalize(interpN);
                         }
-                        hitCol = col;
-                        hitTexID = texID;
-                        isPortalHit = false;
+                        hitNormal = (dot(rawNormal, rd) > 0.0) ? -rawNormal : rawNormal;
                     }
+                    hitCol = col;
+                    hitAlpha = alpha;
+                    hitTexID = texID;
+                    isPortalHit = false;
                 }
             }
             nodeIdx = escape;
@@ -816,10 +819,11 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform, int sam
             }
             float tHit;
             vec3 segPos, segNorm, segCol;
+            float hitAlpha;
             int segTex;
             bool isPortalHit;
             int portalIdx;
-            bool segHit = traceSegment(ro, rd, step, tHit, segPos, segNorm, segCol, segTex, isPortalHit, portalIdx);
+            bool segHit = traceSegment(ro, rd, step, tHit, segPos, segNorm, segCol, hitAlpha, segTex, isPortalHit, portalIdx);
             if (segHit) {
                 if (isPortalHit) {
                     if (portalBounces >= maxShadowBounces) { shadowContrib = 0.0; break; }
@@ -839,7 +843,12 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform, int sam
                     if (isSpot && dot(-rd, lightDir) < L.cutoff) { shadowContrib = 0.0; break; }
                     continue;
                 } else {
-                    if (tHit > shadowBias) { shadowContrib = 0.0; break; }
+                    if (tHit > shadowBias) {
+                        shadowContrib *= (1.0 - hitAlpha);
+                        ro = ro + rd * tHit + rd * 0.001;
+                        remaining -= tHit;
+                        continue;
+                    }
                 }
             }
             ro = ro + rd * step;
@@ -850,6 +859,10 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform, int sam
     return totalShadow / float(samples);
 }
 void main() {
+    if (displayMode) {
+        gl_FragColor = texture2D(accumulationTex, vUV);
+        return;
+    }
     if (portalMode) {
         if (portalDepthOnly) { gl_FragColor = vec4(0.0); return; }
         vec2 uv = (vClipPos.xy / vClipPos.w) * 0.5 + 0.5;
@@ -857,111 +870,157 @@ void main() {
         return;
     }
     float invFogRange = 1.0 / (fogEnd - fogStart);
-    int samples = raySamples > 1 ? raySamples : 1;
-    vec3 accumulatedColor = vec3(0.0);
-    for (int s = 0; s < samples; s++) {
-        vec2 jitter = (samples > 1)
-            ? vec2(hash(gl_FragCoord.xy + vec2(float(s), 0.0)),
-                   hash(gl_FragCoord.xy + vec2(0.0, float(s)))) - 0.5
-            : vec2(0.0);
-        vec2 sampleUV = vUV + jitter / vec2(float(1024), float(768));
-        vec4 clipPos = vec4(sampleUV * 2.0 - 1.0, -1.0, 1.0);
-        vec4 worldPos = invViewProj * clipPos;
-        worldPos /= worldPos.w;
-        vec3 ro = camPos;
-        vec3 rd = normalize(worldPos.xyz - ro);
-        float totalDist = 0.0;
-        mat4 cumulativePortalTransform = mat4(1.0);
-        for (int bounce = 0; bounce < portalCount+1; bounce++) {
-            if (bounce >= maxBounces) break;
-            float travelledThisBounce = 0.0;
-            bool hit = false;
-            vec3 hitPos, hitNormal, hitCol;
-            int hitTexID;
-            bool isPortalHit;
-            int portalHitIdx;
-            for (int step = 0; step < int(ceil(maxDist / camStepSize)); step++) {
-                if (travelledThisBounce >= maxDist) break;
-                float stepSize = min(camStepSize, maxDist - travelledThisBounce);
-                if (warpPlaneEnabled) {
-                    vec3 localPos = ro - warpPlaneOrigin;
-                    float u = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
-                    float v = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
-                    if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
-                        vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(u, v)).rgb;
-                        rd = normalize(rd + disp * camWarpStrength);
-                    }
-                }
-                float tHit;
-                bool segHit = traceSegment(ro, rd, stepSize, tHit, hitPos, hitNormal, hitCol, hitTexID, isPortalHit, portalHitIdx);
-                if (segHit) {
-                    totalDist += travelledThisBounce + tHit;
-                    hit = true;
-                    break;
-                }
-                ro = ro + rd * stepSize;
-                travelledThisBounce += stepSize;
-            }
-            if (!hit) {
-                if (hasPanorama) {
-                    float panU = 0.5 + atan(rd.z, rd.x) / TWO_PI;
-                    float panV = 0.5 + asin(rd.y) / PI;
-                    accumulatedColor += texture2D(panoramaTex, vec2(panU, panV)).rgb;
-                }
-                break;
-            }
-            if (isPortalHit) {
-                cumulativePortalTransform = portalTeleport[portalHitIdx] * cumulativePortalTransform;
-                ro = vec3(portalTeleport[portalHitIdx] * vec4(hitPos, 1.0));
-                rd = normalize(mat3(portalTeleport[portalHitIdx]) * rd);
-                totalDist = 0.0;
-            } else {
-                float fogCoord = totalDist;
-                vec3 N = normalize(hitNormal);
-                vec3 col = ambientLight;
-                for (int j = 0; j < numLights; j++) {
-                    if (!lights[j].enabled) continue;
-                    if (lights[j].attenuation.x <= 0.0) continue;
-                    vec3 effectiveLightPos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
+    if (raycast) {
+        int samples = raySamples > 1 ? raySamples : 1;
+        vec3 accumulatedColor = vec3(0.0);
+        for (int s = 0; s < samples; s++) {
+            vec2 jitter = (samples > 1)
+                ? vec2(hash(gl_FragCoord.xy + vec2(float(s), 0.0)),
+                       hash(gl_FragCoord.xy + vec2(0.0, float(s)))) - 0.5
+                : vec2(0.0);
+            vec2 sampleUV = vUV + jitter / vec2(float(1024), float(768));
+            vec4 clipPos = vec4(sampleUV * 2.0 - 1.0, -1.0, 1.0);
+            vec4 worldPos = invViewProj * clipPos;
+            worldPos /= worldPos.w;
+            vec3 ro = camPos;
+            vec3 rd = normalize(worldPos.xyz - ro);
+            float totalDist = 0.0;
+            mat4 cumulativePortalTransform = mat4(1.0);
+            int bounce = 0;
+            bool continueRay = true;
+            float transparency = 1.0;
+            while (continueRay && bounce < maxBounces) {
+                float travelledThisBounce = 0.0;
+                bool hit = false;
+                vec3 hitPos, hitNormal, hitCol;
+                float hitAlpha;
+                int hitTexID;
+                bool isPortalHit;
+                int portalHitIdx;
+                for (int step = 0; step < int(ceil(maxDist / camStepSize)); step++) {
+                    if (travelledThisBounce >= maxDist) break;
+                    float stepSize = min(camStepSize, maxDist - travelledThisBounce);
                     if (warpPlaneEnabled) {
-                        vec3 localPos = hitPos - warpPlaneOrigin;
-                        float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
-                        float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
-                        if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
-                            vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
-                            effectiveLightPos += disp * shadowWarpStrength * 2.0;
+                        vec3 localPos = ro - warpPlaneOrigin;
+                        float u = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+                        float v = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+                        if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
+                            vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(u, v)).rgb;
+                            rd = normalize(rd + disp * camWarpStrength);
                         }
                     }
-                    vec3 Lpos = effectiveLightPos;
-                    vec3 Ldir = lights[j].direction;
-                    bool isSpot = dot(Ldir, Ldir) > 0.000001;
-                    if (isSpot) Ldir = normalize(mat3(cumulativePortalTransform) * Ldir);
-                    vec3 delta = Lpos - hitPos;
-                    float d2 = dot(delta, delta);
-                    if (d2 < 0.000001) continue;
-                    float invDist = inversesqrt(d2);
-                    float d = 1.0 / invDist;
-                    float atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
-                    if (isSpot) {
-                        vec3 dirToHit = -delta * invDist;
-                        if (dot(dirToHit, Ldir) < lights[j].cutoff) continue;
+                    float tHit;
+                    bool segHit = traceSegment(ro, rd, stepSize, tHit, hitPos, hitNormal, hitCol, hitAlpha, hitTexID, isPortalHit, portalHitIdx);
+                    if (segHit) {
+                        totalDist += travelledThisBounce + tHit;
+                        hit = true;
+                        break;
                     }
-                    vec3 L = delta * invDist;
-                    float diff = max(dot(N, L), 0.0);
-                    if (diff > 0.0) {
-                        float shadow = shadowRay(j, hitPos, N, cumulativePortalTransform, samples);
-                        col += lights[j].diffuse * diff * atten * shadow;
-                    }
+                    ro = ro + rd * stepSize;
+                    travelledThisBounce += stepSize;
                 }
-                col *= hitCol;
-                float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
-                col = mix(fogColor, col, fogFactor);
-                accumulatedColor += col;
-                break;
+                if (!hit) {
+                    if (hasPanorama) {
+                        float panU = 0.5 + atan(rd.z, rd.x) / TWO_PI;
+                        float panV = 0.5 + asin(rd.y) / PI;
+                        vec3 panColor = texture2D(panoramaTex, vec2(panU, panV)).rgb;
+                        accumulatedColor = mix(accumulatedColor, panColor, transparency);
+                    }
+                    continueRay = false;
+                    break;
+                }
+                if (isPortalHit) {
+                    cumulativePortalTransform = portalTeleport[portalHitIdx] * cumulativePortalTransform;
+                    ro = vec3(portalTeleport[portalHitIdx] * vec4(hitPos, 1.0));
+                    rd = normalize(mat3(portalTeleport[portalHitIdx]) * rd);
+                    totalDist = 0.0;
+                    bounce++;
+                    continue;
+                } else {
+                    float fogCoord = totalDist;
+                    vec3 N = normalize(hitNormal);
+                    vec3 litCol = ambientLight;
+                    for (int j = 0; j < numLights; j++) {
+                        if (!lights[j].enabled) continue;
+                        if (lights[j].attenuation.x <= 0.0) continue;
+                        vec3 effectiveLightPos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
+                        if (warpPlaneEnabled) {
+                            vec3 localPos = hitPos - warpPlaneOrigin;
+                            float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+                            float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+                            if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
+                                vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
+                                effectiveLightPos += disp * shadowWarpStrength * 2.0;
+                            }
+                        }
+                        vec3 Lpos = effectiveLightPos;
+                        vec3 Ldir = lights[j].direction;
+                        bool isSpot = dot(Ldir, Ldir) > 0.000001;
+                        if (isSpot) Ldir = normalize(mat3(cumulativePortalTransform) * Ldir);
+                        vec3 delta = Lpos - hitPos;
+                        float d2 = dot(delta, delta);
+                        if (d2 < 0.000001) continue;
+                        float invDist = inversesqrt(d2);
+                        float d = 1.0 / invDist;
+                        float atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
+                        if (isSpot) {
+                            vec3 dirToHit = -delta * invDist;
+                            if (dot(dirToHit, Ldir) < lights[j].cutoff) continue;
+                        }
+                        vec3 L = delta * invDist;
+                        float diff = max(dot(N, L), 0.0);
+                        if (diff > 0.0) {
+                            float shadow = shadowRay(j, hitPos, N, cumulativePortalTransform, samples);
+                            litCol += lights[j].diffuse * diff * atten * shadow;
+                        }
+                    }
+                    litCol *= hitCol;
+                    float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
+                    litCol = mix(fogColor, litCol, fogFactor);
+
+                    accumulatedColor = mix(accumulatedColor, litCol, hitAlpha * transparency);
+                    transparency *= (1.0 - hitAlpha);
+
+                    if (transparency < 0.001) {
+                        continueRay = false;
+                        break;
+                    }
+
+                    ro = hitPos + rd * 0.001;
+                    totalDist = fogCoord;
+                    bounce++;
+                    continue;
+                }
+                bounce++;
             }
         }
+        gl_FragColor = vec4(accumulatedColor / float(samples), 1.0);
+        return;
     }
-    gl_FragColor = vec4(accumulatedColor / float(samples), 1.0);
+    vec4 texColor = texture2D(tex, vTexCoord);
+    if (texColor.a < 0.01) discard;
+    vec3 N = normalize(vN);
+    vec3 totalLight = ambientLight;
+    int nL = numLights;
+    if (nL > 16) nL = 16;
+    for (int i = 0; i < nL; i++) {
+        if (!lights[i].enabled || lights[i].attenuation.x <= 0.0) continue;
+        vec3 Lv = lights[i].position - vP;
+        float d2 = dot(Lv, Lv);
+        if (d2 < 0.000001) continue;
+        float invDist = inversesqrt(d2);
+        float dist = 1.0 / invDist;
+        vec3 L = Lv * invDist;
+        if (dot(-L, normalize(lights[i].direction)) < lights[i].cutoff) continue;
+        float att = 1.0 / (lights[i].attenuation.x + lights[i].attenuation.y*dist + lights[i].attenuation.z*d2);
+        float diff = max(dot(N, L), 0.0);
+        totalLight += lights[i].diffuse * diff * att;
+    }
+    vec3 finalColor = texColor.rgb * vColor.rgb * totalLight;
+    float fogCoord = length(vP);
+    float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
+    finalColor = mix(fogColor, finalColor, fogFactor);
+    gl_FragColor = vec4(finalColor, texColor.a * vColor.a);
 }
 )";
 
@@ -1060,17 +1119,8 @@ static const char* simple2DFragmentShader = R"(
 varying vec4 vColor;
 varying vec2 vTexCoord;
 uniform sampler2D tex;
-uniform int isText;
 void main() {
-    vec4 texColor = texture2D(tex, vTexCoord);
-    if (isText == 1) {
-        float val = texColor.r;
-        float alpha = step(0.5, val);
-        if (alpha < 0.01) discard;
-        gl_FragColor = vec4(vColor.rgb, vColor.a * alpha);
-    } else {
-        gl_FragColor = texColor * vColor;
-    }
+    gl_FragColor = texture2D(tex, vTexCoord) * vColor;
 }
 )";
 
@@ -1161,8 +1211,6 @@ struct DrawCommand {
     GLuint shaderID = 0;
 
     Portal* portal = nullptr;
-
-    bool isText = false;
 };
 
 static GLuint skyboxVAO = 0, skyboxVBO = 0, skyboxIBO = 0;
@@ -1204,14 +1252,16 @@ void ensureTriTextures(int triNeeded) {
     auto createFloatTex = [](GLuint& tex, int w, int h, int components) {
         glGenTextures(1, &tex);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, components == 3 ? GL_RGB32F : GL_RGBA32F, w, h, 0, GL_RGB, GL_FLOAT, nullptr);
+        GLenum internalFormat = (components == 3) ? GL_RGB32F : GL_RGBA32F;
+        GLenum format = (components == 3) ? GL_RGB : GL_RGBA;
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, w, h, 0, format, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     };
 
     createFloatTex(triTexPos, w, h, 3);
     createFloatTex(triTexNorm, w, h, 3);
-    createFloatTex(triTexColor, w, h, 3);
+    createFloatTex(triTexColor, w, h, 4);   
     createFloatTex(triTexIndices, w, h, 3);
 }
 
@@ -2341,7 +2391,6 @@ void flushDrawQueue() {
         if (currentShaderProg) updateMatrixUniforms();
     }
 
-    // Рендеринг 2D поверх уже отрисованной 3D сцены
     glEnable(GL_BLEND);
     if (!commands2D.empty()) {
         static GLuint sq_vao = 0, sq_vbo = 0, sq_ibo = 0;
@@ -2373,10 +2422,7 @@ void flushDrawQueue() {
         useShader(simple2DShader);
         if (currentShaderProg) updateMatrixUniforms();
         glUniform1i(loc_tex_2d, 0);
-        static GLint loc_isText = -1;
-        if (loc_isText == -1) loc_isText = glGetUniformLocation(simple2DShader, "isText");
         for (auto& cmd : commands2D) {
-            glUniform1i(loc_isText, cmd.isText ? 1 : 0);
             switch (cmd.type) {
                 case CMD_SQUARE: {
                     const char* texName = cmd.tex.empty() ? nullptr : cmd.tex.c_str();
@@ -2613,15 +2659,21 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
             offsetX = PADDING;
             offsetY = PADDING;
 
-            std::vector<unsigned char> paddedBitmap(texW * texH, 0);
+            std::vector<unsigned char> rgbaBitmap(texW * texH * 4, 0);
             for (int row = 0; row < gh; ++row) {
-                memcpy(&paddedBitmap[(offsetY + row) * texW + offsetX],
-                       &glyphBitmap[row * gw], gw);
+                for (int col = 0; col < gw; ++col) {
+                    unsigned char val = glyphBitmap[row * gw + col];
+                    int idx = ((offsetY + row) * texW + (offsetX + col)) * 4;
+                    rgbaBitmap[idx + 0] = 255;
+                    rgbaBitmap[idx + 1] = 255;
+                    rgbaBitmap[idx + 2] = 255;
+                    rgbaBitmap[idx + 3] = val;
+                }
             }
 
             glGenTextures(1, &glyphTex);
             glBindTexture(GL_TEXTURE_2D, glyphTex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, texW, texH, 0, GL_RED, GL_UNSIGNED_BYTE, paddedBitmap.data());
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, texW, texH, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgbaBitmap.data());
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glBindTexture(GL_TEXTURE_2D, 0);
@@ -2678,7 +2730,6 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
 
         cmd.shaderID = simple2DShader;
         cmd.tex = key;
-        cmd.isText = true;
 
         {
             std::lock_guard<std::mutex> lock(drawQueueMutex);
