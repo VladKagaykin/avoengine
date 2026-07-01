@@ -9,6 +9,10 @@
 #include <assimp/postprocess.h>
 #include <map>
 #include <unordered_map>
+
+#include "portals_rc.h"
+#include "pseudo3dentity.h"
+
 struct GLFWwindow;
 
 extern int tick;
@@ -85,22 +89,22 @@ struct MapData {
     std::unordered_map<std::string, std::vector<uint8_t>> userData;
 };
 
-bool save_map(const char* filename, const MapData& map);
-bool load_map(const char* filename, MapData& map);
+// bool save_map(const char* filename, const MapData& map);
+// bool load_map(const char* filename, MapData& map);
 
-MapEntity entityToMapData(const pseudo_3d_entity& ent);
-pseudo_3d_entity* mapDataToEntity(const MapEntity& data);
+// MapEntity entityToMapData(const pseudo_3d_entity& ent);
+// pseudo_3d_entity* mapDataToEntity(const MapEntity& data);
 
-MapData::LightData lightToMapData(const Light& light);
-void mapDataToLight(const MapData::LightData& data, Light& out);
+// MapData::LightData lightToMapData(const Light& light);
+// void mapDataToLight(const MapData::LightData& data, Light& out);
 
-void registerEntity(pseudo_3d_entity* e);
-void unregisterEntity(pseudo_3d_entity* e);
-void save_current_scene(const char* filename);
+// void registerEntity(pseudo_3d_entity* e);
+// void unregisterEntity(pseudo_3d_entity* e);
+// void save_current_scene(const char* filename);
 
-extern std::vector<pseudo_3d_entity*> allEntities;
+// extern std::vector<pseudo_3d_entity*> allEntities;
 
-MapData::PortalData portalToMapData(const Portal& p);
-Portal* mapDataToPortal(const MapData::PortalData& data);
+// MapData::PortalData portalToMapData(const Portal& p);
+// Portal* mapDataToPortal(const MapData::PortalData& data);
 
 #endif

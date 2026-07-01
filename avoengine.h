@@ -8,6 +8,9 @@
 #include <unordered_map>
 #include "src/miniaudio.h"
 #include <glm/glm.hpp>
+class Portal;
+class pseudo_3d_entity;
+#include <mutex>
 
 struct GLFWwindow;
 
@@ -53,6 +56,54 @@ extern Function current_scene;
 
 void fixed_scene(Function scene);
 void clean_scene();
+
+enum DrawCommandType : int {
+    CMD_SQUARE,
+    CMD_TEXT,
+    CMD_3DOBJECT,
+    CMD_PSEUDO3D,
+    CMD_LINE_2D,
+    CMD_LINE_3D,
+    CMD_PANORAMA,
+    CMD_PORTAL
+};
+
+struct DrawCommand {
+    DrawCommandType type;
+
+    float scale, cx, cy, r, g, b, rotate;
+    float verts[8];
+    int vertCount;
+    std::string tex;
+
+    std::string text;
+    float x, y;
+    void* font;
+    float a;
+
+    float obj_cx, obj_cy, obj_cz;
+    float obj_r, obj_g, obj_b;
+    float obj_alpha;
+    std::string obj_tex;
+    std::vector<float> obj_vertices;
+    std::vector<int> obj_indices;
+    std::vector<float> obj_texcoords;
+    std::vector<float> obj_normals;
+    float radius = 0.0f;
+    float obj_yaw = 0.0f;
+    float obj_pitch = 0.0f;
+    float obj_roll = 0.0f;
+
+    const pseudo_3d_entity* entity;
+    float cam_x, cam_y, cam_z;
+
+    GLuint shaderID = 0;
+
+    Portal* portal = nullptr;
+};
+
+extern std::vector<DrawCommand> drawQueue;
+extern std::mutex drawQueueMutex;
 
 void flushDrawQueue();
 
@@ -104,59 +155,7 @@ void square(float local_size, float x, float y, double r, double g, double b,
 
 void draw_text(const char* text, float x, float y, const char* fontPath, int fontSize, float r, float g, float b, float a=1);
 
-class pseudo_3d_entity {
-public:
-    pseudo_3d_entity(float x, float y, float z,
-                     float g_angle, float v_angle, float r_angle,
-                     const std::vector<std::string>& textures, int v_angles,
-                     const std::vector<float>& vertices);
-
-    void draw(float cam_x, float cam_y, float cam_z) const;
-
-    float getRadius() const { return radius; }
-
-    float getX() const { return x; }
-    float getY() const { return y; }
-    float getZ() const { return z; }
-
-    void setGAngle(float a) { g_angle = a; }
-    void setVAngle(float a) { v_angle = a; }
-    void setRAngle(float a) { r_angle = a; }
-
-    float getGAngle() const { return g_angle; }
-    float getVAngle() const { return v_angle; }
-    float getRAngle() const { return r_angle; }
-
-    GLuint getShadowTexture(float dir_x, float dir_y, float dir_z) const;
-    GLuint getTextureFromDirection(float dir_x, float dir_y, float dir_z) const;
-    const std::vector<std::string>& getTextures() const { return textureFiles; }
-    const std::vector<float>& getVertices() const { return vertices_; }
-    const std::vector<GLuint>& getTextureIDs() const { return textureIDs; }
-    int getVAngles() const { return v_angles; }
-
-    int getTextureIndex(float dir_x, float dir_y, float dir_z) const;
-    bool isVisible(float cam_x, float cam_y, float cam_z) const;
-
-    GLuint getTextureID(int index) const { return (index >= 0 && index < (int)textureIDs.size()) ? textureIDs[index] : 0; }
-
-    float x, y, z;
-    float g_angle, v_angle, r_angle;
-    float radius;
-private:
-    void computeRadius();
-
-    std::vector<std::string> textureFiles;
-    std::vector<GLuint> textureIDs;
-    int v_angles;
-    std::vector<float> vertices_;
-
-    mutable int cachedTexIdx = -1;
-    mutable float cachedDirX = 1e9f, cachedDirY = 1e9f, cachedDirZ = 1e9f;
-};
-
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
-void changeSize3D(int w,int h);
-void changeSize2D(int w,int h);
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);
 void draw_line_3d(float x, float y, float z,
@@ -237,47 +236,4 @@ struct fog_params {
 extern fog_params fog;
 
 extern float global_ambient[3];
-
-#include <functional>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-
-class Portal {
-public:
-    Portal(
-        float ax, float ay, float az,
-        float bx, float by, float bz,
-        const std::vector<float>& vertices,
-        float yawA = 0.0f, float pitchA = 0.0f, float rollA = 0.0f,
-        float yawB = 0.0f, float pitchB = 0.0f, float rollB = 0.0f
-    );
-    ~Portal();
-
-    void draw();                  
-    void checkTeleport();        
-
-    bool teleportRay(const glm::vec3& origin, const glm::vec3& dir, float maxDist,
-                     glm::vec3& newOrigin, glm::vec3& newDir) const;
-
-    float ax, ay, az;   
-    float bx, by, bz;   
-    float yawA, pitchA, rollA;
-    float yawB, pitchB, rollB;
-    std::vector<float> vertices;   
-
-    glm::vec3 portalNormal(float px, float py, float pz, bool sideB = false) const;
-
-    bool pointInPortalPolygon(const glm::vec2& point) const;
-
-    glm::mat4 getPortalTransform(float fx, float fy, float fz,
-                                  float tx, float ty, float tz) const;
-
-    struct SideState {
-        glm::vec3 prevCamPos = glm::vec3(0.0f);
-        float prevSignedDist = 0.0f;
-        bool prevValid = false;
-    };
-    SideState sideA, sideB;
-};
-extern std::vector<Portal*> allPortals;
 #endif

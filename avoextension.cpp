@@ -13,6 +13,10 @@
 #include <map>
 #include <unordered_map>
 #include <chrono>
+
+#include "portals_rc.h"
+#include "pseudo3dentity.h"
+
 using namespace std;
 
 //              утилиты
@@ -288,422 +292,422 @@ enum class ChunkType : uint32_t {
     PORT = 0x54524F50 
 };
 
-static void write_chunk(std::vector<uint8_t>& out, ChunkType type, const std::vector<uint8_t>& data) {
-    uint32_t fourcc = static_cast<uint32_t>(type);
-    out.push_back(fourcc & 0xFF);
-    out.push_back((fourcc >> 8) & 0xFF);
-    out.push_back((fourcc >> 16) & 0xFF);
-    out.push_back((fourcc >> 24) & 0xFF);
-    write_u32(out, (uint32_t)data.size());
-    out.insert(out.end(), data.begin(), data.end());
-}
+// static void write_chunk(std::vector<uint8_t>& out, ChunkType type, const std::vector<uint8_t>& data) {
+//     uint32_t fourcc = static_cast<uint32_t>(type);
+//     out.push_back(fourcc & 0xFF);
+//     out.push_back((fourcc >> 8) & 0xFF);
+//     out.push_back((fourcc >> 16) & 0xFF);
+//     out.push_back((fourcc >> 24) & 0xFF);
+//     write_u32(out, (uint32_t)data.size());
+//     out.insert(out.end(), data.begin(), data.end());
+// }
 
-static bool load_map_internal(const std::vector<uint8_t>& filedata, MapData& map) {
-    const uint8_t* p = filedata.data();
-    size_t remaining = filedata.size();
+// static bool load_map_internal(const std::vector<uint8_t>& filedata, MapData& map) {
+//     const uint8_t* p = filedata.data();
+//     size_t remaining = filedata.size();
 
-    if (remaining < 4) return false;
-    if (memcmp(p, "AVOM", 4) != 0) return false;
-    p += 4; remaining -= 4;
+//     if (remaining < 4) return false;
+//     if (memcmp(p, "AVOM", 4) != 0) return false;
+//     p += 4; remaining -= 4;
 
-    if (remaining < 4) return false;
-    uint16_t ver_major = p[0] | (p[1] << 8);
-    uint16_t ver_minor = p[2] | (p[3] << 8);
-    p += 4; remaining -= 4;
+//     if (remaining < 4) return false;
+//     uint16_t ver_major = p[0] | (p[1] << 8);
+//     uint16_t ver_minor = p[2] | (p[3] << 8);
+//     p += 4; remaining -= 4;
 
-    if (ver_major != 1) {
-        std::cerr << "Unsupported .avomap major version " << ver_major << std::endl;
-        return false;
-    }
+//     if (ver_major != 1) {
+//         std::cerr << "Unsupported .avomap major version " << ver_major << std::endl;
+//         return false;
+//     }
 
-    while (remaining >= 8) {
-        uint32_t fourcc;
-        memcpy(&fourcc, p, 4);
-        p += 4; remaining -= 4;
+//     while (remaining >= 8) {
+//         uint32_t fourcc;
+//         memcpy(&fourcc, p, 4);
+//         p += 4; remaining -= 4;
 
-        uint32_t chunkSize;
-        if (!read_u32(p, remaining, chunkSize)) return false;
-        if (chunkSize > remaining) return false;
+//         uint32_t chunkSize;
+//         if (!read_u32(p, remaining, chunkSize)) return false;
+//         if (chunkSize > remaining) return false;
 
-        const uint8_t* chunkData = p;
-        p += chunkSize;
-        remaining -= chunkSize;
+//         const uint8_t* chunkData = p;
+//         p += chunkSize;
+//         remaining -= chunkSize;
 
-        ChunkType ctype = static_cast<ChunkType>(fourcc);
+//         ChunkType ctype = static_cast<ChunkType>(fourcc);
 
-        switch (ctype) {
-            case ChunkType::ENTY: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                MapEntity ent;
-                if (!read_float(d, r, ent.x) || !read_float(d, r, ent.y) || !read_float(d, r, ent.z)) break;
-                if (!read_float(d, r, ent.g_angle) || !read_float(d, r, ent.v_angle) || !read_float(d, r, ent.r_angle)) break;
-                if (!read_u32(d, r, (uint32_t&)ent.v_angles)) break;
-                uint32_t texCount;
-                if (!read_u32(d, r, texCount)) break;
-                ent.textures.resize(texCount);
-                for (auto& tex : ent.textures) {
-                    if (!read_string(d, r, tex)) break;
-                }
-                uint32_t vertCount;
-                if (!read_u32(d, r, vertCount)) break;
-                ent.vertices.resize(vertCount);
-                for (auto& v : ent.vertices) {
-                    if (!read_float(d, r, v)) break;
-                }
-                if (d <= p) {
-                    uint8_t shadowByte = 0;
-                    if (r > 0) {
-                        shadowByte = d[0];
-                        d++; r--;
-                    }
-                    ent.castShadow = (shadowByte != 0);
-                }
-                map.entities.push_back(ent);
-                break;
-            }
-            case ChunkType::LITE: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                MapData::LightData light;
-                uint32_t enabled32;
-                if (!read_u32(d, r, enabled32)) break;
-                light.enabled = (enabled32 != 0);
-                for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.pos[i])) break;
-                for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.dir[i])) break;
-                for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.color[i])) break;
-                if (!read_float(d, r, light.intensity)) break;
-                if (!read_float(d, r, light.cutoff)) break;
-                if (!read_float(d, r, light.constAtt)) break;
-                if (!read_float(d, r, light.linearAtt)) break;
-                if (!read_float(d, r, light.quadAtt)) break;
-                map.lights.push_back(light);
-                break;
-            }
-            case ChunkType::FOGS: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                uint32_t enabled32;
-                if (!read_u32(d, r, enabled32)) break;
-                map.fog_enabled = (enabled32 != 0);
-                if (!read_float(d, r, map.fog_density)) break;
-                for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.fog_color[i])) break;
-                if (!read_float(d, r, map.fog_start)) break;
-                if (!read_float(d, r, map.fog_end)) break;
-                break;
-            }
-            case ChunkType::CAME: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.camera_eye[i])) break;
-                if (!read_float(d, r, map.camera_pitch)) break;
-                if (!read_float(d, r, map.camera_yaw)) break;
-                break;
-            }
-            case ChunkType::PANO: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                if (!read_string(d, r, map.panorama_path)) break;
-                break;
-            }
-            case ChunkType::AMBI: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.ambient[i])) break;
-                break;
-            }
-            case ChunkType::USER: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                uint32_t numEntries;
-                if (!read_u32(d, r, numEntries)) break;
-                for (uint32_t i = 0; i < numEntries; ++i) {
-                    std::string key;
-                    if (!read_string(d, r, key)) break;
-                    uint32_t dataLen;
-                    if (!read_u32(d, r, dataLen)) break;
-                    if (dataLen > r) break;
-                    std::vector<uint8_t> blob(d, d + dataLen);
-                    d += dataLen; r -= dataLen;
-                    map.userData[key] = std::move(blob);
-                }
-                break;
-            }
-            case ChunkType::PORT: {
-                if (chunkSize < 1) break;
-                uint8_t ver = chunkData[0];
-                if (ver != 0) break;
-                const uint8_t* d = chunkData + 1;
-                size_t r = chunkSize - 1;
-                while (r >= 48) { 
-                    MapData::PortalData portal;
-                    auto read = [&](float& val) { return read_float(d, r, val); };
-                    if (!read(portal.ax) || !read(portal.ay) || !read(portal.az) ||
-                        !read(portal.bx) || !read(portal.by) || !read(portal.bz))
-                        break;
-                    if (!read(portal.yawA) || !read(portal.pitchA) || !read(portal.rollA) ||
-                        !read(portal.yawB) || !read(portal.pitchB) || !read(portal.rollB))
-                        break;
-                    uint32_t vcount;
-                    if (!read_u32(d, r, vcount)) break;
-                    if (r < vcount * sizeof(float)) break;
-                    portal.vertices.resize(vcount);
-                    for (uint32_t i = 0; i < vcount; ++i)
-                        if (!read_float(d, r, portal.vertices[i])) break;
-                    map.portals.push_back(portal);
-                }
-                break;
-            }
-            default:
-                break;
-        }
-    }
-    return true;
-}
+//         switch (ctype) {
+//             case ChunkType::ENTY: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 MapEntity ent;
+//                 if (!read_float(d, r, ent.x) || !read_float(d, r, ent.y) || !read_float(d, r, ent.z)) break;
+//                 if (!read_float(d, r, ent.g_angle) || !read_float(d, r, ent.v_angle) || !read_float(d, r, ent.r_angle)) break;
+//                 if (!read_u32(d, r, (uint32_t&)ent.v_angles)) break;
+//                 uint32_t texCount;
+//                 if (!read_u32(d, r, texCount)) break;
+//                 ent.textures.resize(texCount);
+//                 for (auto& tex : ent.textures) {
+//                     if (!read_string(d, r, tex)) break;
+//                 }
+//                 uint32_t vertCount;
+//                 if (!read_u32(d, r, vertCount)) break;
+//                 ent.vertices.resize(vertCount);
+//                 for (auto& v : ent.vertices) {
+//                     if (!read_float(d, r, v)) break;
+//                 }
+//                 if (d <= p) {
+//                     uint8_t shadowByte = 0;
+//                     if (r > 0) {
+//                         shadowByte = d[0];
+//                         d++; r--;
+//                     }
+//                     ent.castShadow = (shadowByte != 0);
+//                 }
+//                 map.entities.push_back(ent);
+//                 break;
+//             }
+//             case ChunkType::LITE: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 MapData::LightData light;
+//                 uint32_t enabled32;
+//                 if (!read_u32(d, r, enabled32)) break;
+//                 light.enabled = (enabled32 != 0);
+//                 for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.pos[i])) break;
+//                 for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.dir[i])) break;
+//                 for (int i = 0; i < 3; ++i) if (!read_float(d, r, light.color[i])) break;
+//                 if (!read_float(d, r, light.intensity)) break;
+//                 if (!read_float(d, r, light.cutoff)) break;
+//                 if (!read_float(d, r, light.constAtt)) break;
+//                 if (!read_float(d, r, light.linearAtt)) break;
+//                 if (!read_float(d, r, light.quadAtt)) break;
+//                 map.lights.push_back(light);
+//                 break;
+//             }
+//             case ChunkType::FOGS: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 uint32_t enabled32;
+//                 if (!read_u32(d, r, enabled32)) break;
+//                 map.fog_enabled = (enabled32 != 0);
+//                 if (!read_float(d, r, map.fog_density)) break;
+//                 for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.fog_color[i])) break;
+//                 if (!read_float(d, r, map.fog_start)) break;
+//                 if (!read_float(d, r, map.fog_end)) break;
+//                 break;
+//             }
+//             case ChunkType::CAME: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.camera_eye[i])) break;
+//                 if (!read_float(d, r, map.camera_pitch)) break;
+//                 if (!read_float(d, r, map.camera_yaw)) break;
+//                 break;
+//             }
+//             case ChunkType::PANO: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 if (!read_string(d, r, map.panorama_path)) break;
+//                 break;
+//             }
+//             case ChunkType::AMBI: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 for (int i = 0; i < 3; ++i) if (!read_float(d, r, map.ambient[i])) break;
+//                 break;
+//             }
+//             case ChunkType::USER: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 uint32_t numEntries;
+//                 if (!read_u32(d, r, numEntries)) break;
+//                 for (uint32_t i = 0; i < numEntries; ++i) {
+//                     std::string key;
+//                     if (!read_string(d, r, key)) break;
+//                     uint32_t dataLen;
+//                     if (!read_u32(d, r, dataLen)) break;
+//                     if (dataLen > r) break;
+//                     std::vector<uint8_t> blob(d, d + dataLen);
+//                     d += dataLen; r -= dataLen;
+//                     map.userData[key] = std::move(blob);
+//                 }
+//                 break;
+//             }
+//             case ChunkType::PORT: {
+//                 if (chunkSize < 1) break;
+//                 uint8_t ver = chunkData[0];
+//                 if (ver != 0) break;
+//                 const uint8_t* d = chunkData + 1;
+//                 size_t r = chunkSize - 1;
+//                 while (r >= 48) { 
+//                     MapData::PortalData portal;
+//                     auto read = [&](float& val) { return read_float(d, r, val); };
+//                     if (!read(portal.ax) || !read(portal.ay) || !read(portal.az) ||
+//                         !read(portal.bx) || !read(portal.by) || !read(portal.bz))
+//                         break;
+//                     if (!read(portal.yawA) || !read(portal.pitchA) || !read(portal.rollA) ||
+//                         !read(portal.yawB) || !read(portal.pitchB) || !read(portal.rollB))
+//                         break;
+//                     uint32_t vcount;
+//                     if (!read_u32(d, r, vcount)) break;
+//                     if (r < vcount * sizeof(float)) break;
+//                     portal.vertices.resize(vcount);
+//                     for (uint32_t i = 0; i < vcount; ++i)
+//                         if (!read_float(d, r, portal.vertices[i])) break;
+//                     map.portals.push_back(portal);
+//                 }
+//                 break;
+//             }
+//             default:
+//                 break;
+//         }
+//     }
+//     return true;
+// }
 
-bool save_map(const char* filename, const MapData& map) {
-    std::vector<uint8_t> out;
+// bool save_map(const char* filename, const MapData& map) {
+//     std::vector<uint8_t> out;
 
-    out.push_back('A'); out.push_back('V'); out.push_back('O'); out.push_back('M');
-    out.push_back(1); out.push_back(0);      // major = 1 (little‑endian)
-    out.push_back(0); out.push_back(0);
+//     out.push_back('A'); out.push_back('V'); out.push_back('O'); out.push_back('M');
+//     out.push_back(1); out.push_back(0);      // major = 1 (little‑endian)
+//     out.push_back(0); out.push_back(0);
 
-    for (const auto& ent : map.entities) {
-        std::vector<uint8_t> data;
-        data.push_back(0);
-        write_float(data, ent.x);
-        write_float(data, ent.y);
-        write_float(data, ent.z);
-        write_float(data, ent.g_angle);
-        write_float(data, ent.v_angle);
-        write_float(data, ent.r_angle);
-        write_u32(data, ent.v_angles);
-        write_u32(data, (uint32_t)ent.textures.size());
-        for (const auto& t : ent.textures) write_string(data, t);
-        write_u32(data, (uint32_t)ent.vertices.size());
-        for (float v : ent.vertices) write_float(data, v);
-        data.push_back(ent.castShadow ? 1 : 0);
-        write_chunk(out, ChunkType::ENTY, data);
-    }
+//     for (const auto& ent : map.entities) {
+//         std::vector<uint8_t> data;
+//         data.push_back(0);
+//         write_float(data, ent.x);
+//         write_float(data, ent.y);
+//         write_float(data, ent.z);
+//         write_float(data, ent.g_angle);
+//         write_float(data, ent.v_angle);
+//         write_float(data, ent.r_angle);
+//         write_u32(data, ent.v_angles);
+//         write_u32(data, (uint32_t)ent.textures.size());
+//         for (const auto& t : ent.textures) write_string(data, t);
+//         write_u32(data, (uint32_t)ent.vertices.size());
+//         for (float v : ent.vertices) write_float(data, v);
+//         data.push_back(ent.castShadow ? 1 : 0);
+//         write_chunk(out, ChunkType::ENTY, data);
+//     }
 
-    for (const auto& light : map.lights) {
-        std::vector<uint8_t> data;
-        data.push_back(0);
-        write_u32(data, light.enabled ? 1 : 0);
-        for (int i = 0; i < 3; ++i) write_float(data, light.pos[i]);
-        for (int i = 0; i < 3; ++i) write_float(data, light.dir[i]);
-        for (int i = 0; i < 3; ++i) write_float(data, light.color[i]);
-        write_float(data, light.intensity);
-        write_float(data, light.cutoff);
-        write_float(data, light.constAtt);
-        write_float(data, light.linearAtt);
-        write_float(data, light.quadAtt);
-        write_chunk(out, ChunkType::LITE, data);
-    }
+//     for (const auto& light : map.lights) {
+//         std::vector<uint8_t> data;
+//         data.push_back(0);
+//         write_u32(data, light.enabled ? 1 : 0);
+//         for (int i = 0; i < 3; ++i) write_float(data, light.pos[i]);
+//         for (int i = 0; i < 3; ++i) write_float(data, light.dir[i]);
+//         for (int i = 0; i < 3; ++i) write_float(data, light.color[i]);
+//         write_float(data, light.intensity);
+//         write_float(data, light.cutoff);
+//         write_float(data, light.constAtt);
+//         write_float(data, light.linearAtt);
+//         write_float(data, light.quadAtt);
+//         write_chunk(out, ChunkType::LITE, data);
+//     }
 
-    {
-        std::vector<uint8_t> data;
-        data.push_back(0);
-        write_u32(data, map.fog_enabled ? 1 : 0);
-        write_float(data, map.fog_density);
-        for (int i = 0; i < 3; ++i) write_float(data, map.fog_color[i]);
-        write_float(data, map.fog_start);
-        write_float(data, map.fog_end);
-        write_chunk(out, ChunkType::FOGS, data);
-    }
+//     {
+//         std::vector<uint8_t> data;
+//         data.push_back(0);
+//         write_u32(data, map.fog_enabled ? 1 : 0);
+//         write_float(data, map.fog_density);
+//         for (int i = 0; i < 3; ++i) write_float(data, map.fog_color[i]);
+//         write_float(data, map.fog_start);
+//         write_float(data, map.fog_end);
+//         write_chunk(out, ChunkType::FOGS, data);
+//     }
 
-    {
-        std::vector<uint8_t> data;
-        data.push_back(0);
-        for (int i = 0; i < 3; ++i) write_float(data, map.camera_eye[i]);
-        write_float(data, map.camera_pitch);
-        write_float(data, map.camera_yaw);
-        write_chunk(out, ChunkType::CAME, data);
-    }
+//     {
+//         std::vector<uint8_t> data;
+//         data.push_back(0);
+//         for (int i = 0; i < 3; ++i) write_float(data, map.camera_eye[i]);
+//         write_float(data, map.camera_pitch);
+//         write_float(data, map.camera_yaw);
+//         write_chunk(out, ChunkType::CAME, data);
+//     }
 
-    if (!map.panorama_path.empty()) {
-        std::vector<uint8_t> data;
-        data.push_back(0);
-        write_string(data, map.panorama_path);
-        write_chunk(out, ChunkType::PANO, data);
-    }
+//     if (!map.panorama_path.empty()) {
+//         std::vector<uint8_t> data;
+//         data.push_back(0);
+//         write_string(data, map.panorama_path);
+//         write_chunk(out, ChunkType::PANO, data);
+//     }
 
-    {
-        std::vector<uint8_t> data;
-        data.push_back(0);
-        for (int i = 0; i < 3; ++i) write_float(data, map.ambient[i]);
-        write_chunk(out, ChunkType::AMBI, data);
-    }
+//     {
+//         std::vector<uint8_t> data;
+//         data.push_back(0);
+//         for (int i = 0; i < 3; ++i) write_float(data, map.ambient[i]);
+//         write_chunk(out, ChunkType::AMBI, data);
+//     }
 
-    if (!map.portals.empty()) {
-        std::vector<uint8_t> data;
-        data.push_back(0); 
-        for (const auto& p : map.portals) {
-            write_float(data, p.ax); write_float(data, p.ay); write_float(data, p.az);
-            write_float(data, p.bx); write_float(data, p.by); write_float(data, p.bz);
-            write_float(data, p.yawA); write_float(data, p.pitchA); write_float(data, p.rollA);
-            write_float(data, p.yawB); write_float(data, p.pitchB); write_float(data, p.rollB);
-            write_u32(data, (uint32_t)p.vertices.size());
-            for (float v : p.vertices) write_float(data, v);
-        }
-        write_chunk(out, ChunkType::PORT, data);
-    }
+//     if (!map.portals.empty()) {
+//         std::vector<uint8_t> data;
+//         data.push_back(0); 
+//         for (const auto& p : map.portals) {
+//             write_float(data, p.ax); write_float(data, p.ay); write_float(data, p.az);
+//             write_float(data, p.bx); write_float(data, p.by); write_float(data, p.bz);
+//             write_float(data, p.yawA); write_float(data, p.pitchA); write_float(data, p.rollA);
+//             write_float(data, p.yawB); write_float(data, p.pitchB); write_float(data, p.rollB);
+//             write_u32(data, (uint32_t)p.vertices.size());
+//             for (float v : p.vertices) write_float(data, v);
+//         }
+//         write_chunk(out, ChunkType::PORT, data);
+//     }
 
-    if (!map.userData.empty()) {
-        std::vector<uint8_t> data;
-        data.push_back(0);
-        write_u32(data, (uint32_t)map.userData.size());
-        for (const auto& [key, blob] : map.userData) {
-            write_string(data, key);
-            write_u32(data, (uint32_t)blob.size());
-            data.insert(data.end(), blob.begin(), blob.end());
-        }
-        write_chunk(out, ChunkType::USER, data);
-    }
+//     if (!map.userData.empty()) {
+//         std::vector<uint8_t> data;
+//         data.push_back(0);
+//         write_u32(data, (uint32_t)map.userData.size());
+//         for (const auto& [key, blob] : map.userData) {
+//             write_string(data, key);
+//             write_u32(data, (uint32_t)blob.size());
+//             data.insert(data.end(), blob.begin(), blob.end());
+//         }
+//         write_chunk(out, ChunkType::USER, data);
+//     }
 
-    FILE* f = fopen(filename, "wb");
-    if (!f) return false;
-    fwrite(out.data(), 1, out.size(), f);
-    fclose(f);
-    return true;
-}
+//     FILE* f = fopen(filename, "wb");
+//     if (!f) return false;
+//     fwrite(out.data(), 1, out.size(), f);
+//     fclose(f);
+//     return true;
+// }
 
-bool load_map(const char* filename, MapData& map) {
-    FILE* f = fopen(filename, "rb");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    std::vector<uint8_t> data(size);
-    fread(data.data(), 1, size, f);
-    fclose(f);
-    return load_map_internal(data, map);
-}
+// bool load_map(const char* filename, MapData& map) {
+//     FILE* f = fopen(filename, "rb");
+//     if (!f) return false;
+//     fseek(f, 0, SEEK_END);
+//     long size = ftell(f);
+//     fseek(f, 0, SEEK_SET);
+//     std::vector<uint8_t> data(size);
+//     fread(data.data(), 1, size, f);
+//     fclose(f);
+//     return load_map_internal(data, map);
+// }
 
-MapEntity entityToMapData(const pseudo_3d_entity& ent) {
-    MapEntity me;
-    me.x = ent.getX();
-    me.y = ent.getY();
-    me.z = ent.getZ();
-    me.g_angle = ent.getGAngle();
-    me.v_angle = ent.getVAngle();
-    me.r_angle = ent.getRAngle();
-    me.v_angles = ent.getVAngles();
-    me.textures = ent.getTextures();
-    me.vertices = ent.getVertices();
-    return me;
-}
+// MapEntity entityToMapData(const pseudo_3d_entity& ent) {
+//     MapEntity me;
+//     me.x = ent.getX();
+//     me.y = ent.getY();
+//     me.z = ent.getZ();
+//     me.g_angle = ent.getGAngle();
+//     me.v_angle = ent.getVAngle();
+//     me.r_angle = ent.getRAngle();
+//     me.v_angles = ent.getVAngles();
+//     me.textures = ent.getTextures();
+//     me.vertices = ent.getVertices();
+//     return me;
+// }
 
-pseudo_3d_entity* mapDataToEntity(const MapEntity& data) {
-    return new pseudo_3d_entity(data.x, data.y, data.z,
-                                data.g_angle, data.v_angle, data.r_angle,
-                                data.textures, data.v_angles, data.vertices);
-}
+// pseudo_3d_entity* mapDataToEntity(const MapEntity& data) {
+//     return new pseudo_3d_entity(data.x, data.y, data.z,
+//                                 data.g_angle, data.v_angle, data.r_angle,
+//                                 data.textures, data.v_angles, data.vertices);
+// }
 
-MapData::LightData lightToMapData(const Light& light) {
-    MapData::LightData l;
-    l.enabled = light.isEnabled();
-    memcpy(l.pos, light.pos, sizeof(l.pos));
-    memcpy(l.dir, light.dir, sizeof(l.dir));
-    memcpy(l.color, light.color, sizeof(l.color));
-    l.intensity = light.intensity;
-    l.cutoff = light.cutoff;
-    l.constAtt = light.constAtt;
-    l.linearAtt = light.linearAtt;
-    l.quadAtt = light.quadAtt;
-    return l;
-}
+// MapData::LightData lightToMapData(const Light& light) {
+//     MapData::LightData l;
+//     l.enabled = light.isEnabled();
+//     memcpy(l.pos, light.pos, sizeof(l.pos));
+//     memcpy(l.dir, light.dir, sizeof(l.dir));
+//     memcpy(l.color, light.color, sizeof(l.color));
+//     l.intensity = light.intensity;
+//     l.cutoff = light.cutoff;
+//     l.constAtt = light.constAtt;
+//     l.linearAtt = light.linearAtt;
+//     l.quadAtt = light.quadAtt;
+//     return l;
+// }
 
-void mapDataToLight(const MapData::LightData& data, Light& out) {
-    out.setPosition(data.pos[0], data.pos[1], data.pos[2]);
-    memcpy(out.dir, data.dir, sizeof(out.dir));
-    out.setColor(data.color[0], data.color[1], data.color[2]);
-    out.setIntensity(data.intensity);
-    out.setRadius(data.cutoff);
-    out.setAttenuation(data.constAtt, data.linearAtt, data.quadAtt);
-    if (data.enabled) out.enable(); else out.disable();
-}
+// void mapDataToLight(const MapData::LightData& data, Light& out) {
+//     out.setPosition(data.pos[0], data.pos[1], data.pos[2]);
+//     memcpy(out.dir, data.dir, sizeof(out.dir));
+//     out.setColor(data.color[0], data.color[1], data.color[2]);
+//     out.setIntensity(data.intensity);
+//     out.setRadius(data.cutoff);
+//     out.setAttenuation(data.constAtt, data.linearAtt, data.quadAtt);
+//     if (data.enabled) out.enable(); else out.disable();
+// }
 
-void registerEntity(pseudo_3d_entity* e) {
-    if (std::find(allEntities.begin(), allEntities.end(), e) == allEntities.end()) {
-        allEntities.push_back(e);
-    }
-}
+// void registerEntity(pseudo_3d_entity* e) {
+//     if (std::find(allEntities.begin(), allEntities.end(), e) == allEntities.end()) {
+//         allEntities.push_back(e);
+//     }
+// }
 
-void unregisterEntity(pseudo_3d_entity* e) {
-    auto it = std::find(allEntities.begin(), allEntities.end(), e);
-    if (it != allEntities.end()) allEntities.erase(it);
-}
+// void unregisterEntity(pseudo_3d_entity* e) {
+//     auto it = std::find(allEntities.begin(), allEntities.end(), e);
+//     if (it != allEntities.end()) allEntities.erase(it);
+// }
 
-void save_current_scene(const char* filename) {
-    MapData map;
+// void save_current_scene(const char* filename) {
+//     MapData map;
 
-    for (auto* e : allEntities) {
-        map.entities.push_back(entityToMapData(*e));
-    }
-    for (auto* p : allPortals) {
-        map.portals.push_back(portalToMapData(*p));
-    }
-    for (auto* l : activeLights) {
-        map.lights.push_back(lightToMapData(*l));
-    }
+//     for (auto* e : allEntities) {
+//         map.entities.push_back(entityToMapData(*e));
+//     }
+//     for (auto* p : allPortals) {
+//         map.portals.push_back(portalToMapData(*p));
+//     }
+//     for (auto* l : activeLights) {
+//         map.lights.push_back(lightToMapData(*l));
+//     }
 
-    map.fog_enabled = fog.enabled;
-    map.fog_density = fog.density;
-    memcpy(map.fog_color, fog.color, sizeof(fog.color));
-    map.fog_start = fog.start;
-    map.fog_end = fog.end;
+//     map.fog_enabled = fog.enabled;
+//     map.fog_density = fog.density;
+//     memcpy(map.fog_color, fog.color, sizeof(fog.color));
+//     map.fog_start = fog.start;
+//     map.fog_end = fog.end;
 
-    map.camera_eye[0] = camera.eye_x;
-    map.camera_eye[1] = camera.eye_y;
-    map.camera_eye[2] = camera.eye_z;
-    map.camera_pitch = camera.pitch;
-    map.camera_yaw = camera.yaw;
+//     map.camera_eye[0] = camera.eye_x;
+//     map.camera_eye[1] = camera.eye_y;
+//     map.camera_eye[2] = camera.eye_z;
+//     map.camera_pitch = camera.pitch;
+//     map.camera_yaw = camera.yaw;
 
-    extern sphere_panorama sphere_sky;
-    if (sphere_sky.enabled) {
-        map.panorama_path = sphere_sky.path;
-    }
+//     extern sphere_panorama sphere_sky;
+//     if (sphere_sky.enabled) {
+//         map.panorama_path = sphere_sky.path;
+//     }
 
-    memcpy(map.ambient, global_ambient, sizeof(global_ambient));
+//     memcpy(map.ambient, global_ambient, sizeof(global_ambient));
 
-    save_map(filename, map);
-}
-MapData::PortalData portalToMapData(const Portal& p) {
-    MapData::PortalData data;
-    data.ax = p.ax; data.ay = p.ay; data.az = p.az;
-    data.bx = p.bx; data.by = p.by; data.bz = p.bz;
-    data.yawA = p.yawA; data.pitchA = p.pitchA; data.rollA = p.rollA;
-    data.yawB = p.yawB; data.pitchB = p.pitchB; data.rollB = p.rollB;
-    data.vertices = p.vertices;
-    return data;
-}
+//     save_map(filename, map);
+// }
+// MapData::PortalData portalToMapData(const Portal& p) {
+//     MapData::PortalData data;
+//     data.ax = p.ax; data.ay = p.ay; data.az = p.az;
+//     data.bx = p.bx; data.by = p.by; data.bz = p.bz;
+//     data.yawA = p.yawA; data.pitchA = p.pitchA; data.rollA = p.rollA;
+//     data.yawB = p.yawB; data.pitchB = p.pitchB; data.rollB = p.rollB;
+//     data.vertices = p.vertices;
+//     return data;
+// }
 
-Portal* mapDataToPortal(const MapData::PortalData& data) {
-    return new Portal(data.ax, data.ay, data.az,
-                      data.bx, data.by, data.bz,
-                      data.vertices,
-                      data.yawA, data.pitchA, data.rollA,
-                      data.yawB, data.pitchB, data.rollB);
-}
+// Portal* mapDataToPortal(const MapData::PortalData& data) {
+//     return new Portal(data.ax, data.ay, data.az,
+//                       data.bx, data.by, data.bz,
+//                       data.vertices,
+//                       data.yawA, data.pitchA, data.rollA,
+//                       data.yawB, data.pitchB, data.rollB);
+// }
