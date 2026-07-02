@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <GLFW/glfw3.h>
 
-
 GLint loc_numLights = -1;
 std::vector<GLint> loc_lightEnabled;
 std::vector<GLint> loc_lightPosition;
@@ -58,6 +57,9 @@ void Light::disable() {
         if (it != activeLights.end()) activeLights.erase(it);
     }
 }
+
+// свет
+std::vector<Light*> activeLights;
 
 void applyAllLights() {
     if (currentShaderProg == 0) return;

@@ -25,7 +25,6 @@ extern std::string ram_v;
 extern GLuint currentShaderProg; 
 
 class Light;
-extern std::vector<Light*> activeLights;
 
 GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
 void useShader(GLuint id);
@@ -187,26 +186,4 @@ void play_sound_3d(const char* filename,float x,float y,float z,float volume=1.0
 void play_sound_3d_loop(const char* filename,float x,float y,float z,float volume=1.0f);
 void stop_all_looping_sounds();
 void draw_performance_hud(int win_w,int win_h, const char* font_path);
-
-struct sphere_panorama {
-    bool enabled = false;
-    GLuint texture = 0;
-    std::string path;
-};
-extern sphere_panorama sphere_sky;
-
-void set_panorama(const char* path);
-void remove_panorama();
-void draw_panorama(float camX, float camY, float camZ);
-
-struct fog_params {
-    bool enabled = false;
-    float density = 0.05f;
-    float color[3] = {0.7f, 0.8f, 0.9f};
-    float start = 5.0f;
-    float end = 30.0f;
-};
-extern fog_params fog;
-
-extern float global_ambient[3];
 #endif

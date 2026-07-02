@@ -36,6 +36,8 @@ public:
     float quadAtt   = 0.0f;
 };
 
+extern std::vector<Light*> activeLights;
+
 void applyAllLights();
 
 #endif
