@@ -29,4 +29,11 @@ extern fog_params fog;
 
 extern float global_ambient[3];
 
+void set_ambient_light(float r, float g, float b);
+void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);
+void disable_fog();
+void set_fog_range(float start, float end);
+void set_fog_color(float r, float g, float b);
+void set_fog_density(float density);
+
 #endif

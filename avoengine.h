@@ -5,7 +5,7 @@
 #include <vector>
 #include <cmath>
 #include <unordered_map>
-#include "src/miniaudio.h"
+// #include "src/miniaudio.h"
 #include <glm/glm.hpp>
 class Portal;
 class pseudo_3d_entity;
@@ -108,8 +108,6 @@ void flushDrawQueue();
 GLuint loadTextureFromFile(const char* filename);
 void clearTextureCache();
 
-extern ma_engine audio_engine;
-
 struct CameraParams{
     float fov=58.0f;
     float znear=0.1f;
@@ -173,17 +171,5 @@ void draw3DObject(float cx, float cy, float cz,
 
 extern GLuint defaultLightingShader;
 
-void set_ambient_light(float r, float g, float b);
-void enable_fog(float density, float r, float g, float b, float start = 5.0f, float end = 30.0f);
-void disable_fog();
-void set_fog_range(float start, float end);
-void set_fog_color(float r, float g, float b);
-void set_fog_density(float density);
-void init_audio();
-void play_sound(const char* filename,float volume=1.0f);
-void play_sound_loop(const char* filename,float volume=1.0f);
-void play_sound_3d(const char* filename,float x,float y,float z,float volume=1.0f);
-void play_sound_3d_loop(const char* filename,float x,float y,float z,float volume=1.0f);
-void stop_all_looping_sounds();
 void draw_performance_hud(int win_w,int win_h, const char* font_path);
 #endif
