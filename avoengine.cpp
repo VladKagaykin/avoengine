@@ -1545,16 +1545,48 @@ void flushDrawQueue() {
         }
     }
     drawQueue.clear();
-    int renderW = window_w, renderH = window_h;
-    int raySamples = 1;
-    if (Engine_settings.RAY_MULTIPLY >= 1.0f) {
-        raySamples = std::max(1, (int)Engine_settings.RAY_MULTIPLY);
+
+    float mult = Engine_settings.RAY_MULTIPLY;
+    int renderW, renderH;
+    int raySamples;
+    if (mult >= 1.0f) {
+        renderW = window_w;
+        renderH = window_h;
+        raySamples = (int)mult;
     } else {
-        float factor = Engine_settings.RAY_MULTIPLY;
+        float factor = sqrtf(mult);
         renderW = std::max(1, (int)(window_w * factor));
         renderH = std::max(1, (int)(window_h * factor));
         raySamples = 1;
     }
+
+    static GLuint fbo = 0, fboTex = 0;
+    static int lastRenderW = 0, lastRenderH = 0;
+    if (fbo == 0 || renderW != lastRenderW || renderH != lastRenderH) {
+        if (fbo) { glDeleteFramebuffers(1, &fbo); glDeleteTextures(1, &fboTex); fbo = 0; fboTex = 0; }
+        if (renderW != window_w || renderH != window_h) {
+            glGenFramebuffers(1, &fbo);
+            glGenTextures(1, &fboTex);
+            glBindTexture(GL_TEXTURE_2D, fboTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, renderW, renderH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTex, 0);
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (status != GL_FRAMEBUFFER_COMPLETE) {
+                glDeleteFramebuffers(1, &fbo); glDeleteTextures(1, &fboTex); fbo = 0; fboTex = 0;
+            }
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            lastRenderW = renderW;
+            lastRenderH = renderH;
+        } else {
+            fbo = 0; fboTex = 0;
+            lastRenderW = renderW;
+            lastRenderH = renderH;
+        }
+    }
+
     static GLint loc_raycast = -1, loc_invViewProj = -1, loc_camPos = -1;
     static GLint loc_ambient = -1, loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
     static GLint loc_numLights = -1, loc_panoramaTex = -1, loc_hasPanorama = -1;
@@ -1649,6 +1681,15 @@ void flushDrawQueue() {
         loc_raySamples = glGetUniformLocation(currentShaderProg, "raySamples");
         uniformsCached = true;
     }
+
+    bool useFBO = (fbo != 0 && fboTex != 0);
+    if (useFBO) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, renderW, renderH);
+    } else {
+        glViewport(0, 0, window_w, window_h);
+    }
+
     if (bvhValid || !commands3D.empty() || !panoramaCommands.empty()) {
         std::unordered_map<GLuint, int> textureSlotMap;
         std::vector<GLuint> activeTextures;
@@ -2163,7 +2204,6 @@ void flushDrawQueue() {
         glm::mat4 prevModel = g_modelViewMatrix;
         g_projectionMatrix = glm::mat4(1.0f);
         g_modelViewMatrix = glm::mat4(1.0f);
-        glViewport(0, 0, window_w, window_h);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         useShader(currentShaderProg);
         if (currentShaderProg) updateMatrixUniforms();
@@ -2327,6 +2367,54 @@ void flushDrawQueue() {
         g_projectionMatrix = prevProj;
         g_modelViewMatrix = prevModel;
         if (currentShaderProg) updateMatrixUniforms();
+    }
+
+    if (useFBO) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, window_w, window_h);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        useShader(simple2DShader);
+        if (simple2DShader) {
+            glUseProgram(simple2DShader);
+            if (loc_u_projection_2d != -1) {
+                glm::mat4 proj = glm::mat4(1.0f);
+                glUniformMatrix4fv(loc_u_projection_2d, 1, GL_FALSE, &proj[0][0]);
+            }
+            if (loc_u_modelView_2d != -1) {
+                glm::mat4 mv = glm::mat4(1.0f);
+                glUniformMatrix4fv(loc_u_modelView_2d, 1, GL_FALSE, &mv[0][0]);
+            }
+        }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, fboTex);
+        glUniform1i(loc_tex_2d, 0);
+
+        static GLuint blitVAO = 0, blitVBO = 0;
+        if (blitVAO == 0) {
+            float vertices[] = {
+                -1.0f, -1.0f,   0.0f, 0.0f,
+                 1.0f, -1.0f,   1.0f, 0.0f,
+                -1.0f,  1.0f,   0.0f, 1.0f,
+                 1.0f,  1.0f,   1.0f, 1.0f
+            };
+            glGenVertexArrays(1, &blitVAO);
+            glGenBuffers(1, &blitVBO);
+            glBindVertexArray(blitVAO);
+            glBindBuffer(GL_ARRAY_BUFFER, blitVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0); // позиция
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(8); // текстурные координаты (aTexCoord)
+            glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+            glBindVertexArray(0);
+        }
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        glBindVertexArray(blitVAO);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_CULL_FACE);
     }
 
     glEnable(GL_BLEND);
