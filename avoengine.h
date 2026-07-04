@@ -13,6 +13,18 @@ class pseudo_3d_entity;
 
 struct GLFWwindow;
 
+std::string getCPUName_Linux();
+std::string getRAMTotal_Linux();
+std::string getGPUName_OpenGL();
+
+std::vector<float> getProcessCPUUsage_Win();
+long getProcessRAMUsage_Win();
+float getGPUUsage_Win();
+
+std::vector<float> getProcessCPUUsage_Linux();
+long getProcessRAMUsage_Linux();
+float getGPUUsage_Linux();
+
 extern int window_w;
 extern int window_h;
 extern int screen_w;
@@ -168,6 +180,4 @@ void draw3DObject(float cx, float cy, float cz,
                   float alpha = 1.0f);
 
 extern GLuint defaultLightingShader;
-
-void draw_performance_hud(int win_w,int win_h, const char* font_path);
 #endif

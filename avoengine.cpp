@@ -86,7 +86,7 @@ static std::string getGPUName_OpenGL() {
 #include <sstream>
 #include <cstring>
 
-static std::string getCPUName_Linux() {
+std::string getCPUName_Linux() {
     std::ifstream cpuinfo("/proc/cpuinfo");
     std::string line;
     while (std::getline(cpuinfo, line)) {
@@ -99,7 +99,7 @@ static std::string getCPUName_Linux() {
     return "Unknown CPU";
 }
 
-static std::string getRAMTotal_Linux() {
+std::string getRAMTotal_Linux() {
     std::ifstream meminfo("/proc/meminfo");
     std::string line;
     while (std::getline(meminfo, line)) {
@@ -118,7 +118,7 @@ static std::string getRAMTotal_Linux() {
     return "Unknown RAM";
 }
 
-static std::string getGPUName_OpenGL() {
+std::string getGPUName_OpenGL() {
     const char* renderer = (const char*)glGetString(GL_RENDERER);
     return renderer ? std::string(renderer) : "Unknown GPU";
 }
@@ -136,7 +136,7 @@ static std::string getGPUName_OpenGL() {
 #endif
 
 #ifdef _WIN32
-static std::vector<float> getProcessCPUUsage_Win() {
+std::vector<float> getProcessCPUUsage_Win() {
     static PDH_HQUERY cpuQuery = NULL;
     static std::vector<PDH_HCOUNTER> counters;
     static bool initialized = false;
@@ -173,14 +173,14 @@ static std::vector<float> getProcessCPUUsage_Win() {
     return usages;
 }
 
-static long getProcessRAMUsage_Win() {
+long getProcessRAMUsage_Win() {
     PROCESS_MEMORY_COUNTERS_EX pmc;
     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc)))
         return pmc.WorkingSetSize / (1024 * 1024);
     return 0;
 }
 
-static float getGPUUsage_Win() {
+float getGPUUsage_Win() {
     static PDH_HQUERY gpuQuery = NULL;
     static std::vector<PDH_HCOUNTER> gpuCounters;
     static bool initialized = false;
@@ -219,7 +219,7 @@ static float getGPUUsage_Win() {
     return valid > 0 ? total / valid : -1.0f;
 }
 #else
-static std::vector<float> getProcessCPUUsage_Linux() {
+std::vector<float> getProcessCPUUsage_Linux() {
     static std::vector<unsigned long long> prevUser, prevNice, prevSystem, prevIdle, prevIowait, prevIrq, prevSoftirq, prevSteal;
     static bool initialized = false;
     std::vector<float> usages;
@@ -286,7 +286,7 @@ static std::vector<float> getProcessCPUUsage_Linux() {
     return usages;
 }
 
-static long getProcessRAMUsage_Linux() {
+long getProcessRAMUsage_Linux() {
     FILE* status = fopen("/proc/self/status", "r");
     if (!status) return 0;
     char line[128];
@@ -302,7 +302,7 @@ static long getProcessRAMUsage_Linux() {
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-static float getGPUUsage_Linux() {
+float getGPUUsage_Linux() {
     for (int i = 0; i < 8; ++i) {
         char path[128];
         snprintf(path, sizeof(path), "/sys/class/drm/card%d/device/gpu_busy_percent", i);
@@ -2864,67 +2864,4 @@ void draw3DObject(float cx, float cy, float cz,
     cmd.radius = radius;
     cmd.shaderID = currentShaderProg;
     drawQueue.push_back(cmd);
-}
-
-//              оверлей
-// сколько заполнено оперативки/процессора
-void draw_performance_hud(int win_w, int win_h, const char* font_path){
-    static int frame_cnt = 0;
-    static double fps = 0.0;
-    static auto prev_time = std::chrono::steady_clock::now();
-    static std::vector<float> cpu_per_core;
-    static long ram_usage_mb = 0;
-    static float gpu_usage = -1.0f;
-
-    ++frame_cnt;
-    auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - prev_time).count();
-
-    if (elapsed >= 1.0) {
-        fps = frame_cnt / elapsed;
-        frame_cnt = 0;
-
-        #ifdef _WIN32
-                cpu_per_core = getProcessCPUUsage_Win();
-                ram_usage_mb = getProcessRAMUsage_Win();
-                gpu_usage = getGPUUsage_Win();
-        #else
-                cpu_per_core = getProcessCPUUsage_Linux();
-                ram_usage_mb = getProcessRAMUsage_Linux();
-                gpu_usage = getGPUUsage_Linux();
-        #endif
-        prev_time = now;
-    }
-
-    char buf[256];
-    snprintf(buf, sizeof(buf), "FPS: %.0f  RAM: %ld MB  GPU: ", fps, ram_usage_mb);
-    if (gpu_usage >= 0.0f) {
-        char gpu_str[32];
-        snprintf(gpu_str, sizeof(gpu_str), "%.1f%%", gpu_usage);
-        strcat(buf, gpu_str);
-    } else {
-        strcat(buf, "N/A");
-    }
-    draw_text(buf, 10.0f, float(win_h) - 20.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
-
-    std::string cpu_line;
-    if (!cpu_per_core.empty()) {
-        cpu_line = "CPU:";
-        for (size_t i = 0; i < cpu_per_core.size(); ++i) {
-            char core_buf[16];
-            snprintf(core_buf, sizeof(core_buf), "%.1f", cpu_per_core[i]);
-            cpu_line += " " + std::to_string(i) + ":" + std::string(core_buf) + "%";
-        }
-    } else {
-        cpu_line = "CPU: N/A";
-    }
-    draw_text(cpu_line.c_str(), 10.0f, float(win_h) - 32.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
-
-    snprintf(buf, sizeof(buf), "X: %.10f  Y: %.10f  Z: %.10f P: %.10f  Y: %.10f  R: %.10f",
-             camera.eye_x, camera.eye_y, camera.eye_z, camera.pitch, camera.yaw, camera.roll);
-    draw_text(buf, 10.0f, float(win_h) - 44.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
-
-    snprintf(buf, sizeof(buf), "CPU: %s  RAM: %s  GPU: %s",
-             cpu_name.c_str(), ram_v.c_str(), gpu_name.c_str());
-    draw_text(buf, 10.0f, float(win_h) - 56.0f, font_path, 12, 1.0f, 1.0f, 1.0f);
 }
