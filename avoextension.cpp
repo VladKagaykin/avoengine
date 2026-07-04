@@ -17,6 +17,7 @@
 #include "portals_rc.h"
 #include "pseudo3dentity.h"
 #include "2d_primitives.h"
+#include "3d_primitives.h"
 
 using namespace std;
 

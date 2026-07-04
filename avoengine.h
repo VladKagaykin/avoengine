@@ -164,20 +164,6 @@ void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);
 void move_camera(float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);
-void draw_line_3d(float x, float y, float z,
-                  float x1, float y1, float z1,
-                  float x2, float y2, float z2,
-                  float r, float g, float b, float a, float thickness,
-                  int segments, float alpha = 1.0f);
-void draw3DObject(float cx, float cy, float cz,
-                  double r, double g, double b,
-                  const char* tex,
-                  const std::vector<float>& vertices,
-                  const std::vector<int>& indices,
-                  const std::vector<float>& texcoords,
-                  const std::vector<float>& normals,
-                  float yaw = 0.0f, float pitch = 0.0f, float roll = 0.0f,
-                  float alpha = 1.0f);
 
 extern GLuint defaultLightingShader;
 #endif
