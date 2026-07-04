@@ -23,6 +23,10 @@ extern std::string gpu_name;
 extern std::string ram_v;
 
 extern GLuint currentShaderProg; 
+using namespace std; 
+extern unordered_map<string, GLuint> textureCache;
+
+extern mutex textureCacheMutex;
 
 class Light;
 
@@ -144,12 +148,6 @@ struct settings{
 extern settings Engine_settings;
 
 void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
-
-void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness);
-void square(float local_size, float x, float y, double r, double g, double b,
-            float rotate, const float* vertices, const char* tex=nullptr, float alpha = 1.0f);
-
-void draw_text(const char* text, float x, float y, const char* fontPath, int fontSize, float r, float g, float b, float a=1);
 
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);
