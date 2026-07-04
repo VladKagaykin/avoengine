@@ -1,5 +1,6 @@
 #include "avoengine.h"
 #include "ambient.h"
+#include "shaders.h"
 
 #include <SOIL/SOIL.h>
 

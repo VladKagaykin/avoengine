@@ -1,5 +1,6 @@
 #include"3d_primitives.h"
 #include"avoengine.h"
+#include "shaders.h"
 
 //              3д(может быть потом ещё что-то будет)
 // отрезок

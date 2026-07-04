@@ -2,6 +2,7 @@
 #include "avoengine.h"
 #include <algorithm>
 #include <GLFW/glfw3.h>
+#include "shaders.h"
 
 GLint loc_numLights = -1;
 std::vector<GLint> loc_lightEnabled;

@@ -34,17 +34,12 @@ extern std::string cpu_name;
 extern std::string gpu_name;
 extern std::string ram_v;
 
-extern GLuint currentShaderProg; 
 using namespace std; 
 extern unordered_map<string, GLuint> textureCache;
 
 extern mutex textureCacheMutex;
 
 class Light;
-
-GLuint createShaderProgram(const char* vertexCode, const char* fragmentCode);
-void useShader(GLuint id);
-void stopShader();
 
 class WarpPlane {
 public:
