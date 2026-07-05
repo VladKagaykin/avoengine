@@ -34,11 +34,6 @@ extern std::string cpu_name;
 extern std::string gpu_name;
 extern std::string ram_v;
 
-using namespace std; 
-extern unordered_map<string, GLuint> textureCache;
-
-extern mutex textureCacheMutex;
-
 class Light;
 
 class WarpPlane {
@@ -115,9 +110,6 @@ extern std::vector<DrawCommand> drawQueue;
 extern std::mutex drawQueueMutex;
 
 void flushDrawQueue();
-
-GLuint loadTextureFromFile(const char* filename);
-void clearTextureCache();
 
 struct CameraParams{
     float fov=58.0f;

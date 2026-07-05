@@ -3,6 +3,9 @@
 
 #include <iostream>
 #include <GL/glew.h>
+#include <string>
+
+using namespace std;
 
 //              шейдеры
 // Переменная для хранения текущей программы шейдеров

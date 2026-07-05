@@ -1,6 +1,7 @@
 #include"avoengine.h"
 #include"2d_primitives.h"
 #include "shaders.h"
+#include "textures.h"
 
 #include <mutex>
 #include <fstream>
