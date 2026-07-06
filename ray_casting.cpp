@@ -126,11 +126,15 @@ uniform float shadowStepSize;
 uniform int maxBounces;
 uniform int maxShadowBounces;
 uniform int raySamples;
+uniform bool debugMode;
+uniform vec3 debugColor;
 const float PI = 3.14159265;
 const float TWO_PI = 6.2831853;
 float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
+float debugU = 0.0;
+float debugV = 0.0;
 float rayTriangleIntersect(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2,
                            out vec3 faceNormal, out float u, out float v) {
     vec3 e1 = v1 - v0;
@@ -223,6 +227,8 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
                 float u, v;
                 float t = rayTriangleIntersect(ro, rd, v0, v1, v2, faceNormal, u, v);
                 if (t > 0.0 && t < closest) {
+                    debugU = u;
+                    debugV = v;
                     int texID = int(floor(tid_f));
                     vec4 objColor = texture2D(triTexColor, vec2(p0x, p0y));
                     vec3 col = objColor.rgb;
@@ -458,41 +464,84 @@ void main() {
                     float fogCoord = totalDist;
                     vec3 N = normalize(hitNormal);
                     vec3 litCol = ambientLight;
-                    for (int j = 0; j < numLights; j++) {
-                        if (!lights[j].enabled) continue;
-                        if (lights[j].attenuation.x <= 0.0) continue;
-                        vec3 effectiveLightPos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
-                        if (warpPlaneEnabled) {
-                            vec3 localPos = hitPos - warpPlaneOrigin;
-                            float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
-                            float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
-                            if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
-                                vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
-                                effectiveLightPos += disp * shadowWarpStrength * 2.0;
+                    if (debugMode) {
+                        float eps = 0.01;
+                        if (debugU < eps || debugV < eps || (1.0 - debugU - debugV) < eps) {
+                            litCol = debugColor;
+                        } else {
+                            for (int j = 0; j < numLights; j++) {
+                                if (!lights[j].enabled) continue;
+                                if (lights[j].attenuation.x <= 0.0) continue;
+                                vec3 effectiveLightPos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
+                                if (warpPlaneEnabled) {
+                                    vec3 localPos = hitPos - warpPlaneOrigin;
+                                    float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+                                    float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+                                    if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
+                                        vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
+                                        effectiveLightPos += disp * shadowWarpStrength * 2.0;
+                                    }
+                                }
+                                vec3 Lpos = effectiveLightPos;
+                                vec3 Ldir = lights[j].direction;
+                                bool isSpot = dot(Ldir, Ldir) > 0.000001;
+                                if (isSpot) Ldir = normalize(mat3(cumulativePortalTransform) * Ldir);
+                                vec3 delta = Lpos - hitPos;
+                                float d2 = dot(delta, delta);
+                                if (d2 < 0.000001) continue;
+                                float invDist = inversesqrt(d2);
+                                float d = 1.0 / invDist;
+                                float atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
+                                if (isSpot) {
+                                    vec3 dirToHit = -delta * invDist;
+                                    if (dot(dirToHit, Ldir) < lights[j].cutoff) continue;
+                                }
+                                vec3 L = delta * invDist;
+                                float diff = max(dot(N, L), 0.0);
+                                if (diff > 0.0) {
+                                    float shadow = shadowRay(j, hitPos, N, cumulativePortalTransform, samples);
+                                    litCol += lights[j].diffuse * diff * atten * shadow;
+                                }
+                            }
+                            litCol *= hitCol;
+                        }
+                    } else {
+                        for (int j = 0; j < numLights; j++) {
+                            if (!lights[j].enabled) continue;
+                            if (lights[j].attenuation.x <= 0.0) continue;
+                            vec3 effectiveLightPos = (cumulativePortalTransform * vec4(lights[j].position, 1.0)).xyz;
+                            if (warpPlaneEnabled) {
+                                vec3 localPos = hitPos - warpPlaneOrigin;
+                                float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
+                                float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
+                                if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
+                                    vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
+                                    effectiveLightPos += disp * shadowWarpStrength * 2.0;
+                                }
+                            }
+                            vec3 Lpos = effectiveLightPos;
+                            vec3 Ldir = lights[j].direction;
+                            bool isSpot = dot(Ldir, Ldir) > 0.000001;
+                            if (isSpot) Ldir = normalize(mat3(cumulativePortalTransform) * Ldir);
+                            vec3 delta = Lpos - hitPos;
+                            float d2 = dot(delta, delta);
+                            if (d2 < 0.000001) continue;
+                            float invDist = inversesqrt(d2);
+                            float d = 1.0 / invDist;
+                            float atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
+                            if (isSpot) {
+                                vec3 dirToHit = -delta * invDist;
+                                if (dot(dirToHit, Ldir) < lights[j].cutoff) continue;
+                            }
+                            vec3 L = delta * invDist;
+                            float diff = max(dot(N, L), 0.0);
+                            if (diff > 0.0) {
+                                float shadow = shadowRay(j, hitPos, N, cumulativePortalTransform, samples);
+                                litCol += lights[j].diffuse * diff * atten * shadow;
                             }
                         }
-                        vec3 Lpos = effectiveLightPos;
-                        vec3 Ldir = lights[j].direction;
-                        bool isSpot = dot(Ldir, Ldir) > 0.000001;
-                        if (isSpot) Ldir = normalize(mat3(cumulativePortalTransform) * Ldir);
-                        vec3 delta = Lpos - hitPos;
-                        float d2 = dot(delta, delta);
-                        if (d2 < 0.000001) continue;
-                        float invDist = inversesqrt(d2);
-                        float d = 1.0 / invDist;
-                        float atten = 1.0 / (lights[j].attenuation.x + lights[j].attenuation.y*d + lights[j].attenuation.z*d2);
-                        if (isSpot) {
-                            vec3 dirToHit = -delta * invDist;
-                            if (dot(dirToHit, Ldir) < lights[j].cutoff) continue;
-                        }
-                        vec3 L = delta * invDist;
-                        float diff = max(dot(N, L), 0.0);
-                        if (diff > 0.0) {
-                            float shadow = shadowRay(j, hitPos, N, cumulativePortalTransform, samples);
-                            litCol += lights[j].diffuse * diff * atten * shadow;
-                        }
+                        litCol *= hitCol;
                     }
-                    litCol *= hitCol;
                     float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
                     litCol = mix(fogColor, litCol, fogFactor);
                     accumulatedColor = mix(accumulatedColor, litCol, hitAlpha * transparency);
@@ -1062,6 +1111,8 @@ void flush_RC_DrawQueue() {
     static GLint loc_shadowWarpStrength = -1, loc_camStepSize = -1, loc_shadowStepSize = -1;
     static GLint loc_maxBounces = -1, loc_maxShadowBounces = -1;
     static GLint loc_raySamples = -1;
+    static GLint loc_debugMode = -1;
+    static GLint loc_debugColor = -1;
     static bool uniformsCached = false;
     if (!uniformsCached && currentShaderProg) {
         loc_raycast = glGetUniformLocation(currentShaderProg, "raycast");
@@ -1134,6 +1185,8 @@ void flush_RC_DrawQueue() {
         loc_maxBounces = glGetUniformLocation(currentShaderProg, "maxBounces");
         loc_maxShadowBounces = glGetUniformLocation(currentShaderProg, "maxShadowBounces");
         loc_raySamples = glGetUniformLocation(currentShaderProg, "raySamples");
+        loc_debugMode = glGetUniformLocation(currentShaderProg, "debugMode");
+        loc_debugColor = glGetUniformLocation(currentShaderProg, "debugColor");
         uniformsCached = true;
     }
 
@@ -1276,11 +1329,9 @@ void flush_RC_DrawQueue() {
                 colData = std::move(colDataNew);
                 uvData = std::move(uvDataNew);
                 idxData = std::move(idxDataNew);
-
                 if (cachedBvhTex) glDeleteTextures(1, &cachedBvhTex);
                 std::vector<float> packed = packBVH(bvhNodes);
                 cachedBvhTex = createBVHTexture(packed, bvhNodes.size());
-
                 glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D, triTexPos);
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, triTexWidth, triTexHeight, GL_RGB, GL_FLOAT, posData.data());
@@ -1621,6 +1672,10 @@ void flush_RC_DrawQueue() {
         glUniform1i(loc_maxBounces, Engine_settings.MAX_BOUNCES);
         glUniform1i(loc_maxShadowBounces, Engine_settings.MAX_SHADOW_BOUNCES);
         glUniform1i(loc_raySamples, raySamples);
+        glUniform1i(loc_debugMode, Engine_settings.DEBUG_GRAPHICS ? 1 : 0);
+        glUniform3f(loc_debugColor, Engine_settings.DEBUG_COLOR[0],
+                                   Engine_settings.DEBUG_COLOR[1],
+                                   Engine_settings.DEBUG_COLOR[2]);
         glActiveTexture(GL_TEXTURE0);
         static GLuint fullScreenVAO = 0, fullScreenVBO = 0;
         if (fullScreenVAO == 0) {
@@ -1647,7 +1702,6 @@ void flush_RC_DrawQueue() {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glViewport(0, 0, window_w, window_h);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
         useShader(current2DShader);
         if (current2DShader) {
             glUseProgram(current2DShader);
@@ -1663,7 +1717,6 @@ void flush_RC_DrawQueue() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, fboTex);
         glUniform1i(loc_tex_2d, 0);
-
         static GLuint blitVAO = 0, blitVBO = 0;
         if (blitVAO == 0) {
             float vertices[] = {
@@ -1709,25 +1762,68 @@ void flush_RC_DrawQueue() {
             switch (cmd.type) {
                 case CMD_SQUARE: {
                     const char* texName = cmd.tex.empty() ? nullptr : cmd.tex.c_str();
-                    glActiveTexture(GL_TEXTURE0);
-                    if (texName) { GLuint id = loadTextureFromFile(texName); glBindTexture(GL_TEXTURE_2D, id ? id : whiteTex); }
-                    else { glBindTexture(GL_TEXTURE_2D, whiteTex); }
-                    float ar = cmd.rotate * M_PI / -180.0f;
-                    float tc[8] = {0,1, 1,1, 1,0, 0,0};
-                    float data[32];
-                    for (int i = 0; i < 4; ++i) {
-                        float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
-                        rotatePoint(px, py, 0, 0, ar);
-                        float vx = cmd.cx + px * cmd.scale, vy = cmd.cy + py * cmd.scale;
-                        data[i*8+0] = vx; data[i*8+1] = vy;
-                        data[i*8+2] = cmd.r; data[i*8+3] = cmd.g; data[i*8+4] = cmd.b; data[i*8+5] = cmd.a;
-                        data[i*8+6] = tc[i*2]; data[i*8+7] = tc[i*2+1];
+                    if (Engine_settings.DEBUG_GRAPHICS) {
+                        glActiveTexture(GL_TEXTURE0);
+                        if (texName) { GLuint id = loadTextureFromFile(texName); glBindTexture(GL_TEXTURE_2D, id ? id : whiteTex); }
+                        else { glBindTexture(GL_TEXTURE_2D, whiteTex); }
+                        float ar = cmd.rotate * M_PI / -180.0f;
+                        float tc[8] = {0,1, 1,1, 1,0, 0,0};
+                        float data[32];
+                        for (int i = 0; i < 4; ++i) {
+                            float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
+                            rotatePoint(px, py, 0, 0, ar);
+                            float vx = cmd.cx + px * cmd.scale, vy = cmd.cy + py * cmd.scale;
+                            data[i*8+0] = vx; data[i*8+1] = vy;
+                            data[i*8+2] = cmd.r; data[i*8+3] = cmd.g; data[i*8+4] = cmd.b; data[i*8+5] = cmd.a;
+                            data[i*8+6] = tc[i*2]; data[i*8+7] = tc[i*2+1];
+                        }
+                        glBindVertexArray(sq_vao);
+                        glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+                        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+                        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                        glBindVertexArray(0);
+                        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                        glActiveTexture(GL_TEXTURE0);
+                        glBindTexture(GL_TEXTURE_2D, whiteTex);
+                        float r = Engine_settings.DEBUG_COLOR[0];
+                        float g = Engine_settings.DEBUG_COLOR[1];
+                        float b = Engine_settings.DEBUG_COLOR[2];
+                        float data2[32];
+                        for (int i = 0; i < 4; ++i) {
+                            float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
+                            rotatePoint(px, py, 0, 0, ar);
+                            float vx = cmd.cx + px * cmd.scale, vy = cmd.cy + py * cmd.scale;
+                            data2[i*8+0] = vx; data2[i*8+1] = vy;
+                            data2[i*8+2] = r; data2[i*8+3] = g; data2[i*8+4] = b; data2[i*8+5] = 1.0f;
+                            data2[i*8+6] = tc[i*2]; data2[i*8+7] = tc[i*2+1];
+                        }
+                        glBindVertexArray(sq_vao);
+                        glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+                        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data2), data2);
+                        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                        glBindVertexArray(0);
+                        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                    } else {
+                        glActiveTexture(GL_TEXTURE0);
+                        if (texName) { GLuint id = loadTextureFromFile(texName); glBindTexture(GL_TEXTURE_2D, id ? id : whiteTex); }
+                        else { glBindTexture(GL_TEXTURE_2D, whiteTex); }
+                        float ar = cmd.rotate * M_PI / -180.0f;
+                        float tc[8] = {0,1, 1,1, 1,0, 0,0};
+                        float data[32];
+                        for (int i = 0; i < 4; ++i) {
+                            float px = cmd.verts[i*2], py = cmd.verts[i*2+1];
+                            rotatePoint(px, py, 0, 0, ar);
+                            float vx = cmd.cx + px * cmd.scale, vy = cmd.cy + py * cmd.scale;
+                            data[i*8+0] = vx; data[i*8+1] = vy;
+                            data[i*8+2] = cmd.r; data[i*8+3] = cmd.g; data[i*8+4] = cmd.b; data[i*8+5] = cmd.a;
+                            data[i*8+6] = tc[i*2]; data[i*8+7] = tc[i*2+1];
+                        }
+                        glBindVertexArray(sq_vao);
+                        glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+                        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
+                        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+                        glBindVertexArray(0);
                     }
-                    glBindVertexArray(sq_vao);
-                    glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
-                    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(data), data);
-                    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-                    glBindVertexArray(0);
                     break;
                 }
                 case CMD_LINE_2D: {

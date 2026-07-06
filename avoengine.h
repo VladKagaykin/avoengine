@@ -128,6 +128,8 @@ struct settings{
     float RAY_MULTIPLY=1;
     int TEXT_SAMPLE=4;
     int TICK_SPEED=50000;
+    bool DEBUG_GRAPHICS=1;
+    float DEBUG_COLOR[3]={0,0,255}; 
 };
 
 extern settings Engine_settings;
