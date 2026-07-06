@@ -1,4 +1,5 @@
 #include "tick_system.h"
+#include "avoengine.h"
 #include <chrono>
 
 // система тиков
@@ -6,10 +7,11 @@ int tick=0;
 const int max_tick=20;
 int absolute_tick = 0;
 static std::chrono::steady_clock::time_point last_tick_time;
-static const std::chrono::microseconds tick_interval(50000);
+static std::chrono::microseconds tick_interval(Engine_settings.TICK_SPEED);
 
 void init_tick_system() {
     last_tick_time = std::chrono::steady_clock::now();
+    tick_interval = (std::chrono::microseconds)Engine_settings.TICK_SPEED;
 }
 
 void update_ticks() {
