@@ -20,6 +20,11 @@ void square(float local_size, float x, float y, double r, double g, double b,
 
 void draw_text(const char* text, float x, float y, const char* fontPath, int fontSize, float r, float g, float b, float a=1);
 
+void delay_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                float r, float g, float b, float a, int ticks, bool loop=0);
+void disappearing_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                       float r, float g, float b, float a, int ticks, bool loop=0);
+
 void draw_performance_hud(int win_w,int win_h, const char* font_path);
 
 #endif

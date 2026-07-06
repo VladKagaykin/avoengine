@@ -2,6 +2,7 @@
 #include"2d_primitives.h"
 #include "shaders.h"
 #include "textures.h"
+#include "tick_system.h"
 
 #include <mutex>
 #include <fstream>
@@ -255,6 +256,29 @@ void draw_text(const char* text, float x, float y, const char* fontPath, int fon
             curX += stbtt_GetGlyphKernAdvance(&font, glyphIdx,
                                 stbtt_FindGlyphIndex(&font, *(c + 1))) * scale;
     }
+}
+
+void delay_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                float r, float g, float b, float a, int ticks, bool loop){
+    int length = strlen(text);
+    int current = loop ? absolute_tick % ticks : absolute_tick;
+    float one_char_timing = (float)ticks / length;
+    int visible = int(current / one_char_timing);
+    if (visible > length) visible = length;
+    char buff[length + 1];
+    memset(buff, 0, length + 1);
+    for (int c = 0; c < visible; c++) {
+        buff[c] = text[c];
+        draw_text(buff, x, y, fontPath, fontSize, r, g, b, a);
+    }
+    draw_text("", x, y, fontPath, fontSize, r, g, b, a);
+}
+void disappearing_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                       float r, float g, float b, float a, int ticks, bool loop){
+    int current = loop ? absolute_tick % ticks : absolute_tick;
+    float current_alpha = a - (a / ticks) * current;
+    if (current_alpha < 0) current_alpha = 0;
+    draw_text(text, x, y, fontPath, fontSize, r, g, b, current_alpha);
 }
 
 //              оверлей

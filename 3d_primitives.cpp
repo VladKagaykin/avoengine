@@ -158,3 +158,33 @@ void draw3DObject(float cx, float cy, float cz,
     cmd.shaderID = currentShaderProg;
     drawQueue.push_back(cmd);
 }
+
+// плоскость
+void plane(float cx, float cy, float cz, double r, double g, double b,
+           const char* tex, const std::vector<float>& vertices) {
+    if (vertices.size() != 12) return;
+
+    float ax = vertices[3] - vertices[0];
+    float ay = vertices[4] - vertices[1];
+    float az = vertices[5] - vertices[2];
+    float bx = vertices[6] - vertices[0];
+    float by = vertices[7] - vertices[1];
+    float bz = vertices[8] - vertices[2];
+
+    float nx = ay * bz - az * by;
+    float ny = az * bx - ax * bz;
+    float nz = ax * by - ay * bx;
+    float len = sqrtf(nx*nx + ny*ny + nz*nz);
+    if (len > 1e-6f) { nx /= len; ny /= len; nz /= len; }
+
+    std::vector<int> indices = { 0, 1, 2, 0, 2, 3 };
+    std::vector<float> texcoords = { 0,0, 1,0, 1,1, 0,1 };
+    std::vector<float> normals = {
+        nx, ny, nz,
+        nx, ny, nz,
+        nx, ny, nz,
+        nx, ny, nz
+    };
+
+    draw3DObject(cx, cy, cz, r, g, b, tex, vertices, indices, texcoords, normals);
+}

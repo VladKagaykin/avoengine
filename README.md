@@ -7,9 +7,9 @@
 ## <a name="русский"></a>Русская версия
 (документация сделана глупым ии, если возникнут проблемы, то пишите в Discord сообщество)
 
-**AVOEngine** — игровой движок на C++ (OpenGL + GLFW) с программным рендерингом через трассировку лучей для 3D-сцены. Движок предоставляет: рисование 2D/3D-примитивов, камеру, звук, загрузку текстур, псевдо-3D спрайты, освещение, туман, порталы, сохранение/загрузку карт, а также дополнительные эффекты через расширение.
+**AVOEngine** — игровой движок на C++ (OpenGL + GLFW) с программным рендерингом через трассировку лучей для 3D-сцены. Движок предоставляет: рисование 2D/3D-примитивов, камеру, звук, загрузку текстур, псевдо-3D спрайты, освещение, туман, порталы, систему тиков, переключение сцен, а также дополнительные эффекты.
 
-**Ключевая особенность:** весь 3D-рендеринг выполняется в фрагментном шейдере с помощью трассировки лучей по BVH-структуре. Это позволяет создавать порталы, искажающие плоскости и сложные эффекты без традиционного растеризатора.
+**Ключевая особенность:** весь 3D-рендеринг выполняется во фрагментном шейдере с помощью трассировки лучей по BVH-структуре. Это позволяет создавать порталы, искажающие плоскости и сложные эффекты без традиционного растеризатора.
 
 ---
 
@@ -19,15 +19,29 @@
 
 ```bash
 sudo apt install build-essential
-sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev libglfw3-dev
+sudo apt install libgl1-mesa-dev libglu1-mesa-dev libglfw3-dev
 sudo apt install libglew-dev libsoil-dev libglm-dev libassimp-dev
 ```
 
 ### Компиляция
 
 ```bash
-g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
-    -I./src -lGLEW -lglfw -lGLU -lGL -lSOIL -lglut -fopenmp -lassimp
+g++ -o output your_program.cpp \
+    avoengine.cpp \
+    portals_rc.cpp \
+    pseudo3dentity.cpp \
+    light.cpp \
+    ambient.cpp \
+    audio_not_mini.cpp \
+    textures.cpp \
+    shaders.cpp \
+    warp.cpp \
+    baking_scene.cpp \
+    ray_casting.cpp \
+    tick_system.cpp \
+    3d_primitives.cpp \
+    2d_primitives.cpp \
+    -I./src -lGLEW -lglfw -lGLU -lGL -lSOIL -fopenmp -lassimp
 ```
 
 Запуск:
@@ -51,6 +65,7 @@ g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
 | `global_ambient` | `float[3]` | Глобальный фоновый свет (по умолчанию `{0.05, 0.05, 0.05}`) |
 | `allEntities` | `std::vector<pseudo_3d_entity*>` | Все зарегистрированные псевдо-3D сущности |
 | `allPortals` | `std::vector<Portal*>` | Все созданные порталы |
+| `Engine_settings` | `settings` | Структура с настройками движка (макс. кол-во источников света, отскоков, размер шага и т.д.) |
 
 ### Структуры
 
@@ -71,6 +86,24 @@ struct fog_params {
     float start, end;
 };
 extern fog_params fog;
+
+struct settings {
+    int MAX_LIGHTS = 16;
+    int MAX_BOUNCES = 4;
+    float MAX_DIST = camera.zfar;
+    int MAX_TEXTURES = 2;
+    int MAX_PORTALS = 8;
+    int MAX_PORTAL_VERTS = 16;
+    float SHADOW_BIAS = 0.001;
+    float CAM_WARP_STRENGTH = 0.2;
+    float SHADOW_WARP_STRENGTH = 0.2;
+    float CAM_STEP_SIZE = 2;
+    float SHADOW_STEP_SIZE = 2;
+    int MAX_SHADOW_BOUNCES = 2;
+    float RAY_MULTIPLY = 0.5;
+    int TEXT_SAMPLE = 4;
+};
+extern settings Engine_settings;
 ```
 
 ### Инициализация и главный цикл
@@ -131,11 +164,35 @@ void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2,
 #### draw_text()
 
 ```cpp
-void draw_text(const char* text, float x, float y, void* font,
+void draw_text(const char* text, float x, float y, const char* fontPath, int fontSize,
                float r, float g, float b, float a = 1.0f);
 ```
 
-Шрифты: `GLUT_BITMAP_HELVETICA_12`, `GLUT_BITMAP_TIMES_ROMAN_24` и т.д.
+- `fontPath` – путь к TrueType-шрифту (например, `"arial.ttf"`)
+- `fontSize` – размер в пикселях
+
+#### delay_text()
+
+```cpp
+void delay_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                float r, float g, float b, float a, int ticks, bool loop = false);
+```
+Появляется посимвольно за указанное количество тиков.
+
+#### disappearing_text()
+
+```cpp
+void disappearing_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                       float r, float g, float b, float a, int ticks, bool loop = false);
+```
+Исчезает, уменьшая прозрачность, за указанное количество тиков.
+
+#### draw_performance_hud()
+
+```cpp
+void draw_performance_hud(int win_w, int win_h, const char* font_path);
+```
+Показывает FPS, загрузку CPU/RAM/GPU, положение камеры.
 
 ---
 
@@ -212,6 +269,14 @@ void draw_line_3d(float x, float y, float z,
 
 Рисует 3D-линию с круглым сечением.
 
+#### plane()
+
+```cpp
+void plane(float cx, float cy, float cz, double r, double g, double b,
+           const char* tex, const std::vector<float>& vertices);
+```
+Рисует плоский прямоугольник (4 вершины, 12 чисел).
+
 ---
 
 ### Камера
@@ -238,7 +303,7 @@ void useShader(GLuint id);
 void stopShader();
 ```
 
-**Встроенный шейдер** `defaultLightingShader` поддерживает:
+**Встроенный шейдер** `defaultLightingShader` (доступен через `defaultLightingShader`) поддерживает:
 - До 16 источников света
 - Тени
 - Туман
@@ -246,6 +311,9 @@ void stopShader();
 - Искажающие плоскости (WarpPlane)
 - BVH-ускорение
 - Панорамы
+- Настройки через `Engine_settings`
+
+Для 2D-рендеринга используется отдельный шейдер `current2DShader`.
 
 ---
 
@@ -386,17 +454,22 @@ void clearTextureCache();
 
 ---
 
-### HUD и отладка
+### Ввод (клавиатура, мышь)
 
 ```cpp
-void draw_performance_hud(int win_w, int win_h);
+void init_keyboard(GLFWwindow* window);
+void init_mouse(GLFWwindow* window);
+void update_mouse();          // сбрасывает флаги кликов и колёсика
+void set_mouse_capture(GLFWwindow* window, bool capture);
+
+extern bool keys[256];          // обычные клавиши
+extern bool skeys[512];         // спецклавиши (GLFW_KEY_*)
+extern std::map<std::string, bool> mouse;  // "left", "right", "middle", "left_click", "right_click", "middle_click", "wheel_up", "wheel_down"
+extern int mouse_x, mouse_y;
+extern bool mouse_captured;
 ```
 
 ---
-
-## Расширение (avoextension)
-
-Расширение добавляет систему тиков, текстовые эффекты, белый шум, ввод, 3D-примитивы и сохранение/загрузку карт.
 
 ### Система тиков
 
@@ -411,91 +484,45 @@ void init_tick_system();
 void update_ticks();        // вызывать каждый кадр
 ```
 
-### Текстовые эффекты
+---
+
+### Управление сценами (Baking Scene)
+
+Позволяет задать функцию, которая будет автоматически перестраивать BVH при каждом изменении сцены.
 
 ```cpp
-void delay_text(const char* text, float x, float y, void* font,
-                float r, float g, float b, float a, int ticks, bool loop = false);
+using Function = void(*)();
+extern bool is_scene_changed;
+extern Function current_scene;
 
-void disappearing_text(const char* text, float x, float y, void* font,
-                       float r, float g, float b, float a, int ticks, bool loop = false);
+void fixed_scene(Function scene);   // задаёт сцену
+void clean_scene();                 // очищает сцену
 ```
 
-### Белый шум (3D)
+---
+
+### HUD и отладка
 
 ```cpp
-void play_white_noise_3d(float x, float y, float z, float volume);
+void draw_performance_hud(int win_w, int win_h, const char* font_path);
 ```
 
-### Обработка ввода
+---
 
-```cpp
-void init_keyboard(GLFWwindow* window);
-void init_mouse(GLFWwindow* window);
-void update_mouse();
-void set_mouse_capture(GLFWwindow* window, bool capture);
+## Дополнительные утилиты
 
-extern bool keys[256];
-extern bool skeys[512];
-extern std::map<std::string, bool> mouse;
-extern int mouse_x, mouse_y;
-extern bool mouse_captured;
-```
+### 2D-примитивы
 
-### Простые 3D-примитивы
+- `square()`, `draw_line_2d()`, `draw_text()`, `delay_text()`, `disappearing_text()` – описаны выше.
 
-```cpp
-void plane(float cx, float cy, float cz, double r, double g, double b,
-           const char* tex, const std::vector<float>& vertices);
-```
+### 3D-примитивы
+
+- `draw_line_3d()`, `draw3DObject()`, `plane()` – описаны выше.
 
 ### Иконка окна
 
 ```cpp
 void set_icon(const char* path);
-```
-
-### Карты (.avomap)
-
-Бинарный формат для сохранения/загрузки сцен.
-
-```cpp
-struct MapEntity {
-    float x, y, z;
-    float g_angle, v_angle, r_angle;
-    int v_angles;
-    std::vector<std::string> textures;
-    std::vector<float> vertices;
-    bool castShadow;
-};
-
-struct MapData {
-    std::vector<MapEntity> entities;
-    struct LightData { ... };
-    struct PortalData { ... };
-    std::vector<LightData> lights;
-    std::vector<PortalData> portals;
-    
-    bool fog_enabled;
-    float fog_density, fog_color[3], fog_start, fog_end;
-    float camera_eye[3], camera_pitch, camera_yaw;
-    std::string panorama_path;
-    float ambient[3];
-    
-    std::unordered_map<std::string, std::vector<uint8_t>> userData;
-};
-
-bool save_map(const char* filename, const MapData& map);
-bool load_map(const char* filename, MapData& map);
-
-MapEntity entityToMapData(const pseudo_3d_entity& ent);
-pseudo_3d_entity* mapDataToEntity(const MapEntity& data);
-MapData::PortalData portalToMapData(const Portal& p);
-Portal* mapDataToPortal(const MapData::PortalData& data);
-
-void registerEntity(pseudo_3d_entity* e);
-void unregisterEntity(pseudo_3d_entity* e);
-void save_current_scene(const char* filename);
 ```
 
 ---
@@ -512,7 +539,7 @@ LGPL-3.0
 ## <a name="english"></a>English Version
 (The documentation was made by a stupid AI. If any issues arise, write to the Discord community)
 
-**AVOEngine** is a C++ game engine using OpenGL and GLFW with software ray-traced rendering for 3D scenes. The engine provides: 2D/3D primitive drawing, camera, audio, texture loading, pseudo-3D sprites, lighting, fog, portals, map saving/loading, and additional effects via the extension.
+**AVOEngine** is a C++ game engine using OpenGL and GLFW with software ray-traced rendering for 3D scenes. The engine provides: 2D/3D primitive drawing, camera, audio, texture loading, pseudo-3D sprites, lighting, fog, portals, tick system, scene switching, and additional utilities.
 
 **Key feature:** All 3D rendering is performed in the fragment shader using ray marching against a BVH structure. This enables portals, warp planes, and complex effects without traditional rasterization.
 
@@ -524,15 +551,29 @@ LGPL-3.0
 
 ```bash
 sudo apt install build-essential
-sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev libglfw3-dev
+sudo apt install libgl1-mesa-dev libglu1-mesa-dev libglfw3-dev
 sudo apt install libglew-dev libsoil-dev libglm-dev libassimp-dev
 ```
 
 ### Compilation
 
 ```bash
-g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
-    -I./src -lGLEW -lglfw -lGLU -lGL -lSOIL -lglut -fopenmp -lassimp
+g++ -o output your_program.cpp \
+    avoengine.cpp \
+    portals_rc.cpp \
+    pseudo3dentity.cpp \
+    light.cpp \
+    ambient.cpp \
+    audio_not_mini.cpp \
+    textures.cpp \
+    shaders.cpp \
+    warp.cpp \
+    baking_scene.cpp \
+    ray_casting.cpp \
+    tick_system.cpp \
+    3d_primitives.cpp \
+    2d_primitives.cpp \
+    -I./src -lGLEW -lglfw -lGLU -lGL -lSOIL -fopenmp -lassimp
 ```
 
 ### Run
@@ -557,6 +598,7 @@ g++ -o output your_program.cpp avoengine.cpp avoextension.cpp \
 | `global_ambient` | `float[3]` | Global ambient light (default `{0.05, 0.05, 0.05}`) |
 | `allEntities` | `std::vector<pseudo_3d_entity*>` | All registered pseudo-3D entities |
 | `allPortals` | `std::vector<Portal*>` | All created portals |
+| `Engine_settings` | `settings` | Engine settings (max lights, bounces, step sizes, etc.) |
 
 ### Structures
 
@@ -577,6 +619,24 @@ struct fog_params {
     float start, end;
 };
 extern fog_params fog;
+
+struct settings {
+    int MAX_LIGHTS = 16;
+    int MAX_BOUNCES = 4;
+    float MAX_DIST = camera.zfar;
+    int MAX_TEXTURES = 2;
+    int MAX_PORTALS = 8;
+    int MAX_PORTAL_VERTS = 16;
+    float SHADOW_BIAS = 0.001;
+    float CAM_WARP_STRENGTH = 0.2;
+    float SHADOW_WARP_STRENGTH = 0.2;
+    float CAM_STEP_SIZE = 2;
+    float SHADOW_STEP_SIZE = 2;
+    int MAX_SHADOW_BOUNCES = 2;
+    float RAY_MULTIPLY = 0.5;
+    int TEXT_SAMPLE = 4;
+};
+extern settings Engine_settings;
 ```
 
 ### Initialization & Main Loop
@@ -627,11 +687,29 @@ void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2,
 #### draw_text()
 
 ```cpp
-void draw_text(const char* text, float x, float y, void* font,
+void draw_text(const char* text, float x, float y, const char* fontPath, int fontSize,
                float r, float g, float b, float a = 1.0f);
 ```
 
-Fonts: `GLUT_BITMAP_HELVETICA_12`, `GLUT_BITMAP_TIMES_ROMAN_24`, etc.
+#### delay_text()
+
+```cpp
+void delay_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                float r, float g, float b, float a, int ticks, bool loop = false);
+```
+
+#### disappearing_text()
+
+```cpp
+void disappearing_text(const char* text, float x, float y, const char* fontPath, int fontSize,
+                       float r, float g, float b, float a, int ticks, bool loop = false);
+```
+
+#### draw_performance_hud()
+
+```cpp
+void draw_performance_hud(int win_w, int win_h, const char* font_path);
+```
 
 ---
 
@@ -696,6 +774,13 @@ void draw_line_3d(float x, float y, float z,
                   int segments, float alpha = 1.0f);
 ```
 
+#### plane()
+
+```cpp
+void plane(float cx, float cy, float cz, double r, double g, double b,
+           const char* tex, const std::vector<float>& vertices);
+```
+
 ---
 
 ### Camera
@@ -726,6 +811,9 @@ void stopShader();
 - Warp planes
 - BVH acceleration
 - Panoramas
+- Settings via `Engine_settings`
+
+A separate 2D shader (`current2DShader`) is used for 2D rendering.
 
 ---
 
@@ -854,15 +942,22 @@ void clearTextureCache();
 
 ---
 
-### HUD & Debug
+### Input (Keyboard, Mouse)
 
 ```cpp
-void draw_performance_hud(int win_w, int win_h);
+void init_keyboard(GLFWwindow* window);
+void init_mouse(GLFWwindow* window);
+void update_mouse();
+void set_mouse_capture(GLFWwindow* window, bool capture);
+
+extern bool keys[256];
+extern bool skeys[512];
+extern std::map<std::string, bool> mouse;  // "left", "right", "middle", "left_click", "right_click", "middle_click", "wheel_up", "wheel_down"
+extern int mouse_x, mouse_y;
+extern bool mouse_captured;
 ```
 
 ---
-
-## Extension (avoextension)
 
 ### Tick System
 
@@ -877,89 +972,45 @@ void init_tick_system();
 void update_ticks();
 ```
 
-### Text Effects
+---
+
+### Scene Management (Baking Scene)
+
+Allows setting a function that automatically rebuilds the BVH when the scene changes.
 
 ```cpp
-void delay_text(const char* text, float x, float y, void* font,
-                float r, float g, float b, float a, int ticks, bool loop = false);
+using Function = void(*)();
+extern bool is_scene_changed;
+extern Function current_scene;
 
-void disappearing_text(const char* text, float x, float y, void* font,
-                       float r, float g, float b, float a, int ticks, bool loop = false);
+void fixed_scene(Function scene);
+void clean_scene();
 ```
 
-### White Noise (3D)
+---
+
+### HUD & Debug
 
 ```cpp
-void play_white_noise_3d(float x, float y, float z, float volume);
+void draw_performance_hud(int win_w, int win_h, const char* font_path);
 ```
 
-### Input Handling
+---
 
-```cpp
-void init_keyboard(GLFWwindow* window);
-void init_mouse(GLFWwindow* window);
-void update_mouse();
-void set_mouse_capture(GLFWwindow* window, bool capture);
+## Additional Utilities
 
-extern bool keys[256];
-extern bool skeys[512];
-extern std::map<std::string, bool> mouse;
-extern int mouse_x, mouse_y;
-extern bool mouse_captured;
-```
+### 2D Primitives
 
-### Simple 3D Primitives
+- `square()`, `draw_line_2d()`, `draw_text()`, `delay_text()`, `disappearing_text()` – described above.
 
-```cpp
-void plane(float cx, float cy, float cz, double r, double g, double b,
-           const char* tex, const std::vector<float>& vertices);
-```
+### 3D Primitives
+
+- `draw_line_3d()`, `draw3DObject()`, `plane()` – described above.
 
 ### Window Icon
 
 ```cpp
 void set_icon(const char* path);
-```
-
-### Maps (.avomap)
-
-```cpp
-struct MapEntity {
-    float x, y, z;
-    float g_angle, v_angle, r_angle;
-    int v_angles;
-    std::vector<std::string> textures;
-    std::vector<float> vertices;
-    bool castShadow;
-};
-
-struct MapData {
-    std::vector<MapEntity> entities;
-    struct LightData { ... };
-    struct PortalData { ... };
-    std::vector<LightData> lights;
-    std::vector<PortalData> portals;
-    
-    bool fog_enabled;
-    float fog_density, fog_color[3], fog_start, fog_end;
-    float camera_eye[3], camera_pitch, camera_yaw;
-    std::string panorama_path;
-    float ambient[3];
-    
-    std::unordered_map<std::string, std::vector<uint8_t>> userData;
-};
-
-bool save_map(const char* filename, const MapData& map);
-bool load_map(const char* filename, MapData& map);
-
-MapEntity entityToMapData(const pseudo_3d_entity& ent);
-pseudo_3d_entity* mapDataToEntity(const MapEntity& data);
-MapData::PortalData portalToMapData(const Portal& p);
-Portal* mapDataToPortal(const MapData::PortalData& data);
-
-void registerEntity(pseudo_3d_entity* e);
-void unregisterEntity(pseudo_3d_entity* e);
-void save_current_scene(const char* filename);
 ```
 
 ---
@@ -971,4 +1022,3 @@ Discord server: [https://discord.gg/QZe2s9r4u](https://discord.gg/QZe2s9r4u)
 ## License
 
 LGPL-3.0
-```

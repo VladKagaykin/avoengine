@@ -4,12 +4,15 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <map>
 #include <unordered_map>
 // #include "src/miniaudio.h"
 #include <glm/glm.hpp>
 class Portal;
 class pseudo_3d_entity;
 #include <mutex>
+
+using namespace std;
 
 struct GLFWwindow;
 
@@ -132,6 +135,17 @@ struct settings{
 extern settings Engine_settings;
 
 void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad);
+
+void set_icon(const char* path);
+extern bool keys[256];
+extern bool skeys[512];
+void init_keyboard(GLFWwindow* window);
+extern std::map<std::string, bool> mouse;
+extern int mouse_x,mouse_y;
+extern bool mouse_captured;
+void init_mouse(GLFWwindow* window);
+void set_mouse_capture(GLFWwindow* window, bool capture);
+void update_mouse();
 
 void setup_display(int* argc,char** argv,float r,float g,float b,float a,const char* name,int w,int h);
 void setup_camera(float fov,float eye_x,float eye_y,float eye_z,float pitch,float yaw,float roll = 0.0f);

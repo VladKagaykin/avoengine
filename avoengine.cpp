@@ -385,6 +385,7 @@ float getGPUUsage_Linux() {
 // взаимодействия с консолью
 #include <iostream>
 // таблица номер-значение, поможет для текстур
+#include <map>
 #include <unordered_map>
 // массивы
 #include <vector>
@@ -451,6 +452,122 @@ void rotatePoint(float& x,float& y,float cx,float cy,float angle_rad){
     const float c=cosf(angle_rad),s=sinf(angle_rad);
     x=cx+tx*c-ty*s;
     y=cy+tx*s+ty*c;
+}
+
+// поставить иконку
+void set_icon(const char* path){
+    int width, height, channels;
+    // загружаем с принудительным RGBA (4 канала)
+    unsigned char* image = SOIL_load_image(
+        path,
+        &width, &height, &channels,
+        SOIL_LOAD_RGBA
+    );
+
+    if (!image) {
+        std::cerr << "SOIL failed to load icon: " << SOIL_last_result() << std::endl;
+        return;
+    }
+
+    GLFWimage icon;
+    icon.width  = width;
+    icon.height = height;
+    icon.pixels = image;
+
+    GLFWwindow* window = glfwGetCurrentContext();
+    if (window) {
+        glfwSetWindowIcon(window, 1, &icon);
+    }
+
+    // освобождаем память, занятую SOIL
+    SOIL_free_image_data(image);
+}
+// считывание клавиш клавиатуры
+bool keys[256]={},skeys[512]={};
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (key >= 0 && key < 256) {
+        keys[key] = (action == GLFW_PRESS || action == GLFW_REPEAT);
+    }
+    if (key >= 256 && key < 512) {
+        skeys[key] = (action == GLFW_PRESS || action == GLFW_REPEAT);
+    }
+}
+void init_keyboard(GLFWwindow* window) {
+    glfwSetKeyCallback(window, key_callback);
+}
+// считывание мыши
+std::map<std::string, bool> mouse;
+int mouse_x = 0, mouse_y = 0;
+bool mouse_captured = false;
+static double last_mouse_x = 0.0, last_mouse_y = 0.0;
+
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    std::string btn = (button == GLFW_MOUSE_BUTTON_LEFT)   ? "left" :
+                      (button == GLFW_MOUSE_BUTTON_MIDDLE) ? "middle" : "right";
+    mouse[btn] = (action == GLFW_PRESS);
+    mouse[btn + "_click"] = (action == GLFW_PRESS);
+    // Позиция обновляется в cursor_pos_callback
+}
+
+void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+    if (mouse_captured) {
+        // Режим захвата: вычисляем дельту и варпим в центр
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        double center_x = width / 2.0;
+        double center_y = height / 2.0;
+        mouse_x += static_cast<int>(xpos - center_x);
+        mouse_y += static_cast<int>(ypos - center_y);
+        glfwSetCursorPos(window, center_x, center_y);
+    } else {
+        mouse_x = static_cast<int>(xpos);
+        mouse_y = static_cast<int>(ypos);
+    }
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    if (yoffset > 0) mouse["wheel_up"] = true;
+    else if (yoffset < 0) mouse["wheel_down"] = true;
+}
+
+void init_mouse(GLFWwindow* window) {
+    mouse["left"] = false;
+    mouse["right"] = false;
+    mouse["middle"] = false;
+    mouse["left_click"] = false;
+    mouse["right_click"] = false;
+    mouse["middle_click"] = false;
+    mouse["wheel_up"] = false;
+    mouse["wheel_down"] = false;
+
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetCursorPosCallback(window, cursor_pos_callback);
+    glfwSetScrollCallback(window, scroll_callback);
+}
+
+void update_mouse() {
+    mouse["left_click"] = false;
+    mouse["right_click"] = false;
+    mouse["middle_click"] = false;
+    mouse["wheel_up"] = false;
+    mouse["wheel_down"] = false;
+}
+
+// Управление захватом мыши
+void set_mouse_capture(GLFWwindow* window, bool capture) {
+    if (capture && !mouse_captured) {
+        mouse_captured = true;
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        // Сброс дельты при входе в захват
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+        last_mouse_x = width / 2.0;
+        last_mouse_y = height / 2.0;
+        glfwSetCursorPos(window, last_mouse_x, last_mouse_y);
+    } else if (!capture && mouse_captured) {
+        mouse_captured = false;
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    }
 }
 
 //              opengl

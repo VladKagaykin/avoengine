@@ -1,13 +1,25 @@
 sudo apt install build-essential
-
-sudo apt install libgl1-mesa-dev libglu1-mesa-dev freeglut3-dev
+sudo apt install libgl1-mesa-dev libglu1-mesa-dev libglfw3-dev
+sudo apt install libglew-dev libsoil-dev libglm-dev libassimp-dev
 
 cd /your/path
 
-compile game:
 
-g++ -o output your_programm.cpp avoengine.cpp avoextension.cpp -I./src -lGLEW -lglfw -lGLU -lGL 
--lSOIL -lglut -L. -fopenmp -lassimp
-
+g++ -o output your_program.cpp \
+    avoengine.cpp \
+    portals_rc.cpp \
+    pseudo3dentity.cpp \
+    light.cpp \
+    ambient.cpp \
+    audio_not_mini.cpp \
+    textures.cpp \
+    shaders.cpp \
+    warp.cpp \
+    baking_scene.cpp \
+    ray_casting.cpp \
+    tick_system.cpp \
+    3d_primitives.cpp \
+    2d_primitives.cpp \
+    -I./src -lGLEW -lglfw -lGLU -lGL -lSOIL -fopenmp -lassimp
 
 ./output
