@@ -86,7 +86,15 @@ struct DrawCommand {
 extern std::vector<DrawCommand> drawQueue;
 extern std::mutex drawQueueMutex;
 
-void flushDrawQueue();
+extern GLint loc_tex;
+extern GLint loc_portalMode , loc_portalDepthOnly , loc_portalTex ;
+
+extern glm::mat4 g_projectionMatrix;
+extern glm::mat4 g_modelViewMatrix;
+extern GLint loc_u_projection_default;
+extern GLint loc_u_modelView_default;
+
+void updateMatrixUniforms();
 
 struct CameraParams{
     float fov=58.0f;

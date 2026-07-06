@@ -37,6 +37,26 @@ void main() {
 }
 )";
 
+GLuint lineVAO = 0, lineVBO = 0;
+bool lineInit = false;
+
+void initLineVAO() {
+    if (lineInit) return;
+    lineInit = true;
+    glGenVertexArrays(1, &lineVAO);
+    glGenBuffers(1, &lineVBO);
+    glBindVertexArray(lineVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+    glBufferData(GL_ARRAY_BUFFER, 2 * 9 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 9 * sizeof(float), (void*)(7 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
 GLint loc_tex_2d = -1;
 GLint loc_u_projection_2d = -1;
 GLint loc_u_modelView_2d = -1;

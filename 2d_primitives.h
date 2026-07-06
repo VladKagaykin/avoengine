@@ -9,6 +9,11 @@ extern GLint loc_u_modelView_2d;
 
 void init2DShader();
 
+extern GLuint lineVAO, lineVBO;
+extern bool lineInit;
+
+void initLineVAO();
+
 void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness);
 void square(float local_size, float x, float y, double r, double g, double b,
             float rotate, const float* vertices, const char* tex=nullptr, float alpha = 1.0f);
