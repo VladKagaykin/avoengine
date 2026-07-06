@@ -453,7 +453,6 @@ void main() {
                     ro = vec3(portalTeleport[portalHitIdx] * vec4(hitPos, 1.0));
                     rd = normalize(mat3(portalTeleport[portalHitIdx]) * rd);
                     totalDist = 0.0;
-                    bounce++;
                     continue;
                 } else {
                     float fogCoord = totalDist;
