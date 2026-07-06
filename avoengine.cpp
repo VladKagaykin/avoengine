@@ -628,7 +628,7 @@ void setup_display(int* argc, char** argv, float r, float g, float b, float a, c
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
-    initDefaultShader();
+    initDefault_RC_Shader();
     init2DShader();
     initLineVAO();
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);

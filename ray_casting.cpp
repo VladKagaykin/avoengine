@@ -19,7 +19,7 @@
 #include <algorithm>
 #include <cstring>
 
-GLuint defaultLightingShader = 0;
+GLuint default_RC_Shader = 0;
 
 static const char* defaultVertexShader = R"(
 #version 120
@@ -539,21 +539,21 @@ void main() {
 }
 )";
 
-void initDefaultShader() {
-    if (defaultLightingShader == 0) {
-        defaultLightingShader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
-        loc_tex = glGetUniformLocation(defaultLightingShader, "tex");
-        loc_numLights = glGetUniformLocation(defaultLightingShader, "numLights");
-        loc_ambientLight = glGetUniformLocation(defaultLightingShader, "ambientLight");
-        loc_fogColor = glGetUniformLocation(defaultLightingShader, "fogColor");
-        loc_fogStart = glGetUniformLocation(defaultLightingShader, "fogStart");
-        loc_fogEnd = glGetUniformLocation(defaultLightingShader, "fogEnd");
-        loc_portalMode = glGetUniformLocation(defaultLightingShader, "portalMode");
-        loc_portalDepthOnly = glGetUniformLocation(defaultLightingShader, "portalDepthOnly");
-        loc_portalTex = glGetUniformLocation(defaultLightingShader, "portalTex");
+void initDefault_RC_Shader() {
+    if (default_RC_Shader == 0) {
+        default_RC_Shader = createShaderProgram(defaultVertexShader, defaultFragmentShader);
+        loc_tex = glGetUniformLocation(default_RC_Shader, "tex");
+        loc_numLights = glGetUniformLocation(default_RC_Shader, "numLights");
+        loc_ambientLight = glGetUniformLocation(default_RC_Shader, "ambientLight");
+        loc_fogColor = glGetUniformLocation(default_RC_Shader, "fogColor");
+        loc_fogStart = glGetUniformLocation(default_RC_Shader, "fogStart");
+        loc_fogEnd = glGetUniformLocation(default_RC_Shader, "fogEnd");
+        loc_portalMode = glGetUniformLocation(default_RC_Shader, "portalMode");
+        loc_portalDepthOnly = glGetUniformLocation(default_RC_Shader, "portalDepthOnly");
+        loc_portalTex = glGetUniformLocation(default_RC_Shader, "portalTex");
 
-        loc_u_projection_default = glGetUniformLocation(defaultLightingShader, "u_projection");
-        loc_u_modelView_default = glGetUniformLocation(defaultLightingShader, "u_modelView");
+        loc_u_projection_default = glGetUniformLocation(default_RC_Shader, "u_projection");
+        loc_u_modelView_default = glGetUniformLocation(default_RC_Shader, "u_modelView");
 
         int maxLights = Engine_settings.MAX_LIGHTS;
         loc_lightEnabled.resize(maxLights, -1);
@@ -566,17 +566,17 @@ void initDefaultShader() {
         char buf[64];
         for (int i = 0; i < maxLights; ++i) {
             snprintf(buf, sizeof(buf), "lights[%d].enabled", i);
-            loc_lightEnabled[i] = glGetUniformLocation(defaultLightingShader, buf);
+            loc_lightEnabled[i] = glGetUniformLocation(default_RC_Shader, buf);
             snprintf(buf, sizeof(buf), "lights[%d].position", i);
-            loc_lightPosition[i] = glGetUniformLocation(defaultLightingShader, buf);
+            loc_lightPosition[i] = glGetUniformLocation(default_RC_Shader, buf);
             snprintf(buf, sizeof(buf), "lights[%d].direction", i);
-            loc_lightDirection[i] = glGetUniformLocation(defaultLightingShader, buf);
+            loc_lightDirection[i] = glGetUniformLocation(default_RC_Shader, buf);
             snprintf(buf, sizeof(buf), "lights[%d].diffuse", i);
-            loc_lightDiffuse[i] = glGetUniformLocation(defaultLightingShader, buf);
+            loc_lightDiffuse[i] = glGetUniformLocation(default_RC_Shader, buf);
             snprintf(buf, sizeof(buf), "lights[%d].cutoff", i);
-            loc_lightCutoff[i] = glGetUniformLocation(defaultLightingShader, buf);
+            loc_lightCutoff[i] = glGetUniformLocation(default_RC_Shader, buf);
             snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
-            loc_lightAttenuation[i] = glGetUniformLocation(defaultLightingShader, buf);
+            loc_lightAttenuation[i] = glGetUniformLocation(default_RC_Shader, buf);
         }
     }
 }
@@ -828,7 +828,7 @@ GLuint createBVHTexture(const std::vector<float>& packedData, int nodeCount) {
     return tex;
 }
 
-void flushDrawQueue() {
+void flush_RC_DrawQueue() {
     applyAllLights();
     static std::vector<float> cachedPosData;
     static std::vector<float> cachedNormData;
