@@ -58,6 +58,30 @@ void initLineVAO() {
     glBindVertexArray(0);
 }
 
+GLuint sq_vao = 0, sq_vbo = 0, sq_ibo = 0;
+bool sq_init = false;
+
+void initSquareVAO() {
+    if (sq_init) return;
+    sq_init = true;
+    glGenVertexArrays(1, &sq_vao);
+    glGenBuffers(1, &sq_vbo);
+    glGenBuffers(1, &sq_ibo);
+    glBindVertexArray(sq_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
+    glBufferData(GL_ARRAY_BUFFER, 4 * 8 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    GLuint indices[6] = {0, 1, 2, 0, 2, 3};
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sq_ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBindVertexArray(0);
+}
+
 GLint loc_tex_2d = -1;
 GLint loc_u_projection_2d = -1;
 GLint loc_u_modelView_2d = -1;

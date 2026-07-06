@@ -18,6 +18,6 @@ void draw3DObject(float cx, float cy, float cz,
                   float yaw = 0.0f, float pitch = 0.0f, float roll = 0.0f,
                   float alpha = 1.0f);
 
-void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices);
+void plane(float cx,float cy,float cz,double r,double g,double b,const char* tex,const std::vector<float>& vertices,float yaw = 0.0f, float pitch = 0.0f, float roll = 0.0f);
 
 #endif

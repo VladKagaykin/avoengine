@@ -43,9 +43,7 @@ class WarpPlane;
 
 enum DrawCommandType : int {
     CMD_SQUARE,
-    CMD_TEXT,
     CMD_3DOBJECT,
-    CMD_PSEUDO3D,
     CMD_LINE_2D,
     CMD_PANORAMA,
     CMD_PORTAL

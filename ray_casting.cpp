@@ -853,7 +853,6 @@ void flushDrawQueue() {
         int totalTriangles = 0;
         for (auto& cmd : staticCommands) {
             if (cmd.type == CMD_3DOBJECT) totalTriangles += cmd.obj_indices.size() / 3;
-            else if (cmd.type == CMD_PSEUDO3D) totalTriangles += 2;
         }
         if (totalTriangles > 0) {
             ensureTriTextures(totalTriangles * 3);
@@ -930,8 +929,6 @@ void flushDrawQueue() {
                         }
                         texIdx++;
                     }
-                } else if (cmd.type == CMD_PSEUDO3D && cmd.entity) {
-                    continue;
                 }
             }
             cachedTriCount = totalTriangles;
@@ -997,7 +994,7 @@ void flushDrawQueue() {
     for (auto& cmd : drawQueue) {
         switch (cmd.type) {
             case CMD_PORTAL: hasPortalCommand = true; portalCommands.push_back(cmd.portal); break;
-            case CMD_SQUARE: case CMD_TEXT: case CMD_LINE_2D: commands2D.push_back(cmd); break;
+            case CMD_SQUARE: case CMD_LINE_2D: commands2D.push_back(cmd); break;
             case CMD_PANORAMA: panoramaCommands.push_back(cmd); break;
             default: commands3D.push_back(cmd); break;
         }
@@ -1165,7 +1162,6 @@ void flushDrawQueue() {
         int totalDynamicTriangles = 0;
         for (auto& cmd : commands3D) {
             if (cmd.type == CMD_3DOBJECT) totalDynamicTriangles += cmd.obj_indices.size() / 3;
-            else if (cmd.type == CMD_PSEUDO3D) totalDynamicTriangles += 2;
         }
         if (totalDynamicTriangles > 0) {
             if (bvhValid) {
@@ -1235,96 +1231,6 @@ void flushDrawQueue() {
                                 int pixel = texIdx * 3 + j;
                                 idxData[pixel*4 + 0] = (float)pixel;
                                 idxData[pixel*4 + 1] = 1.0;
-                                idxData[pixel*4 + 2] = (float)slot;
-                                idxData[pixel*4 + 3] = 0.0;
-                            }
-                            texIdx++;
-                        }
-                    } else if (cmd.type == CMD_PSEUDO3D && cmd.entity) {
-                        const pseudo_3d_entity* ent = cmd.entity;
-                        float cx = ent->getX(), cy = ent->getY(), cz = ent->getZ();
-                        float camX = cmd.cam_x, camY = cmd.cam_y, camZ = cmd.cam_z;
-                        float dx = camX - cx, dy = camY - cy, dz = camZ - cz;
-                        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-                        if (dist < 0.0001f) continue;
-                        float fx = dx / dist, fy = dy / dist, fz = dz / dist;
-                        float wx = 0, wy = 1, wz = 0;
-                        if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
-                        float rx = wy * fz - wz * fy;
-                        float ry = wz * fx - wx * fz;
-                        float rz = wx * fy - wy * fx;
-                        float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
-                        if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
-                        float ux = fy * rz - fz * ry;
-                        float uy = fz * rx - fx * rz;
-                        float uz = fx * ry - fy * rx;
-                        float ga = ent->g_angle * M_PI / 180.0f;
-                        float va = ent->v_angle * M_PI / 180.0f;
-                        float ra = ent->r_angle * M_PI / 180.0f;
-                        float eu_x = -sinf(ga) * sinf(va);
-                        float eu_y = -cosf(va);
-                        float eu_z = -cosf(ga) * sinf(va);
-                        float fwx = cosf(va) * sinf(ga);
-                        float fwy = -sinf(va);
-                        float fwz = cosf(va) * cosf(ga);
-                        float len_fw = sqrtf(fwx*fwx + fwy*fwy + fwz*fwz);
-                        if (len_fw > 1e-6f) { fwx /= len_fw; fwy /= len_fw; fwz /= len_fw; }
-                        float cos_ra = cosf(ra), sin_ra = sinf(ra);
-                        float rot_eu_x = eu_x * cos_ra + (fwy*eu_z - fwz*eu_y) * sin_ra + fwx*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                        float rot_eu_y = eu_y * cos_ra + (fwz*eu_x - fwx*eu_z) * sin_ra + fwy*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                        float rot_eu_z = eu_z * cos_ra + (fwx*eu_y - fwy*eu_x) * sin_ra + fwz*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                        eu_x = rot_eu_x; eu_y = rot_eu_y; eu_z = rot_eu_z;
-                        float dot_eu = eu_x * fx + eu_y * fy + eu_z * fz;
-                        float pu_x = eu_x - dot_eu * fx;
-                        float pu_y = eu_y - dot_eu * fy;
-                        float pu_z = eu_z - dot_eu * fz;
-                        float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
-                        float roll_raw = (plen < 0.001f) ? 0.0f :
-                            atan2f(-(pu_x*rx + pu_y*ry + pu_z*rz), pu_x*ux + pu_y*uy + pu_z*uz) * 180.0f / M_PI;
-                        int texIdxLocal = ent->getTextureIndex(fx, fy, fz);
-                        float net_angle = roll_raw + 180.0f + (texIdxLocal == 0 ? -180.0f : 0.0f);
-                        float roll_rad = net_angle * M_PI / 180.0f;
-                        const auto& verts = ent->getVertices();
-                        if (verts.size() < 8) continue;
-                        auto rotateLocal = [roll_rad](float lx, float ly) {
-                            float c = cosf(roll_rad), s = sinf(roll_rad);
-                            return std::make_pair(lx * c - ly * s, lx * s + ly * c);
-                        };
-                        auto [rv0x, rv0y] = rotateLocal(verts[0], verts[1]);
-                        auto [rv1x, rv1y] = rotateLocal(verts[2], verts[3]);
-                        auto [rv2x, rv2y] = rotateLocal(verts[4], verts[5]);
-                        auto [rv3x, rv3y] = rotateLocal(verts[6], verts[7]);
-                        glm::vec3 p0(cx + rx*rv0x + ux*rv0y, cy + ry*rv0x + uy*rv0y, cz + rz*rv0x + uz*rv0y);
-                        glm::vec3 p1(cx + rx*rv1x + ux*rv1y, cy + ry*rv1x + uy*rv1y, cz + rz*rv1x + uz*rv1y);
-                        glm::vec3 p2(cx + rx*rv2x + ux*rv2y, cy + ry*rv2x + uy*rv2y, cz + rz*rv2x + uz*rv2y);
-                        glm::vec3 p3(cx + rx*rv3x + ux*rv3y, cy + ry*rv3x + uy*rv3y, cz + rz*rv3x + uz*rv3y);
-                        GLuint texID = ent->getTextureID(texIdxLocal);
-                        int slot = getTextureSlot(texID);
-                        glm::vec3 normal(fx, fy, fz);
-                        glm::vec3 triVerts[6] = { p0, p2, p1, p0, p3, p2 };
-                        glm::vec2 uvsArr[6] = {
-                            glm::vec2(0,1), glm::vec2(1,0), glm::vec2(1,1),
-                            glm::vec2(0,1), glm::vec2(0,0), glm::vec2(1,0)
-                        };
-                        for (int tri = 0; tri < 2; tri++) {
-                            if (texIdx >= combinedTriCount) break;
-                            for (int j = 0; j < 3; j++) {
-                                int idx = tri*3 + j;
-                                int base = texIdx * 9 + j * 3;
-                                posData[base+0] = triVerts[idx].x;
-                                posData[base+1] = triVerts[idx].y;
-                                posData[base+2] = triVerts[idx].z;
-                                normData[base+0] = normal.x;
-                                normData[base+1] = normal.y;
-                                normData[base+2] = normal.z;
-                                int colBase = texIdx * 12 + j * 4;
-                                colData[colBase+0] = 1.0f; colData[colBase+1] = 1.0f; colData[colBase+2] = 1.0f; colData[colBase+3] = 1.0f;
-                                int uvBase = texIdx * 6 + j * 2;
-                                uvData[uvBase+0] = uvsArr[idx].x;
-                                uvData[uvBase+1] = uvsArr[idx].y;
-                                int pixel = texIdx * 3 + j;
-                                idxData[pixel*4 + 0] = (float)pixel;
-                                idxData[pixel*4 + 1] = 0.0;
                                 idxData[pixel*4 + 2] = (float)slot;
                                 idxData[pixel*4 + 3] = 0.0;
                             }
@@ -1455,96 +1361,6 @@ void flushDrawQueue() {
                                 int pixel = texIdx * 3 + j;
                                 idxData[pixel*4 + 0] = (float)pixel;
                                 idxData[pixel*4 + 1] = 1.0;
-                                idxData[pixel*4 + 2] = (float)slot;
-                                idxData[pixel*4 + 3] = 0.0;
-                            }
-                            texIdx++;
-                        }
-                    } else if (cmd.type == CMD_PSEUDO3D && cmd.entity) {
-                        const pseudo_3d_entity* ent = cmd.entity;
-                        float cx = ent->getX(), cy = ent->getY(), cz = ent->getZ();
-                        float camX = cmd.cam_x, camY = cmd.cam_y, camZ = cmd.cam_z;
-                        float dx = camX - cx, dy = camY - cy, dz = camZ - cz;
-                        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
-                        if (dist < 0.0001f) continue;
-                        float fx = dx / dist, fy = dy / dist, fz = dz / dist;
-                        float wx = 0, wy = 1, wz = 0;
-                        if (fabsf(fy) > 0.999f) { wx = 0; wy = 0; wz = 1; }
-                        float rx = wy * fz - wz * fy;
-                        float ry = wz * fx - wx * fz;
-                        float rz = wx * fy - wy * fx;
-                        float rlen = sqrtf(rx*rx + ry*ry + rz*rz);
-                        if (rlen > 1e-4f) { rx /= rlen; ry /= rlen; rz /= rlen; }
-                        float ux = fy * rz - fz * ry;
-                        float uy = fz * rx - fx * rz;
-                        float uz = fx * ry - fy * rx;
-                        float ga = ent->g_angle * M_PI / 180.0f;
-                        float va = ent->v_angle * M_PI / 180.0f;
-                        float ra = ent->r_angle * M_PI / 180.0f;
-                        float eu_x = -sinf(ga) * sinf(va);
-                        float eu_y = -cosf(va);
-                        float eu_z = -cosf(ga) * sinf(va);
-                        float fwx = cosf(va) * sinf(ga);
-                        float fwy = -sinf(va);
-                        float fwz = cosf(va) * cosf(ga);
-                        float len_fw = sqrtf(fwx*fwx + fwy*fwy + fwz*fwz);
-                        if (len_fw > 1e-6f) { fwx /= len_fw; fwy /= len_fw; fwz /= len_fw; }
-                        float cos_ra = cosf(ra), sin_ra = sinf(ra);
-                        float rot_eu_x = eu_x * cos_ra + (fwy*eu_z - fwz*eu_y) * sin_ra + fwx*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                        float rot_eu_y = eu_y * cos_ra + (fwz*eu_x - fwx*eu_z) * sin_ra + fwy*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                        float rot_eu_z = eu_z * cos_ra + (fwx*eu_y - fwy*eu_x) * sin_ra + fwz*(fwx*eu_x + fwy*eu_y + fwz*eu_z)*(1-cos_ra);
-                        eu_x = rot_eu_x; eu_y = rot_eu_y; eu_z = rot_eu_z;
-                        float dot_eu = eu_x * fx + eu_y * fy + eu_z * fz;
-                        float pu_x = eu_x - dot_eu * fx;
-                        float pu_y = eu_y - dot_eu * fy;
-                        float pu_z = eu_z - dot_eu * fz;
-                        float plen = sqrtf(pu_x*pu_x + pu_y*pu_y + pu_z*pu_z);
-                        float roll_raw = (plen < 0.001f) ? 0.0f :
-                            atan2f(-(pu_x*rx + pu_y*ry + pu_z*rz), pu_x*ux + pu_y*uy + pu_z*uz) * 180.0f / M_PI;
-                        int texIdxLocal = ent->getTextureIndex(fx, fy, fz);
-                        float net_angle = roll_raw + 180.0f + (texIdxLocal == 0 ? -180.0f : 0.0f);
-                        float roll_rad = net_angle * M_PI / 180.0f;
-                        const auto& verts = ent->getVertices();
-                        if (verts.size() < 8) continue;
-                        auto rotateLocal = [roll_rad](float lx, float ly) {
-                            float c = cosf(roll_rad), s = sinf(roll_rad);
-                            return std::make_pair(lx * c - ly * s, lx * s + ly * c);
-                        };
-                        auto [rv0x, rv0y] = rotateLocal(verts[0], verts[1]);
-                        auto [rv1x, rv1y] = rotateLocal(verts[2], verts[3]);
-                        auto [rv2x, rv2y] = rotateLocal(verts[4], verts[5]);
-                        auto [rv3x, rv3y] = rotateLocal(verts[6], verts[7]);
-                        glm::vec3 p0(cx + rx*rv0x + ux*rv0y, cy + ry*rv0x + uy*rv0y, cz + rz*rv0x + uz*rv0y);
-                        glm::vec3 p1(cx + rx*rv1x + ux*rv1y, cy + ry*rv1x + uy*rv1y, cz + rz*rv1x + uz*rv1y);
-                        glm::vec3 p2(cx + rx*rv2x + ux*rv2y, cy + ry*rv2x + uy*rv2y, cz + rz*rv2x + uz*rv2y);
-                        glm::vec3 p3(cx + rx*rv3x + ux*rv3y, cy + ry*rv3x + uy*rv3y, cz + rz*rv3x + uz*rv3y);
-                        GLuint texID = ent->getTextureID(texIdxLocal);
-                        int slot = getTextureSlot(texID);
-                        glm::vec3 normal(fx, fy, fz);
-                        glm::vec3 triVerts[6] = { p0, p2, p1, p0, p3, p2 };
-                        glm::vec2 uvsArr[6] = {
-                            glm::vec2(0,1), glm::vec2(1,0), glm::vec2(1,1),
-                            glm::vec2(0,1), glm::vec2(0,0), glm::vec2(1,0)
-                        };
-                        for (int tri = 0; tri < 2; tri++) {
-                            if (texIdx >= totalDynamicTriangles) break;
-                            for (int j = 0; j < 3; j++) {
-                                int idx = tri*3 + j;
-                                int base = texIdx * 9 + j * 3;
-                                posData[base+0] = triVerts[idx].x;
-                                posData[base+1] = triVerts[idx].y;
-                                posData[base+2] = triVerts[idx].z;
-                                normData[base+0] = normal.x;
-                                normData[base+1] = normal.y;
-                                normData[base+2] = normal.z;
-                                int colBase = texIdx * 12 + j * 4;
-                                colData[colBase+0] = 1.0f; colData[colBase+1] = 1.0f; colData[colBase+2] = 1.0f; colData[colBase+3] = 1.0f;
-                                int uvBase = texIdx * 6 + j * 2;
-                                uvData[uvBase+0] = uvsArr[idx].x;
-                                uvData[uvBase+1] = uvsArr[idx].y;
-                                int pixel = texIdx * 3 + j;
-                                idxData[pixel*4 + 0] = (float)pixel;
-                                idxData[pixel*4 + 1] = 0.0;
                                 idxData[pixel*4 + 2] = (float)slot;
                                 idxData[pixel*4 + 3] = 0.0;
                             }
@@ -1861,9 +1677,9 @@ void flushDrawQueue() {
             glBindVertexArray(blitVAO);
             glBindBuffer(GL_ARRAY_BUFFER, blitVBO);
             glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-            glEnableVertexAttribArray(0); // позиция
+            glEnableVertexAttribArray(0);
             glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-            glEnableVertexAttribArray(8); // текстурные координаты (aTexCoord)
+            glEnableVertexAttribArray(8);
             glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
             glBindVertexArray(0);
         }
@@ -1877,26 +1693,9 @@ void flushDrawQueue() {
 
     glEnable(GL_BLEND);
     if (!commands2D.empty()) {
-        static GLuint sq_vao = 0, sq_vbo = 0, sq_ibo = 0;
-        static bool sq_init = false;
-        if (!sq_init) {
-            sq_init = true;
-            glGenVertexArrays(1, &sq_vao); glGenBuffers(1, &sq_vbo); glGenBuffers(1, &sq_ibo);
-            glBindVertexArray(sq_vao);
-            glBindBuffer(GL_ARRAY_BUFFER, sq_vbo);
-            glBufferData(GL_ARRAY_BUFFER, 4 * 8 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-            glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(2 * sizeof(float)));
-            glEnableVertexAttribArray(8);
-            glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-            GLuint indices[6] = {0, 1, 2, 0, 2, 3};
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, sq_ibo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-            glBindVertexArray(0);
-            ensureWhiteTex();
-        }
+        initSquareVAO();
+        initLineVAO();
+        ensureWhiteTex();
         glm::mat4 prevProj2d = g_projectionMatrix;
         glm::mat4 prevModel2d = g_modelViewMatrix;
         g_projectionMatrix = glm::ortho(0.0f, (float)window_w, 0.0f, (float)window_h, -1.0f, 1.0f);
@@ -1947,8 +1746,6 @@ void flushDrawQueue() {
                     glBindVertexArray(0);
                     break;
                 }
-                default:
-                    break;
             }
         }
         g_projectionMatrix = prevProj2d;

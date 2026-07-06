@@ -14,6 +14,11 @@ extern bool lineInit;
 
 void initLineVAO();
 
+extern GLuint sq_vao, sq_vbo, sq_ibo;
+extern bool sq_init;
+
+void initSquareVAO();
+
 void draw_line_2d(float x, float y, float x1, float y1, float x2, float y2, float r, float g, float b, float a, float thickness);
 void square(float local_size, float x, float y, double r, double g, double b,
             float rotate, const float* vertices, const char* tex=nullptr, float alpha = 1.0f);

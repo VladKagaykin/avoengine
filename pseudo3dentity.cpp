@@ -1,5 +1,7 @@
 #include "pseudo3dentity.h"
 #include "avoengine.h"
+#include "3d_primitives.h"
+
 #include <cmath>
 
 std::vector<pseudo_3d_entity*> allEntities;
@@ -103,12 +105,67 @@ int pseudo_3d_entity::getTextureIndex(float dir_x, float dir_y, float dir_z) con
 
 // рисуем сущность
 void pseudo_3d_entity::draw(float cam_x, float cam_y, float cam_z) const {
-    DrawCommand cmd;
-    cmd.type = CMD_PSEUDO3D;
-    cmd.entity = this;
-    cmd.cam_x = cam_x; cmd.cam_y = cam_y; cmd.cam_z = cam_z;
-    cmd.shaderID = currentShaderProg;
-    drawQueue.push_back(cmd);
+    float dx = cam_x - x;
+    float dy = cam_y - y;
+    float dz = cam_z - z;
+    float len = sqrtf(dx*dx + dy*dy + dz*dz);
+    if (len < 1e-6f) return;
+    dx /= len; dy /= len; dz /= len;
+
+    int texIdx = getTextureIndex(dx, dy, dz);
+    const char* texFile = nullptr;
+    if (texIdx >= 0 && texIdx < (int)textureFiles.size())
+        texFile = textureFiles[texIdx].c_str();
+
+    float ga = g_angle * M_PI / 180.0f;
+    float va = v_angle * M_PI / 180.0f;
+    float ra = r_angle * M_PI / 180.0f;
+    float cg = cosf(ga), sg = sinf(ga);
+    float cv = cosf(va), sv = sinf(va);
+    float cr = cosf(ra), sr = sinf(ra);
+
+    float upx = -sr*cg + cr*sv*sg;
+    float upy =  cr*cv;
+    float upz =  sr*sg + cr*sv*cg;
+
+    float dot = upx*dx + upy*dy + upz*dz;
+    float ux = upx - dot*dx;
+    float uy = upy - dot*dy;
+    float uz = upz - dot*dz;
+    float ulen = sqrtf(ux*ux + uy*uy + uz*uz);
+    if (ulen < 1e-6f) {
+        ux = (fabsf(dy) > fabsf(dz) ? 1.0f : 0.0f);
+        uy = (fabsf(dx) > fabsf(dz) ? 1.0f : 0.0f);
+        uz = (fabsf(dx) > fabsf(dy) ? 1.0f : 0.0f);
+        dot = ux*dx + uy*dy + uz*dz;
+        ux -= dot*dx; uy -= dot*dy; uz -= dot*dz;
+        ulen = sqrtf(ux*ux + uy*uy + uz*uz);
+    }
+    ux /= ulen; uy /= ulen; uz /= ulen;
+
+    float rx = uy*dz - uz*dy;
+    float ry = uz*dx - ux*dz;
+    float rz = ux*dy - uy*dx;
+
+    std::vector<float> origWorld(12);
+    for (int i = 0; i < 4; ++i) {
+        float vx = vertices_[2*i];
+        float vy = vertices_[2*i+1];
+        origWorld[3*i]   = x + vx * rx + vy * ux;
+        origWorld[3*i+1] = y + vx * ry + vy * uy;
+        origWorld[3*i+2] = z + vx * rz + vy * uz;
+    }
+
+    std::vector<float> worldVerts(12);
+    int order[4] = {3, 2, 1, 0};
+    for (int i = 0; i < 4; ++i) {
+        int src = order[i];
+        worldVerts[3*i]   = origWorld[3*src];
+        worldVerts[3*i+1] = origWorld[3*src+1];
+        worldVerts[3*i+2] = origWorld[3*src+2];
+    }
+
+    plane(0.0f, 0.0f, 0.0f, 1.0, 1.0, 1.0, texFile, worldVerts, 0.0f, 0.0f, 0.0f);
 }
 
 void pseudo_3d_entity::computeRadius() {

@@ -161,7 +161,7 @@ void draw3DObject(float cx, float cy, float cz,
 
 // плоскость
 void plane(float cx, float cy, float cz, double r, double g, double b,
-           const char* tex, const std::vector<float>& vertices) {
+           const char* tex, const std::vector<float>& vertices,float yaw, float pitch , float roll) {
     if (vertices.size() != 12) return;
 
     float ax = vertices[3] - vertices[0];
@@ -186,5 +186,5 @@ void plane(float cx, float cy, float cz, double r, double g, double b,
         nx, ny, nz
     };
 
-    draw3DObject(cx, cy, cz, r, g, b, tex, vertices, indices, texcoords, normals);
+    draw3DObject(cx, cy, cz, r, g, b, tex, vertices, indices, texcoords, normals, yaw, pitch , roll);
 }
