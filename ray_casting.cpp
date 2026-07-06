@@ -152,11 +152,10 @@ float rayTriangleIntersect(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2,
     }
     return -1.0;
 }
-bool intersectAABB(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax,
+bool intersectAABB(vec3 ro, vec3 invRd, vec3 bmin, vec3 bmax,
                    out float tmin, out float tmax) {
-    vec3 invR = 1.0 / rd;
-    vec3 t0 = (bmin - ro) * invR;
-    vec3 t1 = (bmax - ro) * invR;
+    vec3 t0 = (bmin - ro) * invRd;
+    vec3 t1 = (bmax - ro) * invRd;
     vec3 tmin3 = min(t0, t1);
     vec3 tmax3 = max(t0, t1);
     tmin = max(max(tmin3.x, tmin3.y), tmin3.z);
@@ -187,6 +186,7 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
     hitT = maxT;
     isPortalHit = false;
     portalIdx = -1;
+    vec3 invRd = 1.0 / rd;
     float invTriW = 1.0 / float(triTexWidth);
     float invTriH = 1.0 / float(triTexHeight);
     float triW = float(triTexWidth);
@@ -196,7 +196,7 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
         int left, right, firstTri, triCountNode, escape;
         fetchBVHNode(nodeIdx, bmin, left, bmax, right, firstTri, triCountNode, escape);
         float tminAABB, tmaxAABB;
-        if (!intersectAABB(ro, rd, bmin, bmax, tminAABB, tmaxAABB) || tminAABB > maxT) {
+        if (!intersectAABB(ro, invRd, bmin, bmax, tminAABB, tmaxAABB) || tminAABB > maxT) {
             nodeIdx = escape;
             continue;
         }
@@ -495,15 +495,12 @@ void main() {
                     litCol *= hitCol;
                     float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
                     litCol = mix(fogColor, litCol, fogFactor);
-
                     accumulatedColor = mix(accumulatedColor, litCol, hitAlpha * transparency);
                     transparency *= (1.0 - hitAlpha);
-
                     if (transparency < 0.001) {
                         continueRay = false;
                         break;
                     }
-
                     ro = hitPos + rd * 0.001;
                     totalDist = fogCoord;
                     bounce++;
@@ -536,7 +533,7 @@ void main() {
     }
     vec3 finalColor = texColor.rgb * vColor.rgb * totalLight;
     float fogCoord = length(vP);
-    float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0, 1.0);
+    float fogFactor = clamp((fogEnd - fogCoord) * invFogRange, 0.0f, 1.0);
     finalColor = mix(fogColor, finalColor, fogFactor);
     gl_FragColor = vec4(finalColor, texColor.a * vColor.a);
 }
@@ -680,21 +677,106 @@ int buildBVHRecursive(std::vector<BVHNode>& nodes,
     int idx = (int)nodes.size();
     nodes.push_back(node);
 
-    if (node.triCount <= 4 || depth > 20) return idx;
+    const int maxLeafTriangles = 12;
+    if (node.triCount <= maxLeafTriangles || depth > 25) return idx;
 
-    int axis = 0;
-    float ext = node.bmax[0] - node.bmin[0];
-    if (node.bmax[1] - node.bmin[1] > ext) { axis = 1; ext = node.bmax[1] - node.bmin[1]; }
-    if (node.bmax[2] - node.bmin[2] > ext) { axis = 2; }
+    std::vector<uint32_t> morton(triIndices.size());
+    for (int i = start; i < end; ++i) {
+        const float* c = triangles[triIndices[i]].centroid;
+        float x = (c[0] - node.bmin[0]) / (node.bmax[0] - node.bmin[0]);
+        float y = (c[1] - node.bmin[1]) / (node.bmax[1] - node.bmin[1]);
+        float z = (c[2] - node.bmin[2]) / (node.bmax[2] - node.bmin[2]);
+        unsigned int ix = (unsigned int)(x * 1023.0f) & 0x3FF;
+        unsigned int iy = (unsigned int)(y * 1023.0f) & 0x3FF;
+        unsigned int iz = (unsigned int)(z * 1023.0f) & 0x3FF;
+        unsigned int code = 0;
+        for (int bit = 0; bit < 10; ++bit) {
+            code |= ((ix >> bit) & 1) << (3 * bit);
+            code |= ((iy >> bit) & 1) << (3 * bit + 1);
+            code |= ((iz >> bit) & 1) << (3 * bit + 2);
+        }
+        morton[i] = code;
+    }
+    std::sort(triIndices.begin() + start, triIndices.begin() + end,
+        [&](int a, int b) { return morton[a] < morton[b]; });
 
-    int mid = start + (end - start) / 2;
-    std::nth_element(triIndices.begin() + start, triIndices.begin() + mid, triIndices.begin() + end,
-        [&triangles, axis](int a, int b) {
-            return triangles[a].centroid[axis] < triangles[b].centroid[axis];
+    float bestCost = node.triCount * 1.0f;
+    int bestAxis = -1, bestMid = start;
+    const int BINS = 16;
+
+    float rootArea = (node.bmax[0]-node.bmin[0])*(node.bmax[1]-node.bmin[1])*2 +
+                     (node.bmax[1]-node.bmin[1])*(node.bmax[2]-node.bmin[2])*2 +
+                     (node.bmax[2]-node.bmin[2])*(node.bmax[0]-node.bmin[0])*2;
+    float invRootArea = 1.0f / rootArea;
+
+    for (int axis = 0; axis < 3; ++axis) {
+        float binMin = node.bmin[axis];
+        float binMax = node.bmax[axis];
+        if (binMax - binMin < 1e-6f) continue;
+
+        std::vector<int> binCounts(BINS, 0);
+        std::vector<AABB> binAABBs(BINS);
+        float k = BINS / (binMax - binMin);
+        for (int i = start; i < end; ++i) {
+            float coord = triangles[triIndices[i]].centroid[axis];
+            int b = (int)((coord - binMin) * k);
+            b = std::max(0, std::min(BINS-1, b));
+            binCounts[b]++;
+            for (int v = 0; v < 3; ++v) {
+                const float* verts = (v == 0) ? triangles[triIndices[i]].v0 :
+                                     (v == 1) ? triangles[triIndices[i]].v1 :
+                                                triangles[triIndices[i]].v2;
+                binAABBs[b].expand(glm::vec3(verts[0], verts[1], verts[2]));
+            }
+        }
+
+        std::vector<int> leftCount(BINS-1, 0);
+        std::vector<AABB> leftAABBs(BINS-1);
+        int cnt = 0;
+        AABB aabb;
+        for (int b = 0; b < BINS-1; ++b) {
+            cnt += binCounts[b];
+            aabb.expand(binAABBs[b]);
+            leftCount[b] = cnt;
+            leftAABBs[b] = aabb;
+        }
+
+        std::vector<int> rightCount(BINS-1, 0);
+        std::vector<AABB> rightAABBs(BINS-1);
+        cnt = 0;
+        aabb = AABB();
+        for (int b = BINS-1; b > 0; --b) {
+            cnt += binCounts[b];
+            aabb.expand(binAABBs[b]);
+            rightCount[b-1] = cnt;
+            rightAABBs[b-1] = aabb;
+        }
+
+        for (int split = 0; split < BINS-1; ++split) {
+            if (leftCount[split] == 0 || rightCount[split] == 0) continue;
+            AABB leftBox = leftAABBs[split];
+            AABB rightBox = rightAABBs[split];
+            glm::vec3 leftExt = leftBox.extents(), rightExt = rightBox.extents();
+            float areaL = leftExt.x*leftExt.y*2 + leftExt.y*leftExt.z*2 + leftExt.z*leftExt.x*2;
+            float areaR = rightExt.x*rightExt.y*2 + rightExt.y*rightExt.z*2 + rightExt.z*rightExt.x*2;
+            float cost = 1.0f + (areaL * leftCount[split] + areaR * rightCount[split]) * invRootArea;
+            if (cost < bestCost) {
+                bestCost = cost;
+                bestAxis = axis;
+                bestMid = start + leftCount[split];
+            }
+        }
+    }
+
+    if (bestAxis == -1) return idx;
+
+    std::nth_element(triIndices.begin() + start, triIndices.begin() + bestMid, triIndices.begin() + end,
+        [&triangles, bestAxis](int a, int b) {
+            return triangles[a].centroid[bestAxis] < triangles[b].centroid[bestAxis];
         });
 
-    int leftIdx = buildBVHRecursive(nodes, triangles, triIndices, start, mid, depth + 1);
-    int rightIdx = buildBVHRecursive(nodes, triangles, triIndices, mid, end, depth + 1);
+    int leftIdx = buildBVHRecursive(nodes, triangles, triIndices, start, bestMid, depth + 1);
+    int rightIdx = buildBVHRecursive(nodes, triangles, triIndices, bestMid, end, depth + 1);
 
     nodes[idx].left = leftIdx;
     nodes[idx].right = rightIdx;

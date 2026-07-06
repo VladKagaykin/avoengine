@@ -127,7 +127,7 @@ struct settings{
     float CAM_STEP_SIZE= 2;
     float SHADOW_STEP_SIZE= 2;
     int MAX_SHADOW_BOUNCES= 2;
-    float RAY_MULTIPLY=0.5;
+    float RAY_MULTIPLY=1;
     int TEXT_SAMPLE=4;
     int TICK_SPEED=50000;
 };
