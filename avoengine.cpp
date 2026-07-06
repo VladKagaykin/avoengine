@@ -8,6 +8,7 @@
 #include "shaders.h"
 #include "textures.h"
 #include "warp.h"
+#include "baking_scene.h"
 
 // #define MINIAUDIO_IMPLEMENTATION
 // #include "src/miniaudio.h"
@@ -1186,19 +1187,6 @@ GLuint createBVHTexture(const std::vector<float>& packedData, int nodeCount) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 4, nodeCount, 0, GL_RGBA, GL_FLOAT, packedData.data());
     return tex;
-}
-
-bool is_scene_changed = 0;
-Function current_scene = nullptr;
-
-void fixed_scene(Function scene){
-    current_scene=scene;
-    is_scene_changed=1;
-}
-
-void clean_scene(){
-    current_scene=nullptr;
-    is_scene_changed=1;
 }
 
 void flushDrawQueue() {
