@@ -15,12 +15,6 @@
 
 struct GLFWwindow;
 
-extern int tick;
-extern const int max_tick;
-extern int absolute_tick;
-
-void init_tick_system();
-void update_ticks();
 void set_icon(const char* path);
 extern bool keys[256];
 extern bool skeys[512];
