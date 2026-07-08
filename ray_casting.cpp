@@ -86,8 +86,6 @@ uniform sampler2D portalTex;
 uniform bool raycast;
 uniform vec3 camPos;
 uniform mat4 invViewProj;
-uniform sampler2D panoramaTex;
-uniform bool hasPanorama;
 uniform sampler2D triTexPos;
 uniform sampler2D triTexNorm;
 uniform sampler2D triTexColor;
@@ -445,12 +443,6 @@ void main() {
                     travelledThisBounce += stepSize;
                 }
                 if (!hit) {
-                    if (hasPanorama) {
-                        float panU = 0.5 + atan(rd.z, rd.x) / TWO_PI;
-                        float panV = 0.5 + asin(rd.y) / PI;
-                        vec3 panColor = texture2D(panoramaTex, vec2(panU, panV)).rgb;
-                        accumulatedColor = mix(accumulatedColor, panColor, transparency);
-                    }
                     continueRay = false;
                     break;
                 }
@@ -1037,14 +1029,12 @@ void flush_RC_DrawQueue() {
     }
     std::vector<DrawCommand> commands2D;
     std::vector<DrawCommand> commands3D;
-    std::vector<DrawCommand> panoramaCommands;
     std::vector<Portal*> portalCommands;
     bool hasPortalCommand = false;
     for (auto& cmd : drawQueue) {
         switch (cmd.type) {
             case CMD_PORTAL: hasPortalCommand = true; portalCommands.push_back(cmd.portal); break;
             case CMD_SQUARE: case CMD_LINE_2D: commands2D.push_back(cmd); break;
-            case CMD_PANORAMA: panoramaCommands.push_back(cmd); break;
             default: commands3D.push_back(cmd); break;
         }
     }
@@ -1093,7 +1083,7 @@ void flush_RC_DrawQueue() {
 
     static GLint loc_raycast = -1, loc_invViewProj = -1, loc_camPos = -1;
     static GLint loc_ambient = -1, loc_fogColor = -1, loc_fogStart = -1, loc_fogEnd = -1;
-    static GLint loc_numLights = -1, loc_panoramaTex = -1, loc_hasPanorama = -1;
+    static GLint loc_numLights = -1;
     static GLint loc_triCount = -1, loc_triTexWidth = -1, loc_triTexHeight = -1;
     static GLint loc_triTexPos = -1, loc_triTexNorm = -1, loc_triTexColor = -1, loc_triTexIndices = -1, loc_triTexUV = -1;
     static GLint loc_portalCount = -1, loc_portalPos = -1, loc_portalNormal = -1, loc_portalD = -1;
@@ -1123,8 +1113,6 @@ void flush_RC_DrawQueue() {
         loc_fogStart = glGetUniformLocation(currentShaderProg, "fogStart");
         loc_fogEnd = glGetUniformLocation(currentShaderProg, "fogEnd");
         loc_numLights = glGetUniformLocation(currentShaderProg, "numLights");
-        loc_panoramaTex = glGetUniformLocation(currentShaderProg, "panoramaTex");
-        loc_hasPanorama = glGetUniformLocation(currentShaderProg, "hasPanorama");
         loc_triCount = glGetUniformLocation(currentShaderProg, "triCount");
         loc_triTexWidth = glGetUniformLocation(currentShaderProg, "triTexWidth");
         loc_triTexHeight = glGetUniformLocation(currentShaderProg, "triTexHeight");
@@ -1198,7 +1186,7 @@ void flush_RC_DrawQueue() {
         glViewport(0, 0, window_w, window_h);
     }
 
-    if (bvhValid || !commands3D.empty() || !panoramaCommands.empty()) {
+    if (bvhValid || !commands3D.empty()) {
         std::unordered_map<GLuint, int> textureSlotMap;
         std::vector<GLuint> activeTextures;
         activeTextures.reserve(8);
@@ -1579,14 +1567,6 @@ void flush_RC_DrawQueue() {
             glUniform1i(locTexSlot[i], 7 + i);
         }
         for (int i = activeTextures.size(); i < 8; i++) glUniform1i(locTexSlot[i], 0);
-        if (!panoramaCommands.empty() && sphere_sky.texture != 0) {
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, sphere_sky.texture);
-            glUniform1i(loc_panoramaTex, 1);
-            glUniform1i(loc_hasPanorama, 1);
-        } else {
-            glUniform1i(loc_hasPanorama, 0);
-        }
         std::vector<float> portalPos(Engine_settings.MAX_PORTALS * 3, 0.0f);
         std::vector<float> portalNormal(Engine_settings.MAX_PORTALS * 3, 0.0f);
         std::vector<float> portalD(Engine_settings.MAX_PORTALS, 0.0f);

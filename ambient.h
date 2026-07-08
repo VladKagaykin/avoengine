@@ -1,22 +1,19 @@
 #ifndef AMBIENT
 #define AMBIENT
 
+#include "baking_scene.h"
+
 extern GLuint skyboxVAO, skyboxVBO, skyboxIBO;
 extern int skyboxIndexCount;
 
 extern GLint loc_ambientLight;
 extern GLint loc_fogColor, loc_fogStart , loc_fogEnd;
 
-struct sphere_panorama {
-    bool enabled = false;
-    GLuint texture = 0;
-    std::string path;
-};
-extern sphere_panorama sphere_sky;
-
-void set_panorama(const char* path);
+extern Function panorama;
+ 
+void set_panorama(Function panorama_function);
 void remove_panorama();
-void draw_panorama(float camX, float camY, float camZ);
+void draw_panorama();
 
 struct fog_params {
     bool enabled = false;

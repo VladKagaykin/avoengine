@@ -45,7 +45,6 @@ enum DrawCommandType : int {
     CMD_SQUARE,
     CMD_3DOBJECT,
     CMD_LINE_2D,
-    CMD_PANORAMA,
     CMD_PORTAL
 };
 
@@ -116,7 +115,7 @@ struct settings{
     int MAX_LIGHTS=16;
     int MAX_BOUNCES= 4;
     float MAX_DIST=camera.zfar;
-    int MAX_TEXTURES= 2;
+    int MAX_TEXTURES= 256;
     int MAX_PORTALS= 8;
     int MAX_PORTAL_VERTS= 16;
     float SHADOW_BIAS= 0.001;
@@ -128,8 +127,8 @@ struct settings{
     float RAY_MULTIPLY=1;
     int TEXT_SAMPLE=4;
     int TICK_SPEED=50000;
-    bool DEBUG_GRAPHICS=1;
-    float DEBUG_COLOR[3]={0,0,255}; 
+    bool DEBUG_GRAPHICS=0;
+    float DEBUG_COLOR[3]={0,255,255}; 
 };
 
 extern settings Engine_settings;
