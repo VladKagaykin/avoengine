@@ -124,11 +124,11 @@ struct settings{
     float CAM_STEP_SIZE= 2;
     float SHADOW_STEP_SIZE= 2;
     int MAX_SHADOW_BOUNCES= 2;
-    float RAY_MULTIPLY=1;
+    float RAY_MULTIPLY=0.5;
     int TEXT_SAMPLE=4;
     int TICK_SPEED=50000;
     bool DEBUG_GRAPHICS=0;
-    float DEBUG_COLOR[3]={0,255,255}; 
+    int DEBUG_COLOR[3]={0,255,255}; 
 };
 
 extern settings Engine_settings;

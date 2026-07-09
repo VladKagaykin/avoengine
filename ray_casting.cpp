@@ -91,7 +91,7 @@ uniform sampler2D triTexNorm;
 uniform sampler2D triTexColor;
 uniform sampler2D triTexUV;
 uniform sampler2D triTexIndices;
-uniform sampler2D textures[2];
+uniform sampler2D textures[8];
 uniform int triCount;
 uniform int triTexWidth;
 uniform int triTexHeight;
@@ -231,14 +231,21 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
                     vec4 objColor = texture2D(triTexColor, vec2(p0x, p0y));
                     vec3 col = objColor.rgb;
                     float alpha = objColor.a;
-                    if (texID >= 0 && texID < 2) {
+                    if (texID >= 0 && texID < 8) {
                         vec2 uv0 = texture2D(triTexUV, vec2(p0x, p0y)).rg;
                         vec2 uv1 = texture2D(triTexUV, vec2(p1x, p1y)).rg;
                         vec2 uv2 = texture2D(triTexUV, vec2(p2x, p2y)).rg;
                         vec2 uvCoord = (1.0-u-v)*uv0 + u*uv1 + v*uv2;
                         vec4 texCol;
                         if (texID == 0) texCol = texture2D(textures[0], uvCoord);
-                        else texCol = texture2D(textures[1], uvCoord);
+                        else if (texID == 1) texCol = texture2D(textures[1], uvCoord);
+                        else if (texID == 2) texCol = texture2D(textures[2], uvCoord);
+                        else if (texID == 3) texCol = texture2D(textures[3], uvCoord);
+                        else if (texID == 4) texCol = texture2D(textures[4], uvCoord);
+                        else if (texID == 5) texCol = texture2D(textures[5], uvCoord);
+                        else if (texID == 6) texCol = texture2D(textures[6], uvCoord);
+                        else if (texID == 7) texCol = texture2D(textures[7], uvCoord);
+                        else texCol = vec4(1.0, 0.0, 1.0, 1.0);
                         alpha *= texCol.a;
                         col = texCol.rgb * col;
                     }
