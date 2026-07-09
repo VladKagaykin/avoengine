@@ -128,7 +128,10 @@ struct settings{
     int TEXT_SAMPLE=4;
     int TICK_SPEED=50000;
     bool DEBUG_GRAPHICS=0;
-    int DEBUG_COLOR[3]={0,255,255}; 
+    int DEBUG_COLOR[3]={0,255,255};
+    int ATLAS_SIDE=4096;
+    int TEXTURE_SIDE=256;
+    int ATLAS_PADDING=5; 
 };
 
 extern settings Engine_settings;
