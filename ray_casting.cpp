@@ -339,15 +339,6 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform, int sam
         for (int i = 0; i < int(ceil(length(lights[lightIdx].diffuse) * 100.0 / shadowStepSize)); i++) {
             if (remaining <= 0.0) break;
             float step = min(shadowStepSize, remaining);
-            if (warpPlaneEnabled) {
-                vec3 localPos = ro - warpPlaneOrigin;
-                float wu = dot(localPos, normalize(warpPlaneAxisU)) / length(warpPlaneAxisU) + 0.5;
-                float wv = dot(localPos, normalize(warpPlaneAxisV)) / length(warpPlaneAxisV) + 0.5;
-                if (wu >= 0.0 && wu <= 1.0 && wv >= 0.0 && wv <= 1.0) {
-                    vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(wu, wv)).rgb;
-                    rd = normalize(rd + disp * shadowWarpStrength);
-                }
-            }
             float tHit;
             vec3 segPos, segNorm, segCol;
             float hitAlpha;
@@ -745,7 +736,7 @@ int buildBVHRecursive(std::vector<BVHNode>& nodes,
     int idx = (int)nodes.size();
     nodes.push_back(node);
 
-    const int maxLeafTriangles = 12;
+    const int maxLeafTriangles = 8;
     if (node.triCount <= maxLeafTriangles || depth > 25) return idx;
 
     std::vector<uint32_t> morton(triIndices.size());
