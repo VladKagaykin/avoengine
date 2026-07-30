@@ -119,10 +119,10 @@ struct settings{
     int MAX_PORTALS= 8;
     int MAX_PORTAL_VERTS= 16;
     float SHADOW_BIAS= 0.001;
-    float CAM_WARP_STRENGTH= 0.02;
-    float SHADOW_WARP_STRENGTH= 0.02;
-    float CAM_STEP_SIZE= 0.2;
-    float SHADOW_STEP_SIZE= 0.2;
+    float CAM_WARP_STRENGTH= 0.01;
+    float SHADOW_WARP_STRENGTH= 0.01;
+    float CAM_STEP_SIZE= 0.1;
+    float SHADOW_STEP_SIZE= 0.1;
     int MAX_SHADOW_BOUNCES= 2;
     float RAY_MULTIPLY=1;
     int TEXT_SAMPLE=4;
@@ -132,6 +132,7 @@ struct settings{
     int ATLAS_SIDE=4096;
     int TEXTURE_SIDE=256;
     int ATLAS_PADDING=5; 
+    int SDF_RESOLUTION=512;
 };
 
 extern settings Engine_settings;

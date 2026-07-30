@@ -18,6 +18,7 @@
 #include <mutex>
 #include <algorithm>
 #include <cstring>
+#include <ctime>
 #include <SOIL/SOIL.h>
 
 GLuint default_RC_Shader = 0;
@@ -134,7 +135,7 @@ float sdfSample(vec3 worldPos) {
     return texture3D(sdfVolume, texCoord).r;
 }
 vec3 sdfGradient(vec3 worldPos) {
-    float eps = sdfEpsilon * 2.0;
+    float eps = sdfEpsilon * 0.5;
     float dx = sdfSample(worldPos + vec3(eps,0,0)) - sdfSample(worldPos - vec3(eps,0,0));
     float dy = sdfSample(worldPos + vec3(0,eps,0)) - sdfSample(worldPos - vec3(0,eps,0));
     float dz = sdfSample(worldPos + vec3(0,0,eps)) - sdfSample(worldPos - vec3(0,0,eps));
@@ -154,6 +155,22 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
         vec3 p = ro + rd * t;
         float d = sdfSample(p);
         if (d < sdfEpsilon) {
+            float refinedT = t;
+            for (int refine = 0; refine < 4; refine++) {
+                refinedT = t - d;
+                if (refinedT < 0.0) break;
+                vec3 refinedP = ro + rd * refinedT;
+                float refinedD = sdfSample(refinedP);
+                if (abs(refinedD) < sdfEpsilon * 0.01) {
+                    t = refinedT;
+                    p = refinedP;
+                    d = refinedD;
+                    break;
+                }
+                t = refinedT;
+                p = refinedP;
+                d = refinedD;
+            }
             surfT = t;
             surfPos = p;
             surfNorm = sdfGradient(p);
@@ -540,7 +557,6 @@ static GLuint sdfTex3D = 0;
 static GLuint sdfColorTex3D = 0;
 static GLuint sdfUVTex3D = 0;
 static GLuint sdfAtlasTex3D = 0;
-static int sdfRes = 128;
 static glm::vec3 sdfBBoxMin, sdfBBoxMax;
 static bool sdfNeedsUpdate = true;
 static std::vector<float> globalPosData;
@@ -548,6 +564,107 @@ static std::vector<float> globalColData;
 static std::vector<float> globalUVData;
 static std::vector<float> globalIdxData;
 static int globalTriCount = 0;
+
+static std::string makeSDFComputeShaderSource() {
+    std::string s = R"(
+#version 430
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(std430, binding = 0) buffer TriPositions { float pos[]; };
+layout(std430, binding = 1) buffer TriColors { float col[]; };
+layout(std430, binding = 2) buffer TriUVs { float uv[]; };
+layout(std430, binding = 3) buffer TriIndices { float idx[]; };
+
+layout(r32f, binding = 4) uniform writeonly image3D distTex;
+layout(rgba8, binding = 5) uniform writeonly image3D colorTex;
+layout(rg32f, binding = 6) uniform writeonly image3D uvTex;
+layout(r32f, binding = 7) uniform writeonly image3D atlasTex;
+
+uniform vec3 bboxMin;
+uniform vec3 bboxMax;
+uniform int triCount;
+
+float pointTriangleDistance(vec3 p, vec3 a, vec3 b, vec3 c) {
+    vec3 ab = b - a;
+    vec3 ac = c - a;
+    vec3 ap = p - a;
+    float d1 = dot(ab, ap);
+    float d2 = dot(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) return length(ap);
+    vec3 bp = p - b;
+    float d3 = dot(ab, bp);
+    float d4 = dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) return length(bp);
+    vec3 cp = p - c;
+    float d5 = dot(ab, cp);
+    float d6 = dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) return length(cp);
+    float vc = d1*d4 - d3*d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) return length(ap - ab * (d1 / dot(ab,ab)));
+    float vb = d5*d2 - d1*d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) return length(ap - ac * (d2 / dot(ac,ac)));
+    float va = d3*d6 - d5*d4;
+    if (va <= 0.0 && (d4-d3) >= 0.0 && (d5-d6) >= 0.0) return length(bp - (c-b) * ((d4-d3)/dot(c-b,c-b)));
+    vec3 n = cross(ab, ac);
+    return abs(dot(n, ap)) / length(n);
+}
+
+void main() {
+    ivec3 gid = ivec3(gl_GlobalInvocationID.xyz);
+    if (gid.x >= )" + std::to_string(Engine_settings.SDF_RESOLUTION) + R"( || gid.y >= )" + std::to_string(Engine_settings.SDF_RESOLUTION) + R"( || gid.z >= )" + std::to_string(Engine_settings.SDF_RESOLUTION) + R"() return;
+    vec3 size = bboxMax - bboxMin;
+    vec3 voxelSize = size / )" + std::to_string(Engine_settings.SDF_RESOLUTION) + R"(.0;
+    vec3 p = bboxMin + (vec3(gid) + 0.5) * voxelSize;
+    float minDist = 1e6;
+    int bestTri = -1;
+    for (int i = 0; i < triCount; i++) {
+        vec3 a = vec3(pos[i*9], pos[i*9+1], pos[i*9+2]);
+        vec3 b = vec3(pos[i*9+3], pos[i*9+4], pos[i*9+5]);
+        vec3 c = vec3(pos[i*9+6], pos[i*9+7], pos[i*9+8]);
+        float dist = pointTriangleDistance(p, a, b, c);
+        if (dist < minDist) {
+            minDist = dist;
+            bestTri = i;
+        }
+    }
+    imageStore(distTex, gid, vec4(minDist, 0, 0, 0));
+    if (bestTri >= 0) {
+        vec4 colVal = vec4(col[bestTri*12], col[bestTri*12+1], col[bestTri*12+2], col[bestTri*12+3]);
+        imageStore(colorTex, gid, colVal);
+        vec3 a = vec3(pos[bestTri*9], pos[bestTri*9+1], pos[bestTri*9+2]);
+        vec3 b = vec3(pos[bestTri*9+3], pos[bestTri*9+4], pos[bestTri*9+5]);
+        vec3 c = vec3(pos[bestTri*9+6], pos[bestTri*9+7], pos[bestTri*9+8]);
+        vec3 bary;
+        {
+            vec3 ab = b - a;
+            vec3 ac = c - a;
+            vec3 ap = p - a;
+            float d00 = dot(ab, ab);
+            float d01 = dot(ab, ac);
+            float d11 = dot(ac, ac);
+            float d20 = dot(ap, ab);
+            float d21 = dot(ap, ac);
+            float denom = d00 * d11 - d01 * d01;
+            if (denom > 1e-8) {
+                bary.y = (d11 * d20 - d01 * d21) / denom;
+                bary.z = (d00 * d21 - d01 * d20) / denom;
+                bary.x = 1.0 - bary.y - bary.z;
+            } else bary = vec3(1.0/3.0);
+        }
+        float u = bary.x * uv[bestTri*6] + bary.y * uv[bestTri*6+2] + bary.z * uv[bestTri*6+4];
+        float v = bary.x * uv[bestTri*6+1] + bary.y * uv[bestTri*6+3] + bary.z * uv[bestTri*6+5];
+        imageStore(uvTex, gid, vec4(u, v, 0, 0));
+        float atlasIdx = idx[bestTri*12+2];
+        imageStore(atlasTex, gid, vec4(atlasIdx, 0, 0, 0));
+    } else {
+        imageStore(colorTex, gid, vec4(0,0,0,0));
+        imageStore(uvTex, gid, vec4(0,0,0,0));
+        imageStore(atlasTex, gid, vec4(0,0,0,0));
+    }
+}
+)";
+    return s;
+}
 
 void generateSDFTexture() {
     if (sdfTex3D) glDeleteTextures(1, &sdfTex3D);
@@ -562,7 +679,7 @@ void generateSDFTexture() {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, sdfRes, sdfRes, sdfRes, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, 0, GL_RED, GL_FLOAT, nullptr);
 
     glGenTextures(1, &sdfColorTex3D);
     glBindTexture(GL_TEXTURE_3D, sdfColorTex3D);
@@ -571,7 +688,7 @@ void generateSDFTexture() {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA, sdfRes, sdfRes, sdfRes, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
     glGenTextures(1, &sdfUVTex3D);
     glBindTexture(GL_TEXTURE_3D, sdfUVTex3D);
@@ -580,7 +697,7 @@ void generateSDFTexture() {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RG32F, sdfRes, sdfRes, sdfRes, 0, GL_RG, GL_FLOAT, nullptr);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RG32F, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, 0, GL_RG, GL_FLOAT, nullptr);
 
     glGenTextures(1, &sdfAtlasTex3D);
     glBindTexture(GL_TEXTURE_3D, sdfAtlasTex3D);
@@ -589,126 +706,63 @@ void generateSDFTexture() {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, sdfRes, sdfRes, sdfRes, 0, GL_RED, GL_FLOAT, nullptr);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, 0, GL_RED, GL_FLOAT, nullptr);
 
-    std::vector<float> sdfVol(sdfRes * sdfRes * sdfRes, 1e6f);
-    std::vector<unsigned char> colVol(sdfRes * sdfRes * sdfRes * 4, 0);
-    std::vector<float> uvVol(sdfRes * sdfRes * sdfRes * 2, 0.0f);
-    std::vector<float> atlasVol(sdfRes * sdfRes * sdfRes, 0.0f);
+    if (!globalPosData.empty() && globalTriCount > 0) {
+        std::cout << "Baking SDF: resolution = " << Engine_settings.SDF_RESOLUTION << "^3, triangles = " << globalTriCount << std::endl;
+        std::cout << "  BBox min: (" << sdfBBoxMin.x << ", " << sdfBBoxMin.y << ", " << sdfBBoxMin.z << ")" << std::endl;
+        std::cout << "  BBox max: (" << sdfBBoxMax.x << ", " << sdfBBoxMax.y << ", " << sdfBBoxMax.z << ")" << std::endl;
+        glm::vec3 size = sdfBBoxMax - sdfBBoxMin;
+        std::cout << "  Size: (" << size.x << ", " << size.y << ", " << size.z << "), diagonal = " << glm::length(size) << std::endl;
+        clock_t startTime = clock();
 
-    glm::vec3 size = sdfBBoxMax - sdfBBoxMin;
-    glm::vec3 voxelSize = size / (float)sdfRes;
-
-    for (int z = 0; z < sdfRes; ++z) {
-        for (int y = 0; y < sdfRes; ++y) {
-            for (int x = 0; x < sdfRes; ++x) {
-                glm::vec3 voxelCenter = sdfBBoxMin + voxelSize * glm::vec3(x + 0.5f, y + 0.5f, z + 0.5f);
-                float minDist = 1e6f;
-                int bestTri = -1;
-                for (int i = 0; i < globalTriCount; ++i) {
-                    const float* v0 = &globalPosData[i * 9 + 0];
-                    const float* v1 = &globalPosData[i * 9 + 3];
-                    const float* v2 = &globalPosData[i * 9 + 6];
-                    glm::vec3 a(v0[0], v0[1], v0[2]);
-                    glm::vec3 b(v1[0], v1[1], v1[2]);
-                    glm::vec3 c(v2[0], v2[1], v2[2]);
-                    glm::vec3 ab = b - a, ac = c - a, ap = voxelCenter - a;
-                    float d1 = dot(ab, ap), d2 = dot(ac, ap);
-                    if (d1 <= 0.0f && d2 <= 0.0f) {
-                        float dist = glm::length(ap);
-                        if (dist < minDist) { minDist = dist; bestTri = i; }
-                        continue;
-                    }
-                    glm::vec3 bp = voxelCenter - b;
-                    float d3 = dot(ab, bp), d4 = dot(ac, bp);
-                    if (d3 >= 0.0f && d4 <= d3) {
-                        float dist = glm::length(bp);
-                        if (dist < minDist) { minDist = dist; bestTri = i; }
-                        continue;
-                    }
-                    glm::vec3 cp = voxelCenter - c;
-                    float d5 = dot(ab, cp), d6 = dot(ac, cp);
-                    if (d6 >= 0.0f && d5 <= d6) {
-                        float dist = glm::length(cp);
-                        if (dist < minDist) { minDist = dist; bestTri = i; }
-                        continue;
-                    }
-                    float vc = d1*d4 - d3*d2;
-                    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
-                        float dist = glm::length(ap - ab*(d1/dot(ab,ab)));
-                        if (dist < minDist) { minDist = dist; bestTri = i; }
-                        continue;
-                    }
-                    float vb = d5*d2 - d1*d6;
-                    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
-                        float dist = glm::length(ap - ac*(d2/dot(ac,ac)));
-                        if (dist < minDist) { minDist = dist; bestTri = i; }
-                        continue;
-                    }
-                    float va = d3*d6 - d5*d4;
-                    if (va <= 0.0f && (d4-d3) >= 0.0f && (d5-d6) >= 0.0f) {
-                        float dist = glm::length(bp - (c-b)*((d4-d3)/glm::length(c-b)));
-                        if (dist < minDist) { minDist = dist; bestTri = i; }
-                        continue;
-                    }
-                    glm::vec3 n = glm::cross(ab, ac);
-                    float dist = glm::abs(glm::dot(n, ap)) / glm::length(n);
-                    if (dist < minDist) { minDist = dist; bestTri = i; }
-                }
-                int idx = (z * sdfRes * sdfRes + y * sdfRes + x);
-                sdfVol[idx] = minDist;
-                if (bestTri >= 0) {
-                    const float* col = &globalColData[bestTri * 12];
-                    colVol[idx*4+0] = (unsigned char)(glm::clamp(col[0], 0.0f, 1.0f) * 255);
-                    colVol[idx*4+1] = (unsigned char)(glm::clamp(col[1], 0.0f, 1.0f) * 255);
-                    colVol[idx*4+2] = (unsigned char)(glm::clamp(col[2], 0.0f, 1.0f) * 255);
-                    colVol[idx*4+3] = (unsigned char)(glm::clamp(col[3], 0.0f, 1.0f) * 255);
-
-                    const float* v0 = &globalPosData[bestTri * 9 + 0];
-                    const float* v1 = &globalPosData[bestTri * 9 + 3];
-                    const float* v2 = &globalPosData[bestTri * 9 + 6];
-                    glm::vec3 a(v0[0], v0[1], v0[2]);
-                    glm::vec3 b(v1[0], v1[1], v1[2]);
-                    glm::vec3 c(v2[0], v2[1], v2[2]);
-                    glm::vec3 bary = glm::vec3(0.0f);
-                    {
-                        glm::vec3 ab = b - a, ac = c - a, ap = voxelCenter - a;
-                        float d00 = dot(ab, ab);
-                        float d01 = dot(ab, ac);
-                        float d11 = dot(ac, ac);
-                        float d20 = dot(ap, ab);
-                        float d21 = dot(ap, ac);
-                        float denom = d00 * d11 - d01 * d01;
-                        if (denom > 1e-8f) {
-                            bary.y = (d11 * d20 - d01 * d21) / denom;
-                            bary.z = (d00 * d21 - d01 * d20) / denom;
-                            bary.x = 1.0f - bary.y - bary.z;
-                        }
-                    }
-                    const float* uv0 = &globalUVData[bestTri * 6 + 0];
-                    const float* uv1 = &globalUVData[bestTri * 6 + 2];
-                    const float* uv2 = &globalUVData[bestTri * 6 + 4];
-                    float u = bary.x * uv0[0] + bary.y * uv1[0] + bary.z * uv2[0];
-                    float v = bary.x * uv0[1] + bary.y * uv1[1] + bary.z * uv2[1];
-                    uvVol[idx*2+0] = u;
-                    uvVol[idx*2+1] = v;
-
-                    const float* idxArr = &globalIdxData[bestTri * 12];
-                    float atlasIdx = idxArr[2];
-                    atlasVol[idx] = atlasIdx;
-                }
-            }
+        static GLuint computeProg = 0;
+        static GLuint posSSBO = 0, colSSBO = 0, uvSSBO = 0, idxSSBO = 0;
+        if (!computeProg) {
+            std::string src = makeSDFComputeShaderSource();
+            const char* srcPtr = src.c_str();
+            GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
+            glShaderSource(cs, 1, &srcPtr, nullptr);
+            glCompileShader(cs);
+            computeProg = glCreateProgram();
+            glAttachShader(computeProg, cs);
+            glLinkProgram(computeProg);
+            glDeleteShader(cs);
+            glGenBuffers(1, &posSSBO);
+            glGenBuffers(1, &colSSBO);
+            glGenBuffers(1, &uvSSBO);
+            glGenBuffers(1, &idxSSBO);
         }
-    }
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, posSSBO);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, globalPosData.size() * sizeof(float), globalPosData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, colSSBO);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, globalColData.size() * sizeof(float), globalColData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, uvSSBO);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, globalUVData.size() * sizeof(float), globalUVData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, idxSSBO);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, globalIdxData.size() * sizeof(float), globalIdxData.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    glBindTexture(GL_TEXTURE_3D, sdfTex3D);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, sdfRes, sdfRes, sdfRes, GL_RED, GL_FLOAT, sdfVol.data());
-    glBindTexture(GL_TEXTURE_3D, sdfColorTex3D);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, sdfRes, sdfRes, sdfRes, GL_RGBA, GL_UNSIGNED_BYTE, colVol.data());
-    glBindTexture(GL_TEXTURE_3D, sdfUVTex3D);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, sdfRes, sdfRes, sdfRes, GL_RG, GL_FLOAT, uvVol.data());
-    glBindTexture(GL_TEXTURE_3D, sdfAtlasTex3D);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, sdfRes, sdfRes, sdfRes, GL_RED, GL_FLOAT, atlasVol.data());
+        glUseProgram(computeProg);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, posSSBO);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, colSSBO);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, uvSSBO);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, idxSSBO);
+        glBindImageTexture(4, sdfTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R32F);
+        glBindImageTexture(5, sdfColorTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glBindImageTexture(6, sdfUVTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RG32F);
+        glBindImageTexture(7, sdfAtlasTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R32F);
+        glUniform3f(glGetUniformLocation(computeProg, "bboxMin"), sdfBBoxMin.x, sdfBBoxMin.y, sdfBBoxMin.z);
+        glUniform3f(glGetUniformLocation(computeProg, "bboxMax"), sdfBBoxMax.x, sdfBBoxMax.y, sdfBBoxMax.z);
+        glUniform1i(glGetUniformLocation(computeProg, "triCount"), globalTriCount);
+        glDispatchCompute(Engine_settings.SDF_RESOLUTION/4, Engine_settings.SDF_RESOLUTION/4, Engine_settings.SDF_RESOLUTION/4);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        glUseProgram(0);
+
+        clock_t endTime = clock();
+        double elapsed = double(endTime - startTime) / CLOCKS_PER_SEC;
+        std::cout << "SDF baking completed in " << elapsed << " seconds." << std::endl;
+    }
 }
 
 int loadTextureToAtlas(const char* filename) {
@@ -1206,7 +1260,8 @@ void flush_RC_DrawQueue() {
         for (int i = g_atlasCount; i < 8; ++i) glUniform1i(locAtlasSlot[i], 0);
         glUniform3fv(loc_sdfBBoxMin, 1, &sdfBBoxMin[0]);
         glUniform3fv(loc_sdfBBoxMax, 1, &sdfBBoxMax[0]);
-        glUniform1f(loc_sdfEpsilon, (sdfBBoxMax.x - sdfBBoxMin.x) / sdfRes * 0.5f);
+        float voxelSize = (sdfBBoxMax.x - sdfBBoxMin.x) / Engine_settings.SDF_RESOLUTION;
+        glUniform1f(loc_sdfEpsilon, voxelSize * 0.25f);
         glUniform1i(loc_sdfMaxSteps, 256);
 
         std::vector<float> portalPos(Engine_settings.MAX_PORTALS * 3, 0.0f);
