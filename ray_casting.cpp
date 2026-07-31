@@ -91,8 +91,7 @@ uniform mat4 invViewProj;
 uniform sampler3D sdfVolume;
 uniform sampler3D sdfColorTex;
 uniform sampler3D sdfUVTex;
-uniform sampler3D sdfAtlasTex;
-uniform sampler2D atlas[8];
+uniform sampler2D u_atlas;
 uniform vec3 sdfBBoxMin;
 uniform vec3 sdfBBoxMax;
 uniform float sdfEpsilon;
@@ -143,14 +142,13 @@ vec3 sdfGradient(vec3 worldPos) {
 }
 bool traceSegment(vec3 ro, vec3 rd, float maxT,
                   out float hitT, out vec3 hitPos, out vec3 hitNormal,
-                  out vec3 hitCol, out float hitAlpha, out int hitTexID,
+                  out vec3 hitCol, out float hitAlpha,
                   out bool isPortalHit, out int portalIdx) {
     float t = 0.0;
     bool surfaceHit = false;
     float surfT = maxT;
     vec3 surfPos, surfNorm, surfCol;
     float surfAlpha;
-    int surfTexID = 0;
     for (int i = 0; i < sdfMaxSteps; i++) {
         vec3 p = ro + rd * t;
         float d = sdfSample(p);
@@ -177,15 +175,9 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
             vec3 texCoord = (p - sdfBBoxMin) / (sdfBBoxMax - sdfBBoxMin);
             vec4 objColor = texture3D(sdfColorTex, texCoord);
             vec2 uv = texture3D(sdfUVTex, texCoord).rg;
-            float atlasIdxVal = texture3D(sdfAtlasTex, texCoord).r;
-            int atlIdx = int(atlasIdxVal);
-            vec4 texCol = vec4(1.0);
-            if (atlIdx >= 0 && atlIdx < 8) {
-                texCol = texture2D(atlas[atlIdx], uv);
-            }
+            vec4 texCol = texture2D(u_atlas, uv);
             surfCol = objColor.rgb * texCol.rgb;
             surfAlpha = objColor.a * texCol.a;
-            surfTexID = atlIdx;
             surfaceHit = true;
             break;
         }
@@ -202,7 +194,6 @@ bool traceSegment(vec3 ro, vec3 rd, float maxT,
         hitNormal = surfNorm;
         hitCol = surfCol;
         hitAlpha = surfAlpha;
-        hitTexID = surfTexID;
         isPortalHit = false;
     }
     for (int p = 0; p < portalCount; p++) {
@@ -276,10 +267,9 @@ float shadowRay(int lightIdx, vec3 hitPos, vec3 N, mat4 portalTransform, int sam
             float tHit;
             vec3 segPos, segNorm, segCol;
             float hitAlpha;
-            int segTex;
             bool isPortalHit;
             int portalIdx;
-            bool segHit = traceSegment(ro, rd, remaining, tHit, segPos, segNorm, segCol, hitAlpha, segTex, isPortalHit, portalIdx);
+            bool segHit = traceSegment(ro, rd, remaining, tHit, segPos, segNorm, segCol, hitAlpha, isPortalHit, portalIdx);
             if (!segHit) break;
             if (isPortalHit) {
                 ro = segPos;
@@ -343,7 +333,6 @@ void main() {
                 float tHit;
                 vec3 hitPos, hitNormal, hitCol;
                 float hitAlpha;
-                int hitTexID;
                 bool isPortalHit;
                 int portalHitIdx;
                 bool segHit = false;
@@ -359,7 +348,7 @@ void main() {
                             vec3 disp = texture2D(warpPlaneDisplacementTex, vec2(u, v)).rgb;
                             rd = normalize(rd + disp * camWarpStrength);
                         }
-                        segHit = traceSegment(ro, rd, stepSize, tHit, hitPos, hitNormal, hitCol, hitAlpha, hitTexID, isPortalHit, portalHitIdx);
+                        segHit = traceSegment(ro, rd, stepSize, tHit, hitPos, hitNormal, hitCol, hitAlpha, isPortalHit, portalHitIdx);
                         if (segHit) {
                             totalDist += travelled + tHit;
                             break;
@@ -368,7 +357,7 @@ void main() {
                         travelled += stepSize;
                     }
                 } else {
-                    segHit = traceSegment(ro, rd, maxDist, tHit, hitPos, hitNormal, hitCol, hitAlpha, hitTexID, isPortalHit, portalHitIdx);
+                    segHit = traceSegment(ro, rd, maxDist, tHit, hitPos, hitNormal, hitCol, hitAlpha, isPortalHit, portalHitIdx);
                     if (segHit) totalDist = tHit;
                 }
                 if (!segHit) {
@@ -467,19 +456,16 @@ void main() {
 )";
 
 struct AtlasTextureInfo {
-    int atlasIndex;
     int tileX, tileY;
     float scaleX, scaleY;
     float offsetX, offsetY;
     int origWidth, origHeight;
 };
 static std::vector<AtlasTextureInfo> g_atlasInfos;
-static GLuint g_atlasTextures[8] = {0};
-static int g_atlasCount = 0;
+static GLuint g_atlasTexture = 0;
 static int g_atlasSide = Engine_settings.ATLAS_SIDE;
 static int g_tileSize = Engine_settings.TEXTURE_SIDE;
 static std::unordered_map<std::string, int> g_textureNameToIndex;
-static std::vector<GLint> locAtlasSlot;
 
 void initDefault_RC_Shader() {
     if (default_RC_Shader == 0) {
@@ -519,11 +505,6 @@ void initDefault_RC_Shader() {
             snprintf(buf, sizeof(buf), "lights[%d].attenuation", i);
             loc_lightAttenuation[i] = glGetUniformLocation(default_RC_Shader, buf);
         }
-        locAtlasSlot.resize(8, -1);
-        for (int i = 0; i < 8; i++) {
-            char name[32]; snprintf(name, sizeof(name), "atlas[%d]", i);
-            locAtlasSlot[i] = glGetUniformLocation(default_RC_Shader, name);
-        }
     }
 }
 
@@ -556,13 +537,11 @@ void main() {
 static GLuint sdfTex3D = 0;
 static GLuint sdfColorTex3D = 0;
 static GLuint sdfUVTex3D = 0;
-static GLuint sdfAtlasTex3D = 0;
 static glm::vec3 sdfBBoxMin, sdfBBoxMax;
 static bool sdfNeedsUpdate = true;
 static std::vector<float> globalPosData;
 static std::vector<float> globalColData;
 static std::vector<float> globalUVData;
-static std::vector<float> globalIdxData;
 static int globalTriCount = 0;
 
 static std::string makeSDFComputeShaderSource() {
@@ -573,12 +552,10 @@ layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 layout(std430, binding = 0) buffer TriPositions { float pos[]; };
 layout(std430, binding = 1) buffer TriColors { float col[]; };
 layout(std430, binding = 2) buffer TriUVs { float uv[]; };
-layout(std430, binding = 3) buffer TriIndices { float idx[]; };
 
-layout(r32f, binding = 4) uniform writeonly image3D distTex;
-layout(rgba8, binding = 5) uniform writeonly image3D colorTex;
-layout(rg32f, binding = 6) uniform writeonly image3D uvTex;
-layout(r32f, binding = 7) uniform writeonly image3D atlasTex;
+layout(r32f, binding = 3) uniform writeonly image3D distTex;
+layout(rgba8, binding = 4) uniform writeonly image3D colorTex;
+layout(rg32f, binding = 5) uniform writeonly image3D uvTex;
 
 uniform vec3 bboxMin;
 uniform vec3 bboxMax;
@@ -629,8 +606,6 @@ void main() {
     }
     imageStore(distTex, gid, vec4(minDist, 0, 0, 0));
     if (bestTri >= 0) {
-        vec4 colVal = vec4(col[bestTri*12], col[bestTri*12+1], col[bestTri*12+2], col[bestTri*12+3]);
-        imageStore(colorTex, gid, colVal);
         vec3 a = vec3(pos[bestTri*9], pos[bestTri*9+1], pos[bestTri*9+2]);
         vec3 b = vec3(pos[bestTri*9+3], pos[bestTri*9+4], pos[bestTri*9+5]);
         vec3 c = vec3(pos[bestTri*9+6], pos[bestTri*9+7], pos[bestTri*9+8]);
@@ -653,13 +628,12 @@ void main() {
         }
         float u = bary.x * uv[bestTri*6] + bary.y * uv[bestTri*6+2] + bary.z * uv[bestTri*6+4];
         float v = bary.x * uv[bestTri*6+1] + bary.y * uv[bestTri*6+3] + bary.z * uv[bestTri*6+5];
+        vec4 objColor = vec4(col[bestTri*12], col[bestTri*12+1], col[bestTri*12+2], col[bestTri*12+3]);
+        imageStore(colorTex, gid, objColor);
         imageStore(uvTex, gid, vec4(u, v, 0, 0));
-        float atlasIdx = idx[bestTri*12+2];
-        imageStore(atlasTex, gid, vec4(atlasIdx, 0, 0, 0));
     } else {
         imageStore(colorTex, gid, vec4(0,0,0,0));
         imageStore(uvTex, gid, vec4(0,0,0,0));
-        imageStore(atlasTex, gid, vec4(0,0,0,0));
     }
 }
 )";
@@ -670,7 +644,6 @@ void generateSDFTexture() {
     if (sdfTex3D) glDeleteTextures(1, &sdfTex3D);
     if (sdfColorTex3D) glDeleteTextures(1, &sdfColorTex3D);
     if (sdfUVTex3D) glDeleteTextures(1, &sdfUVTex3D);
-    if (sdfAtlasTex3D) glDeleteTextures(1, &sdfAtlasTex3D);
 
     glGenTextures(1, &sdfTex3D);
     glBindTexture(GL_TEXTURE_3D, sdfTex3D);
@@ -699,25 +672,12 @@ void generateSDFTexture() {
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
     glTexImage3D(GL_TEXTURE_3D, 0, GL_RG32F, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, 0, GL_RG, GL_FLOAT, nullptr);
 
-    glGenTextures(1, &sdfAtlasTex3D);
-    glBindTexture(GL_TEXTURE_3D, sdfAtlasTex3D);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_R32F, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, Engine_settings.SDF_RESOLUTION, 0, GL_RED, GL_FLOAT, nullptr);
-
     if (!globalPosData.empty() && globalTriCount > 0) {
         std::cout << "Baking SDF: resolution = " << Engine_settings.SDF_RESOLUTION << "^3, triangles = " << globalTriCount << std::endl;
-        std::cout << "  BBox min: (" << sdfBBoxMin.x << ", " << sdfBBoxMin.y << ", " << sdfBBoxMin.z << ")" << std::endl;
-        std::cout << "  BBox max: (" << sdfBBoxMax.x << ", " << sdfBBoxMax.y << ", " << sdfBBoxMax.z << ")" << std::endl;
-        glm::vec3 size = sdfBBoxMax - sdfBBoxMin;
-        std::cout << "  Size: (" << size.x << ", " << size.y << ", " << size.z << "), diagonal = " << glm::length(size) << std::endl;
         clock_t startTime = clock();
 
         static GLuint computeProg = 0;
-        static GLuint posSSBO = 0, colSSBO = 0, uvSSBO = 0, idxSSBO = 0;
+        static GLuint posSSBO = 0, colSSBO = 0, uvSSBO = 0;
         if (!computeProg) {
             std::string src = makeSDFComputeShaderSource();
             const char* srcPtr = src.c_str();
@@ -731,7 +691,6 @@ void generateSDFTexture() {
             glGenBuffers(1, &posSSBO);
             glGenBuffers(1, &colSSBO);
             glGenBuffers(1, &uvSSBO);
-            glGenBuffers(1, &idxSSBO);
         }
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, posSSBO);
         glBufferData(GL_SHADER_STORAGE_BUFFER, globalPosData.size() * sizeof(float), globalPosData.data(), GL_STATIC_DRAW);
@@ -739,19 +698,15 @@ void generateSDFTexture() {
         glBufferData(GL_SHADER_STORAGE_BUFFER, globalColData.size() * sizeof(float), globalColData.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, uvSSBO);
         glBufferData(GL_SHADER_STORAGE_BUFFER, globalUVData.size() * sizeof(float), globalUVData.data(), GL_STATIC_DRAW);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, idxSSBO);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, globalIdxData.size() * sizeof(float), globalIdxData.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
         glUseProgram(computeProg);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, posSSBO);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, colSSBO);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, uvSSBO);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, idxSSBO);
-        glBindImageTexture(4, sdfTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R32F);
-        glBindImageTexture(5, sdfColorTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
-        glBindImageTexture(6, sdfUVTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RG32F);
-        glBindImageTexture(7, sdfAtlasTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R32F);
+        glBindImageTexture(3, sdfTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R32F);
+        glBindImageTexture(4, sdfColorTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
+        glBindImageTexture(5, sdfUVTex3D, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RG32F);
         glUniform3f(glGetUniformLocation(computeProg, "bboxMin"), sdfBBoxMin.x, sdfBBoxMin.y, sdfBBoxMin.z);
         glUniform3f(glGetUniformLocation(computeProg, "bboxMax"), sdfBBoxMax.x, sdfBBoxMax.y, sdfBBoxMax.z);
         glUniform1i(glGetUniformLocation(computeProg, "triCount"), globalTriCount);
@@ -766,21 +721,19 @@ void generateSDFTexture() {
 }
 
 int loadTextureToAtlas(const char* filename) {
-    if (g_atlasInfos.empty()) {
-        int tileSizePad = g_tileSize + 2 * Engine_settings.ATLAS_PADDING;
-        std::vector<unsigned char> whiteData(tileSizePad * tileSizePad * 4, 255);
-        int tilePerSide = g_atlasSide / tileSizePad;
-        glGenTextures(1, &g_atlasTextures[0]);
-        glBindTexture(GL_TEXTURE_2D, g_atlasTextures[0]);
+    if (g_atlasTexture == 0) {
+        glGenTextures(1, &g_atlasTexture);
+        glBindTexture(GL_TEXTURE_2D, g_atlasTexture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_atlasSide, g_atlasSide, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        int tileSizePad = g_tileSize + 2 * Engine_settings.ATLAS_PADDING;
+        std::vector<unsigned char> whiteData(tileSizePad * tileSizePad * 4, 255);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tileSizePad, tileSizePad, GL_RGBA, GL_UNSIGNED_BYTE, whiteData.data());
-        g_atlasCount = 1;
         AtlasTextureInfo info;
-        info.atlasIndex = 0;
         info.tileX = 0;
         info.tileY = 0;
         info.scaleX = 1.0f;
@@ -842,59 +795,32 @@ int loadTextureToAtlas(const char* filename) {
 
     int tilePerSide = g_atlasSide / tileSizePad;
     int maxTiles = tilePerSide * tilePerSide;
-    int targetAtlas = -1, targetTile = -1;
+    int used = 0;
+    for (auto& info : g_atlasInfos) used++;
+    if (used >= maxTiles) return 0;
 
-    for (int a = 0; a < g_atlasCount; ++a) {
-        int used = 0;
-        for (auto& info : g_atlasInfos) {
-            if (info.atlasIndex == a) used++;
-        }
-        if (used < maxTiles) {
-            targetAtlas = a;
-            std::vector<bool> taken(maxTiles, false);
-            for (auto& info : g_atlasInfos) {
-                if (info.atlasIndex == a) {
-                    int idx = info.tileY * tilePerSide + info.tileX;
-                    taken[idx] = true;
-                }
-            }
-            for (int i = 0; i < maxTiles; ++i) {
-                if (!taken[i]) {
-                    targetTile = i;
-                    break;
-                }
-            }
-            if (targetTile != -1) break;
+    std::vector<bool> taken(maxTiles, false);
+    for (auto& info : g_atlasInfos) {
+        int idx = info.tileY * tilePerSide + info.tileX;
+        taken[idx] = true;
+    }
+    int targetTile = -1;
+    for (int i = 0; i < maxTiles; ++i) {
+        if (!taken[i]) {
+            targetTile = i;
+            break;
         }
     }
-
-    if (targetAtlas == -1) {
-        if (g_atlasCount >= 8) {
-            targetAtlas = 0;
-            targetTile = 0;
-        } else {
-            targetAtlas = g_atlasCount;
-            glGenTextures(1, &g_atlasTextures[targetAtlas]);
-            glBindTexture(GL_TEXTURE_2D, g_atlasTextures[targetAtlas]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, g_atlasSide, g_atlasSide, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            g_atlasCount++;
-            targetTile = 0;
-        }
-    }
+    if (targetTile == -1) return 0;
 
     int tileX = targetTile % tilePerSide;
     int tileY = targetTile / tilePerSide;
 
-    glBindTexture(GL_TEXTURE_2D, g_atlasTextures[targetAtlas]);
+    glBindTexture(GL_TEXTURE_2D, g_atlasTexture);
     glTexSubImage2D(GL_TEXTURE_2D, 0, tileX * tileSizePad, tileY * tileSizePad,
                     tileSizePad, tileSizePad, GL_RGBA, GL_UNSIGNED_BYTE, squareData.data());
 
     AtlasTextureInfo info;
-    info.atlasIndex = targetAtlas;
     info.tileX = tileX;
     info.tileY = tileY;
     info.scaleX = scaleX;
@@ -938,7 +864,6 @@ void flush_RC_DrawQueue() {
         globalPosData.clear();
         globalColData.clear();
         globalUVData.clear();
-        globalIdxData.clear();
         globalTriCount = 0;
         for (auto& cmd : staticCommands) {
             if (cmd.type == CMD_3DOBJECT) {
@@ -949,7 +874,6 @@ void flush_RC_DrawQueue() {
                 float cx = cmd.obj_cx, cy = cmd.obj_cy, cz = cmd.obj_cz;
                 int ti = 0;
                 if (!cmd.obj_tex.empty()) ti = loadTextureToAtlas(cmd.obj_tex.c_str());
-                int atlasIdx = (ti >= 0 && ti < (int)g_atlasInfos.size()) ? g_atlasInfos[ti].atlasIndex : 0;
                 float yaw = cmd.obj_yaw * M_PI / 180.0f;
                 float pitch = cmd.obj_pitch * M_PI / 180.0f;
                 float roll = cmd.obj_roll * M_PI / 180.0f;
@@ -980,9 +904,6 @@ void flush_RC_DrawQueue() {
                     globalUVData.push_back(newU0); globalUVData.push_back(newV0);
                     globalUVData.push_back(newU1); globalUVData.push_back(newV1);
                     globalUVData.push_back(newU2); globalUVData.push_back(newV2);
-                    globalIdxData.push_back(0); globalIdxData.push_back(1.0f); globalIdxData.push_back((float)atlasIdx); globalIdxData.push_back(0.0f);
-                    globalIdxData.push_back(0); globalIdxData.push_back(1.0f); globalIdxData.push_back((float)atlasIdx); globalIdxData.push_back(0.0f);
-                    globalIdxData.push_back(0); globalIdxData.push_back(1.0f); globalIdxData.push_back((float)atlasIdx); globalIdxData.push_back(0.0f);
                     globalTriCount++;
                 }
             }
@@ -1014,7 +935,6 @@ void flush_RC_DrawQueue() {
                 float cx = cmd.obj_cx, cy = cmd.obj_cy, cz = cmd.obj_cz;
                 int ti = 0;
                 if (!cmd.obj_tex.empty()) ti = loadTextureToAtlas(cmd.obj_tex.c_str());
-                int atlasIdx = (ti >= 0 && ti < (int)g_atlasInfos.size()) ? g_atlasInfos[ti].atlasIndex : 0;
                 float yaw = cmd.obj_yaw * M_PI / 180.0f;
                 float pitch = cmd.obj_pitch * M_PI / 180.0f;
                 float roll = cmd.obj_roll * M_PI / 180.0f;
@@ -1045,9 +965,6 @@ void flush_RC_DrawQueue() {
                     globalUVData.push_back(newU0); globalUVData.push_back(newV0);
                     globalUVData.push_back(newU1); globalUVData.push_back(newV1);
                     globalUVData.push_back(newU2); globalUVData.push_back(newV2);
-                    globalIdxData.push_back(0); globalIdxData.push_back(1.0f); globalIdxData.push_back((float)atlasIdx); globalIdxData.push_back(0.0f);
-                    globalIdxData.push_back(0); globalIdxData.push_back(1.0f); globalIdxData.push_back((float)atlasIdx); globalIdxData.push_back(0.0f);
-                    globalIdxData.push_back(0); globalIdxData.push_back(1.0f); globalIdxData.push_back((float)atlasIdx); globalIdxData.push_back(0.0f);
                     globalTriCount++;
                 }
             }
@@ -1125,7 +1042,7 @@ void flush_RC_DrawQueue() {
     static std::vector<GLint> locLightDiffuse;
     static std::vector<GLint> locLightCutoff;
     static std::vector<GLint> locLightAttenuation;
-    static GLint loc_sdfVolume = -1, loc_sdfColorTex = -1, loc_sdfUVTex = -1, loc_sdfAtlasTex = -1;
+    static GLint loc_sdfVolume = -1, loc_sdfColorTex = -1, loc_sdfUVTex = -1, loc_u_atlas = -1;
     static GLint loc_sdfBBoxMin = -1, loc_sdfBBoxMax = -1, loc_sdfEpsilon = -1, loc_sdfMaxSteps = -1;
     static GLint loc_warpEnabled = -1, loc_warpOrigin = -1, loc_warpAxisU = -1, loc_warpAxisV = -1, loc_warpDisplacementTex = -1;
     static GLint loc_maxDist = -1, loc_shadowBias = -1, loc_camWarpStrength = -1;
@@ -1177,7 +1094,7 @@ void flush_RC_DrawQueue() {
         loc_sdfVolume = glGetUniformLocation(currentShaderProg, "sdfVolume");
         loc_sdfColorTex = glGetUniformLocation(currentShaderProg, "sdfColorTex");
         loc_sdfUVTex = glGetUniformLocation(currentShaderProg, "sdfUVTex");
-        loc_sdfAtlasTex = glGetUniformLocation(currentShaderProg, "sdfAtlasTex");
+        loc_u_atlas = glGetUniformLocation(currentShaderProg, "u_atlas");
         loc_sdfBBoxMin = glGetUniformLocation(currentShaderProg, "sdfBBoxMin");
         loc_sdfBBoxMax = glGetUniformLocation(currentShaderProg, "sdfBBoxMax");
         loc_sdfEpsilon = glGetUniformLocation(currentShaderProg, "sdfEpsilon");
@@ -1250,14 +1167,8 @@ void flush_RC_DrawQueue() {
         glBindTexture(GL_TEXTURE_3D, sdfUVTex3D);
         glUniform1i(loc_sdfUVTex, 3);
         glActiveTexture(GL_TEXTURE4);
-        glBindTexture(GL_TEXTURE_3D, sdfAtlasTex3D);
-        glUniform1i(loc_sdfAtlasTex, 4);
-        for (int i = 0; i < g_atlasCount; ++i) {
-            glActiveTexture(GL_TEXTURE7 + i);
-            glBindTexture(GL_TEXTURE_2D, g_atlasTextures[i]);
-            glUniform1i(locAtlasSlot[i], 7 + i);
-        }
-        for (int i = g_atlasCount; i < 8; ++i) glUniform1i(locAtlasSlot[i], 0);
+        glBindTexture(GL_TEXTURE_2D, g_atlasTexture);
+        glUniform1i(loc_u_atlas, 4);
         glUniform3fv(loc_sdfBBoxMin, 1, &sdfBBoxMin[0]);
         glUniform3fv(loc_sdfBBoxMax, 1, &sdfBBoxMax[0]);
         float voxelSize = (sdfBBoxMax.x - sdfBBoxMin.x) / Engine_settings.SDF_RESOLUTION;
