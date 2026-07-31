@@ -21,6 +21,12 @@
 #include <ctime>
 #include <SOIL/SOIL.h>
 
+static inline float roundTo10(float val) {
+    double d = val;
+    double scale = 1e10;
+    return (float)(floor(d * scale + 0.5) / scale);
+}
+
 GLuint default_RC_Shader = 0;
 
 static const char* defaultVertexShader = R"(
@@ -887,9 +893,15 @@ void flush_RC_DrawQueue() {
                     glm::vec4 v1(verts[i1], verts[i1+1], verts[i1+2], 1.0f);
                     glm::vec4 v2(verts[i2], verts[i2+1], verts[i2+2], 1.0f);
                     v0 = rotMat * v0; v1 = rotMat * v1; v2 = rotMat * v2;
-                    globalPosData.push_back(v0.x + cx); globalPosData.push_back(v0.y + cy); globalPosData.push_back(v0.z + cz);
-                    globalPosData.push_back(v1.x + cx); globalPosData.push_back(v1.y + cy); globalPosData.push_back(v1.z + cz);
-                    globalPosData.push_back(v2.x + cx); globalPosData.push_back(v2.y + cy); globalPosData.push_back(v2.z + cz);
+                    globalPosData.push_back(roundTo10(v0.x + cx));
+                    globalPosData.push_back(roundTo10(v0.y + cy));
+                    globalPosData.push_back(roundTo10(v0.z + cz));
+                    globalPosData.push_back(roundTo10(v1.x + cx));
+                    globalPosData.push_back(roundTo10(v1.y + cy));
+                    globalPosData.push_back(roundTo10(v1.z + cz));
+                    globalPosData.push_back(roundTo10(v2.x + cx));
+                    globalPosData.push_back(roundTo10(v2.y + cy));
+                    globalPosData.push_back(roundTo10(v2.z + cz));
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
@@ -948,9 +960,15 @@ void flush_RC_DrawQueue() {
                     glm::vec4 v1(verts[i1], verts[i1+1], verts[i1+2], 1.0f);
                     glm::vec4 v2(verts[i2], verts[i2+1], verts[i2+2], 1.0f);
                     v0 = rotMat * v0; v1 = rotMat * v1; v2 = rotMat * v2;
-                    globalPosData.push_back(v0.x + cx); globalPosData.push_back(v0.y + cy); globalPosData.push_back(v0.z + cz);
-                    globalPosData.push_back(v1.x + cx); globalPosData.push_back(v1.y + cy); globalPosData.push_back(v1.z + cz);
-                    globalPosData.push_back(v2.x + cx); globalPosData.push_back(v2.y + cy); globalPosData.push_back(v2.z + cz);
+                    globalPosData.push_back(roundTo10(v0.x + cx));
+                    globalPosData.push_back(roundTo10(v0.y + cy));
+                    globalPosData.push_back(roundTo10(v0.z + cz));
+                    globalPosData.push_back(roundTo10(v1.x + cx));
+                    globalPosData.push_back(roundTo10(v1.y + cy));
+                    globalPosData.push_back(roundTo10(v1.z + cz));
+                    globalPosData.push_back(roundTo10(v2.x + cx));
+                    globalPosData.push_back(roundTo10(v2.y + cy));
+                    globalPosData.push_back(roundTo10(v2.z + cz));
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
