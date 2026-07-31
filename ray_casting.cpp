@@ -752,6 +752,8 @@ int loadTextureToAtlas(const char* filename) {
         g_textureNameToIndex["__white"] = 0;
     }
 
+    if (filename && strcmp(filename, "__white") == 0) return 0;
+
     if (!filename || strlen(filename) == 0) return 0;
 
     std::string fname(filename);
@@ -906,9 +908,9 @@ void flush_RC_DrawQueue() {
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     float u0 = 0, vv0 = 0, u1 = 0, vv1 = 0, u2 = 0, vv2 = 0;
-                    if (i0/2+1 < (int)uvs.size()) { u0 = uvs[i0/3*2]; vv0 = uvs[i0/3*2+1]; }
-                    if (i1/2+1 < (int)uvs.size()) { u1 = uvs[i1/3*2]; vv1 = uvs[i1/3*2+1]; }
-                    if (i2/2+1 < (int)uvs.size()) { u2 = uvs[i2/3*2]; vv2 = uvs[i2/3*2+1]; }
+                    if (i0/3*2+1 < (int)uvs.size()) { u0 = uvs[i0/3*2]; vv0 = uvs[i0/3*2+1]; }
+                    if (i1/3*2+1 < (int)uvs.size()) { u1 = uvs[i1/3*2]; vv1 = uvs[i1/3*2+1]; }
+                    if (i2/3*2+1 < (int)uvs.size()) { u2 = uvs[i2/3*2]; vv2 = uvs[i2/3*2+1]; }
                     float newU0, newV0, newU1, newV1, newU2, newV2;
                     convertUVtoAtlas(u0, vv0, ti, newU0, newV0);
                     convertUVtoAtlas(u1, vv1, ti, newU1, newV1);
@@ -973,9 +975,9 @@ void flush_RC_DrawQueue() {
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     globalColData.push_back(cmd.obj_r); globalColData.push_back(cmd.obj_g); globalColData.push_back(cmd.obj_b); globalColData.push_back(cmd.obj_alpha);
                     float u0 = 0, vv0 = 0, u1 = 0, vv1 = 0, u2 = 0, vv2 = 0;
-                    if (i0/2+1 < (int)uvs.size()) { u0 = uvs[i0/3*2]; vv0 = uvs[i0/3*2+1]; }
-                    if (i1/2+1 < (int)uvs.size()) { u1 = uvs[i1/3*2]; vv1 = uvs[i1/3*2+1]; }
-                    if (i2/2+1 < (int)uvs.size()) { u2 = uvs[i2/3*2]; vv2 = uvs[i2/3*2+1]; }
+                    if (i0/3*2+1 < (int)uvs.size()) { u0 = uvs[i0/3*2]; vv0 = uvs[i0/3*2+1]; }
+                    if (i1/3*2+1 < (int)uvs.size()) { u1 = uvs[i1/3*2]; vv1 = uvs[i1/3*2+1]; }
+                    if (i2/3*2+1 < (int)uvs.size()) { u2 = uvs[i2/3*2]; vv2 = uvs[i2/3*2+1]; }
                     float newU0, newV0, newU1, newV1, newU2, newV2;
                     convertUVtoAtlas(u0, vv0, ti, newU0, newV0);
                     convertUVtoAtlas(u1, vv1, ti, newU1, newV1);

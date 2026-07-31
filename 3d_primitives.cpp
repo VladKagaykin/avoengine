@@ -150,6 +150,7 @@ void draw3DObject(float cx, float cy, float cz,
     cmd.obj_alpha = alpha;
     cmd.obj_yaw = yaw; cmd.obj_pitch = pitch; cmd.obj_roll = roll;
     if (tex) cmd.obj_tex = tex;
+    else cmd.obj_tex = "__white";
     cmd.obj_vertices = vertices;
     cmd.obj_indices  = indices;
     cmd.obj_texcoords = texcoords;
