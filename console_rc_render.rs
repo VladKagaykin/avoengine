@@ -37,7 +37,7 @@ fn point_in_polygon_offset(px: f64, py: f64, vertices: &[f64], offset_x: f64, of
 pub fn Render_image_to_console() -> Result<(),String>{
     let mut queue_2d:Vec<super::Draw_components> = Vec::new();
 
-    let all_queue= super::Draw_queue.lock().unwrap();
+    let mut all_queue= super::Draw_queue.lock().unwrap();
 
     for object in all_queue.iter(){
         if object.draw_type == "2d_object".to_string(){
@@ -45,10 +45,15 @@ pub fn Render_image_to_console() -> Result<(),String>{
         }
     }
 
+    drop(all_queue);
+    super::Draw_queue.lock().unwrap().clear();
+
     let width = super::Engine_settings.lock().unwrap().window_width as i128;
     let height = super::Engine_settings.lock().unwrap().window_height as i128;
 
+    let new_screen = vec![vec![super::Empty_pixel.lock().unwrap().clone(); width.clone() as usize]; height.clone() as usize];
     let mut screen = super::Screen.lock().unwrap();
+    *screen = new_screen;
 
     for object in queue_2d{
         let mut biggest_x:f64 = 0.0;
