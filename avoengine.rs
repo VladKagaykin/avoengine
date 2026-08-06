@@ -7,13 +7,16 @@ pub struct Settings{
     pub tick_speed: i128
 }
 pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings{window_width: 58, window_height: 44, tick_speed: 1});
+
+#[derive(Clone)]
 pub struct Draw_components{
     pub draw_type: String,
     pub draw_x: f64,
     pub draw_y: f64,
     pub draw_z: f64,
     pub draw_symbol: char,
-    pub draw_vertices: Vec<f64>
+    pub draw_vertices: Vec<f64>,
+    pub draw_RGBA_color: [u8;4]
 }
 pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 
@@ -23,7 +26,7 @@ pub struct Pixel_structure{
     pub pixel_RGBA_color: [u8;4] 
 }
 
-pub static Empty_pixel: Mutex<Pixel_structure> = Mutex::new(Pixel_structure{pixel_symbol: '#', pixel_RGBA_color: [0, 0, 0, 0]});
+pub static Empty_pixel: Mutex<Pixel_structure> = Mutex::new(Pixel_structure{pixel_symbol: '░', pixel_RGBA_color: [0, 0, 0, 0]});
 pub static Screen: Mutex<Vec<Vec<Pixel_structure>>> = Mutex::new(Vec::new());
 
 pub fn Setup_window(width: &i128, height:&i128){
