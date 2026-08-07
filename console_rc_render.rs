@@ -48,6 +48,63 @@ fn dot(a: &[f32;3], b: &[f32;3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+fn normalize(v: [f32;3]) -> [f32;3] {
+    let len = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
+    if len < 1e-8 {
+        return [0.0, 0.0, 1.0];
+    }
+    [v[0]/len, v[1]/len, v[2]/len]
+}
+
+fn forward_from_angles(pitch_deg: f32, yaw_deg: f32) -> [f32;3] {
+    let p = pitch_deg * PI / 180.0;
+    let y = yaw_deg * PI / 180.0;
+    let (cp, sp) = (p.cos(), p.sin());
+    let (sy, cy) = (y.sin(), y.cos());
+    normalize([sy * cp, -sp, cy * cp])
+}
+
+struct CameraBasis {
+    forward: [f32;3],
+    right: [f32;3],
+    up: [f32;3],
+}
+
+fn camera_basis(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> CameraBasis {
+    let p = pitch_deg * PI / 180.0;
+    let y = yaw_deg * PI / 180.0;
+    let r = roll_deg * PI / 180.0;
+    let (cp, sp) = (p.cos(), p.sin());
+    let (cy, sy) = (y.cos(), y.sin());
+    let (cr, sr) = (r.cos(), r.sin());
+
+    let m11 = cr;
+    let m12 = -sr;
+    let m13 = 0.0;
+    let m21 = sp * sr;
+    let m22 = sp * cr;
+    let m23 = cp;
+    let m31 = -cp * sr;
+    let m32 = -cp * cr;
+    let m33 = sp;
+
+    let r00 = cy * m11 + sy * m31;
+    let r01 = cy * m12 + sy * m32;
+    let r02 = cy * m13 + sy * m33;
+    let r10 = m21;
+    let r11 = m22;
+    let r12 = m23;
+    let r20 = -sy * m11 + cy * m31;
+    let r21 = -sy * m12 + cy * m32;
+    let r22 = -sy * m13 + cy * m33;
+
+    let forward = [r02, r12, r22]; 
+    let right   = [r00, r10, r20];
+    let up      = [r01, r11, r21];
+
+    CameraBasis { forward, right, up }
+}
+
 fn ray_triangle_intersect(origin: &[f32;3], dir: &[f32;3], v0: &[f32;3], v1: &[f32;3], v2: &[f32;3]) -> Option<f32> {
     let eps = 1e-6;
     let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
@@ -76,20 +133,8 @@ fn ray_triangle_intersect(origin: &[f32;3], dir: &[f32;3], v0: &[f32;3], v1: &[f
     }
 }
 
-pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, pitch: f32, yaw: f32, roll: f32,
+pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: [f32;3],
                    triangles: &[super::Draw_components]) -> super::Pixel_structure {
-    let p = pitch * PI / 180.0;
-    let y = yaw * PI / 180.0;
-    let r = roll * PI / 180.0;
-    
-    let (cp, sp) = (p.cos(), p.sin());
-    let (cy, sy) = (y.cos(), y.sin());
-    let (cr, sr) = (r.cos(), r.sin());
-    
-    let dir = [sy * cp, -sp, cy * cp];
-    let len = (dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]).sqrt();
-    let dir = [dir[0]/len, dir[1]/len, dir[2]/len];
-    
     let origin = [start_x, start_y, start_z];
     let max_t = length as f32;
     let mut best_t = max_t;
@@ -131,25 +176,27 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
     let max_dist = cam.max_dist as i128;
     drop(cam);
 
-    let half_fov_deg = fov / 2.0;
     let aspect = width as f32 / height as f32;
+    let fov_rad = fov * PI / 180.0;
+    let half_tan = (fov_rad / 2.0).tan();
+
+    let basis = camera_basis(pitch, yaw, roll);
 
     for y in 0..height {
         for x in 0..width {
-            let nx = (x as f32 / width as f32) * 2.0 - 1.0;
-            let ny = -((y as f32 / height as f32) * 2.0 - 1.0);
+            let nx = (2.0 * (x as f32 + 0.5) / width as f32) - 1.0;
+            let ny = 1.0 - (2.0 * (y as f32 + 0.5) / height as f32);
 
-            let delta_yaw_deg = nx * half_fov_deg * aspect;
-            let delta_pitch_deg = ny * half_fov_deg;
+            let px = nx * half_tan * aspect;
+            let py = ny * half_tan;
 
-            let pixel = ray_tracing(
-                ox, oy, oz,
-                max_dist,
-                pitch + delta_pitch_deg,  
-                yaw + delta_yaw_deg,       
-                roll,                      
-                triangles,
-            );
+            let dir = normalize([
+                basis.forward[0] + basis.right[0]*px + basis.up[0]*py,
+                basis.forward[1] + basis.right[1]*px + basis.up[1]*py,
+                basis.forward[2] + basis.right[2]*px + basis.up[2]*py,
+            ]);
+
+            let pixel = ray_tracing(ox, oy, oz, max_dist, dir, triangles);
             screen[y as usize][x as usize] = pixel;
         }
     }
