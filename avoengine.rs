@@ -1,12 +1,13 @@
 use std::sync::Mutex;
 pub mod console_rc_render;
+pub mod tick_system;
 
 pub struct Settings{
     pub window_width: i128,
     pub window_height: i128,
-    pub tick_speed: i128,
+    pub tick_speed: i128, // милисекунды 
 }
-pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings{window_width: 58, window_height: 44, tick_speed: 1});
+pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings{window_width: 58, window_height: 44, tick_speed: 50});
 
 #[derive(Clone)]
 pub struct Draw_components{
