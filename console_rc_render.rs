@@ -139,6 +139,7 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
     let max_t = length as f32;
     let mut best_t = max_t;
     let mut best_pixel = super::Empty_pixel.lock().unwrap().clone();
+    let mut best_alpha = 0.0;
     
     for tri in triangles {
         let verts = &tri.draw_vertices;
@@ -150,11 +151,29 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
         let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
         if let Some(t) = ray_triangle_intersect(&origin, &dir, &v0, &v1, &v2) {
             if t > 0.0 && t < best_t {
-                best_t = t;
-                best_pixel = super::Pixel_structure {
-                    pixel_symbol: tri.draw_symbol,
-                    pixel_RGBA_color: tri.draw_RGBA_color,
-                };
+                let alpha = tri.draw_RGBA_color[3] as f32 / 255.0;
+                if alpha >= 1.0 {
+                    best_t = t;
+                    best_pixel = super::Pixel_structure {
+                        pixel_symbol: tri.draw_symbol,
+                        pixel_RGBA_color: tri.draw_RGBA_color,
+                    };
+                    best_alpha = 1.0;
+                } else if alpha > 0.0 {
+                    let bg = &best_pixel.pixel_RGBA_color;
+                    let fg = &tri.draw_RGBA_color;
+                    let mut blended = [0u8; 4];
+                    for i in 0..3 {
+                        blended[i] = ((bg[i] as f32 * (1.0 - alpha)) + (fg[i] as f32 * alpha)) as u8;
+                    }
+                    blended[3] = 255;
+                    best_t = t;
+                    best_pixel = super::Pixel_structure {
+                        pixel_symbol: tri.draw_symbol,
+                        pixel_RGBA_color: blended,
+                    };
+                    best_alpha += alpha * (1.0 - best_alpha);
+                }
             }
         }
     }
@@ -218,7 +237,7 @@ pub fn Render_image_to_console() -> Result<(),String>{
     }
 
     drop(all_queue);
-    super::Draw_queue.lock().unwrap().clear();
+    // super::Draw_queue.lock().unwrap().clear();
 
     let width = super::Engine_settings.lock().unwrap().window_width as i128;
     let height = super::Engine_settings.lock().unwrap().window_height as i128;
