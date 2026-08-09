@@ -285,14 +285,31 @@ pub fn Render_image_to_console() -> Result<(),String>{
         let end_x = if biggest_x > width as f32 { width } else { biggest_x as i128 };
         let start_y = if smallest_y < 0.0 { 0 } else { smallest_y as i128 };
         let end_y = if biggest_y > height as f32 { height } else { biggest_y as i128 };
+        
+        let alpha = object.draw_RGBA_color[3] as f32 / 255.0;
+        
         for x in start_x..end_x {
             for y in start_y..end_y {
                 if point_in_polygon_offset(x as f32, y as f32, &object.draw_vertices, object.draw_x, object.draw_y) {
-                    screen[y as usize][x as usize] = super::Pixel_structure {
-                        pixel_symbol: object.draw_symbol,
-                        pixel_RGBA_color: [object.draw_RGBA_color[0], object.draw_RGBA_color[1], 
-                                           object.draw_RGBA_color[2], object.draw_RGBA_color[3]]
-                    };
+                    if alpha >= 1.0 {
+                        screen[y as usize][x as usize] = super::Pixel_structure {
+                            pixel_symbol: object.draw_symbol,
+                            pixel_RGBA_color: [object.draw_RGBA_color[0], object.draw_RGBA_color[1], 
+                                            object.draw_RGBA_color[2], object.draw_RGBA_color[3]]
+                        };
+                    } else if alpha > 0.0 {
+                        let bg = &screen[y as usize][x as usize].pixel_RGBA_color;
+                        let fg = &object.draw_RGBA_color;
+                        let mut blended = [0u8; 4];
+                        for i in 0..3 {
+                            blended[i] = ((bg[i] as f32 * (1.0 - alpha)) + (fg[i] as f32 * alpha)) as u8;
+                        }
+                        blended[3] = 255;
+                        screen[y as usize][x as usize] = super::Pixel_structure {
+                            pixel_symbol: object.draw_symbol,
+                            pixel_RGBA_color: blended,
+                        };
+                    }
                 }
             }
         }
