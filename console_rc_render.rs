@@ -1,4 +1,5 @@
 use std::f32::consts::PI;
+use std::thread;
 
 pub fn To_console(){
     let width = super::Engine_settings.lock().unwrap().window_width as usize;
@@ -64,6 +65,7 @@ fn forward_from_angles(pitch_deg: f32, yaw_deg: f32) -> [f32;3] {
     normalize([sy * cp, -sp, cy * cp])
 }
 
+#[derive(Clone)]
 struct CameraBasis {
     forward: [f32;3],
     right: [f32;3],
@@ -201,22 +203,51 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
 
     let basis = camera_basis(pitch, yaw, roll);
 
-    for y in 0..height {
-        for x in 0..width {
-            let nx = (2.0 * (x as f32 + 0.5) / width as f32) - 1.0;
-            let ny = 1.0 - (2.0 * (y as f32 + 0.5) / height as f32);
+    let num_threads = thread::available_parallelism().expect("Can't get num of threads").get();
+    let mut handles = vec![];
 
-            let px = nx * half_tan * aspect;
-            let py = ny * half_tan;
+    let height_usize = height as usize;
+    let width_usize = width as usize;
+    let rows_per_thread = height_usize / num_threads;
 
-            let dir = normalize([
-                basis.forward[0] + basis.right[0]*px + basis.up[0]*py,
-                basis.forward[1] + basis.right[1]*px + basis.up[1]*py,
-                basis.forward[2] + basis.right[2]*px + basis.up[2]*py,
-            ]);
+    for t in 0..num_threads {
+        let start_y = t * rows_per_thread;
+        let end_y = if t == num_threads - 1 { height_usize } else { (t + 1) * rows_per_thread };
+        
+        let triangles = triangles.to_vec();
+        let ox = ox; let oy = oy; let oz = oz;
+        let max_dist = max_dist;
+        let width = width_usize;
+        let height = height_usize;
+        let aspect = aspect; 
+        let half_tan = half_tan;
+        let basis = basis.clone();
 
-            let pixel = ray_tracing(ox, oy, oz, max_dist, dir, triangles);
-            screen[y as usize][x as usize] = pixel;
+        handles.push(thread::spawn(move || {
+            let mut result = Vec::new();
+            
+            for y in start_y..end_y {
+                for x in 0..width {
+                    let nx = (2.0 * (x as f32 + 0.5) / width as f32) - 1.0;
+                    let ny = 1.0 - (2.0 * (y as f32 + 0.5) / height as f32);
+                    let px = nx * half_tan * aspect;
+                    let py = ny * half_tan;
+                    let dir = normalize([
+                        basis.forward[0] + basis.right[0]*px + basis.up[0]*py,
+                        basis.forward[1] + basis.right[1]*px + basis.up[1]*py,
+                        basis.forward[2] + basis.right[2]*px + basis.up[2]*py,
+                    ]);
+                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &triangles);
+                    result.push((y, x, pixel));
+                }
+            }
+            result
+        }));
+    }
+
+    for handle in handles {
+        for (y, x, pixel) in handle.join().unwrap() {
+            screen[y][x] = pixel;
         }
     }
 }
