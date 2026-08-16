@@ -57,7 +57,7 @@ fn normalize(v: [f32;3]) -> [f32;3] {
     [v[0]/len, v[1]/len, v[2]/len]
 }
 
-fn forward_from_angles(pitch_deg: f32, yaw_deg: f32) -> [f32;3] {
+pub fn forward_from_angles(pitch_deg: f32, yaw_deg: f32) -> [f32;3] {
     let p = pitch_deg * PI / 180.0;
     let y = yaw_deg * PI / 180.0;
     let (cp, sp) = (p.cos(), p.sin());
@@ -66,13 +66,13 @@ fn forward_from_angles(pitch_deg: f32, yaw_deg: f32) -> [f32;3] {
 }
 
 #[derive(Clone)]
-struct CameraBasis {
-    forward: [f32;3],
-    right: [f32;3],
-    up: [f32;3],
+pub struct CameraBasis {
+    pub forward: [f32;3],
+    pub right: [f32;3],
+    pub up: [f32;3],
 }
 
-fn camera_basis(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> CameraBasis {
+pub fn camera_basis(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> CameraBasis {
     let p = pitch_deg * PI / 180.0;
     let y = yaw_deg * PI / 180.0;
     let r = roll_deg * PI / 180.0;
@@ -186,7 +186,7 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
     let settings = super::Engine_settings.lock().unwrap();
     let width = settings.window_width;
     let height = settings.window_height;
-    drop(settings);
+    // drop(settings);
 
     let cam = super::Camera.lock().unwrap();
     let (ox, oy, oz) = (cam.camera_x, cam.camera_y, cam.camera_z);
@@ -203,8 +203,9 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
 
     let basis = camera_basis(pitch, yaw, roll);
 
-    let num_threads = thread::available_parallelism().expect("Can't get num of threads").get();
+    let num_threads = thread::available_parallelism().expect("Can't get num of threads").get() * settings.cores_multiply.clone() as usize - 1;
     let mut handles = vec![];
+    drop(settings);
 
     let height_usize = height as usize;
     let width_usize = width as usize;
