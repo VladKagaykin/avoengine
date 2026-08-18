@@ -3,6 +3,7 @@ use std::sync::Mutex;
 pub mod console_rc_render;
 pub mod tick_system;
 pub mod console_input;
+pub mod window_processing;
 
 pub struct Settings{
     pub window_width: i128,

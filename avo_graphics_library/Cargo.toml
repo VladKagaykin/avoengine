@@ -1,7 +1,0 @@
-[package]
-name = "avo_graphics_library"
-version = "0.1.0"
-edition = "2024"
-
-[lib]
-path = "agl.rs"
