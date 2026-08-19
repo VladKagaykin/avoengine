@@ -30,6 +30,22 @@ pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 
 #[derive(Clone)]
+pub struct Light_components{
+    pub light_x: f32,
+    pub light_y: f32,
+    pub light_z: f32,
+    pub light_RGB_color: [u8;3],
+    pub light_distance: f32,
+    pub light_cone_angle: f32,
+    pub light_pitch: f32,
+    pub light_yaw: f32,
+    pub light_special_name: String
+}
+
+pub static Light_queue: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
+pub static Static_light: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
+
+#[derive(Clone)]
 pub struct Pixel_structure{
     pub pixel_symbol: char,
     pub pixel_RGBA_color: [u8;4] 
@@ -47,11 +63,12 @@ pub struct Camera_structure{
     pub camera_pitch: f32,
     pub camera_yaw: f32,
     pub camera_roll: f32,
-    pub max_dist: u128
+    pub max_dist: u128,
+    pub ambient_light: [u8;3]
 }
 pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure{camera_fov: 58, camera_x: 0.0, camera_y: 1.0,
                                                                          camera_z: 0.0, camera_pitch: 0.0, camera_yaw: 0.0,
-                                                                         camera_roll: 0.0, max_dist: 256});
+                                                                         camera_roll: 0.0, max_dist: 256, ambient_light: [128,128,128]});
 
 pub fn Setup_window(width: &i128, height:&i128){
     let new_screen = vec![vec![Empty_pixel.lock().unwrap().clone(); *width as usize]; *height as usize];

@@ -177,8 +177,115 @@ fn load_texture(path: &str) -> Option<RgbaImage> {
     }
 }
 
+fn is_occluded(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_light: f32, triangles: &[super::Draw_components]) -> bool {
+    let offset = [point[0] + normal[0]*1e-3, point[1] + normal[1]*1e-3, point[2] + normal[2]*0.1];
+    let to_light = [light_pos[0]-point[0], light_pos[1]-point[1], light_pos[2]-point[2]];
+    let dir = normalize(to_light);
+    for tri in triangles {
+        let verts = &tri.draw_vertices;
+        if verts.len() < 9 {
+            continue;
+        }
+        let v0 = [verts[0]+tri.draw_x, verts[1]+tri.draw_y, verts[2]+tri.draw_z];
+        let v1 = [verts[3]+tri.draw_x, verts[4]+tri.draw_y, verts[5]+tri.draw_z];
+        let v2 = [verts[6]+tri.draw_x, verts[7]+tri.draw_y, verts[8]+tri.draw_z];
+        if let Some((t, _, _)) = ray_triangle_intersect(&offset, &dir, &v0, &v1, &v2) {
+            if t > 1e-3 && t < dist_to_light {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn light_transmittance(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_light: f32, triangles: &[super::Draw_components]) -> f32 {
+    let offset = [point[0] + normal[0]*1e-3, point[1] + normal[1]*1e-3, point[2] + normal[2]*0.1];
+    let to_light = [light_pos[0]-point[0], light_pos[1]-point[1], light_pos[2]-point[2]];
+    let dir = normalize(to_light);
+    let mut transmittance = 1.0;
+    for tri in triangles {
+        let verts = &tri.draw_vertices;
+        if verts.len() < 9 {
+            continue;
+        }
+        let v0 = [verts[0]+tri.draw_x, verts[1]+tri.draw_y, verts[2]+tri.draw_z];
+        let v1 = [verts[3]+tri.draw_x, verts[4]+tri.draw_y, verts[5]+tri.draw_z];
+        let v2 = [verts[6]+tri.draw_x, verts[7]+tri.draw_y, verts[8]+tri.draw_z];
+        if let Some((t, _, _)) = ray_triangle_intersect(&offset, &dir, &v0, &v1, &v2) {
+            if t > 1e-3 && t < dist_to_light {
+                let alpha = tri.draw_RGBA_color[3] as f32 / 255.0;
+                if alpha >= 1.0 {
+                    return 0.0;
+                }
+                transmittance *= 1.0 - alpha;
+                if transmittance < 0.01 {
+                    return transmittance;
+                }
+            }
+        }
+    }
+    transmittance
+}
+
+fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[super::Draw_components], lights: &[super::Light_components], ambient: [u8;3]) -> [f32;3] {
+    let mut r = ambient[0] as f32 / 255.0;
+    let mut g = ambient[1] as f32 / 255.0;
+    let mut b = ambient[2] as f32 / 255.0;
+
+    const EPSILON: f32 = 0.01;
+
+    for light in lights {
+        let light_pos = [light.light_x, light.light_y, light.light_z];
+        let to_light = [light_pos[0] - point[0], light_pos[1] - point[1], light_pos[2] - point[2]];
+        let dist_sq = to_light[0] * to_light[0] + to_light[1] * to_light[1] + to_light[2] * to_light[2];
+        let dist = dist_sq.sqrt();
+
+        // Защита от деления на ноль и слишком малых расстояний
+        if dist < 1e-6 {
+            continue;
+        }
+
+        let to_light_dir = normalize(to_light);
+
+        // Проверка конуса
+        let light_forward = camera_basis(light.light_pitch, light.light_yaw, 0.0).forward;
+        let point_dir_from_light = [-to_light_dir[0], -to_light_dir[1], -to_light_dir[2]];
+        let cos_angle = dot(&light_forward, &point_dir_from_light);
+        let half_cone = (light.light_cone_angle * 0.5) * PI / 180.0;
+        let cos_half_cone = half_cone.cos();
+        if cos_angle < cos_half_cone {
+            continue;
+        }
+
+        // Тени (transmittance)
+        let transmittance = light_transmittance(point, normal, light_pos, dist, triangles);
+        if transmittance <= 0.0 {
+            continue;
+        }
+
+        // ---- РЕАЛИСТИЧНОЕ КВАДРАТИЧНОЕ ЗАТУХАНИЕ ----
+        let falloff = light.light_distance / (1.0 / EPSILON - 1.0).sqrt();
+        let attenuation = 1.0 / (1.0 + (dist / falloff).powi(2));
+
+        // Если яркость уже ниже порога – не добавляем вклад (опционально)
+        if attenuation < EPSILON {
+            continue;
+        }
+
+        let diff = dot(&normal, &to_light_dir).max(0.0);
+        let factor = attenuation * diff * transmittance;
+
+        r += (light.light_RGB_color[0] as f32 / 255.0) * factor;
+        g += (light.light_RGB_color[1] as f32 / 255.0) * factor;
+        b += (light.light_RGB_color[2] as f32 / 255.0) * factor;
+    }
+
+    [r.min(1.0), g.min(1.0), b.min(1.0)]
+}
+
 pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: [f32;3],
-                   triangles: &[super::Draw_components], textures: &HashMap<String, RgbaImage>) -> super::Pixel_structure {
+                   triangles: &[super::Draw_components], textures: &HashMap<String, RgbaImage>,
+                   lights: &[super::Light_components], ambient_light: [u8;3]) -> super::Pixel_structure {
     let origin = [start_x, start_y, start_z];
     let max_t = length as f32;
     let mut best_t = max_t;
@@ -199,7 +306,6 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
                     if let Some(img) = textures.get(&tri.draw_texture_path) {
                         let (uv0, uv1, uv2) = generate_uv_for_triangle(&v0, &v1, &v2);
                         let w = 1.0 - u - v;
-                        // u -> вес v1, v -> вес v2, w -> вес v0 (Möller–Trumbore)
                         let tex_u = w * uv0.0 + u * uv1.0 + v * uv2.0;
                         let tex_v = w * uv0.1 + u * uv1.1 + v * uv2.1;
                         let tex_x = (tex_u * (img.width() as f32 - 1.0)).round() as u32;
@@ -221,8 +327,18 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
                     let c = &tri.draw_RGBA_color;
                     (c[0], c[1], c[2], c[3] as f32 / 255.0)
                 };
+
+                let edge1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
+                let edge2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+                let normal = normalize(cross(&edge1, &edge2));
+                let hit_point = [origin[0] + dir[0]*t, origin[1] + dir[1]*t, origin[2] + dir[2]*t];
+                let light_factor = compute_lighting(hit_point, normal, triangles, lights, ambient_light);
+                let lit_r = (r as f32 * light_factor[0]).round() as u8;
+                let lit_g = (g as f32 * light_factor[1]).round() as u8;
+                let lit_b = (b as f32 * light_factor[2]).round() as u8;
+
                 let alpha = a;
-                let fg = [r, g, b, 255];
+                let fg = [lit_r, lit_g, lit_b, 255];
                 if alpha >= 1.0 {
                     best_t = t;
                     best_pixel = super::Pixel_structure {
@@ -250,7 +366,7 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
     best_pixel
 }
 
-pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Vec<Vec<super::Pixel_structure>>) {
+pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Vec<Vec<super::Pixel_structure>>, lights: &[super::Light_components]) {
     let settings = super::Engine_settings.lock().unwrap();
     let width = settings.window_width;
     let height = settings.window_height;
@@ -262,6 +378,7 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
     let roll = cam.camera_roll;      
     let fov = cam.camera_fov as f32;   
     let max_dist = cam.max_dist as i128;
+    let ambient_light = [cam.ambient_light[0], cam.ambient_light[1], cam.ambient_light[2]];
     drop(cam);
 
     let aspect = width as f32 / height as f32;
@@ -293,6 +410,7 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
         let end_y = if t == num_threads - 1 { height_usize } else { (t + 1) * rows_per_thread };
         
         let triangles = triangles.to_vec();
+        let lights_local = lights.to_vec();
         let ox = ox; let oy = oy; let oz = oz;
         let max_dist = max_dist;
         let width = width_usize;
@@ -301,6 +419,7 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
         let half_tan = half_tan;
         let basis = basis.clone();
         let texture_map = texture_map.clone();
+        let ambient_light = ambient_light;
 
         handles.push(thread::spawn(move || {
             let mut result = Vec::new();
@@ -316,7 +435,7 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
                         basis.forward[1] + basis.right[1]*px + basis.up[1]*py,
                         basis.forward[2] + basis.right[2]*px + basis.up[2]*py,
                     ]);
-                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &triangles, &texture_map);
+                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &triangles, &texture_map, &lights_local, ambient_light);
                     result.push((y, x, pixel));
                 }
             }
@@ -334,6 +453,7 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
 pub fn Render_image_to_console() -> Result<(),String>{
     let mut queue_2d:Vec<super::Draw_components> = Vec::new();
     let mut queue_3d:Vec<super::Draw_components> = Vec::new();
+    let mut light_queue:Vec<super::Light_components> = Vec::new();
 
     let mut all_queue= super::Static_scene.lock().unwrap();
 
@@ -361,6 +481,19 @@ pub fn Render_image_to_console() -> Result<(),String>{
 
     drop(all_queue);
     super::Draw_queue.lock().unwrap().clear();
+
+    let mut all_ligts = super::Static_light.lock().unwrap();
+    for light in all_ligts.iter(){
+        light_queue.push(light.clone());
+    }
+    drop(all_ligts);
+
+    let mut all_ligts = super::Light_queue.lock().unwrap();
+    for light in all_ligts.iter(){
+        light_queue.push(light.clone());
+    }
+    drop(all_ligts);
+    super::Light_queue.lock().unwrap().clear();
 
     let width = super::Engine_settings.lock().unwrap().window_width as i128;
     let height = super::Engine_settings.lock().unwrap().window_height as i128;
@@ -393,7 +526,7 @@ pub fn Render_image_to_console() -> Result<(),String>{
         }
     }
 
-    Render_3d_to_screen(&triangles, &mut screen);
+    Render_3d_to_screen(&triangles, &mut screen, &light_queue);
 
     for object in queue_2d{
         let mut biggest_x:f32 = 0.0;
