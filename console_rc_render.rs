@@ -257,6 +257,19 @@ pub fn Render_image_to_console() -> Result<(),String>{
     let mut queue_2d:Vec<super::Draw_components> = Vec::new();
     let mut queue_3d:Vec<super::Draw_components> = Vec::new();
 
+    let mut all_queue= super::Static_scene.lock().unwrap();
+
+    for object in all_queue.iter(){
+        if object.draw_type == "2d_object".to_string(){
+            queue_2d.push(object.clone());
+        }
+        if object.draw_type == "3d_object".to_string(){
+            queue_3d.push(object.clone());
+        }
+    }
+
+    drop(all_queue);
+
     let mut all_queue= super::Draw_queue.lock().unwrap();
 
     for object in all_queue.iter(){
@@ -269,7 +282,7 @@ pub fn Render_image_to_console() -> Result<(),String>{
     }
 
     drop(all_queue);
-    // super::Draw_queue.lock().unwrap().clear();
+    super::Draw_queue.lock().unwrap().clear();
 
     let width = super::Engine_settings.lock().unwrap().window_width as i128;
     let height = super::Engine_settings.lock().unwrap().window_height as i128;
@@ -295,6 +308,8 @@ pub fn Render_image_to_console() -> Result<(),String>{
                     verts[i+6], verts[i+7], verts[i+8],
                 ],
                 draw_RGBA_color: object.draw_RGBA_color,
+                draw_texture_path: object.draw_texture_path.clone(),
+                draw_special_name: object.draw_special_name.clone()
             };
             triangles.push(tri);
         }

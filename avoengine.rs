@@ -22,9 +22,12 @@ pub struct Draw_components{
     pub draw_z: f32,
     pub draw_symbol: char,
     pub draw_vertices: Vec<f32>,
-    pub draw_RGBA_color: [u8;4]
+    pub draw_RGBA_color: [u8;4],
+    pub draw_texture_path: String,
+    pub draw_special_name: String
 }
 pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
+pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 
 #[derive(Clone)]
 pub struct Pixel_structure{
@@ -46,7 +49,7 @@ pub struct Camera_structure{
     pub camera_roll: f32,
     pub max_dist: u128
 }
-pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure{camera_fov: 70, camera_x: 0.0, camera_y: 1.0,
+pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure{camera_fov: 58, camera_x: 0.0, camera_y: 1.0,
                                                                          camera_z: 0.0, camera_pitch: 0.0, camera_yaw: 0.0,
                                                                          camera_roll: 0.0, max_dist: 256});
 
