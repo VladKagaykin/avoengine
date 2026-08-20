@@ -28,6 +28,7 @@ pub struct Draw_components{
 }
 pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
+pub static Is_scene_changed: Mutex<bool> = Mutex::new(false);
 
 #[derive(Clone)]
 pub struct Light_components{

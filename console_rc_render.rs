@@ -2,7 +2,15 @@ use std::f32::consts::PI;
 use std::thread;
 use image::RgbaImage;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Mutex};
+
+#[derive(Clone)]
+pub struct Render_triangle {
+    pub triangle: super::Draw_components,
+    pub baked_light: Option<[f32;3]>,
+}
+
+static Baked_static_triangles: Mutex<Vec<Render_triangle>> = Mutex::new(Vec::new());
 
 pub fn To_console(){
     let width = super::Engine_settings.lock().unwrap().window_width as usize;
@@ -198,12 +206,13 @@ fn is_occluded(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_ligh
     false
 }
 
-fn light_transmittance(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_light: f32, triangles: &[super::Draw_components]) -> f32 {
+fn light_transmittance(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_light: f32, triangles: &[Render_triangle]) -> f32 {
     let offset = [point[0] + normal[0]*1e-3, point[1] + normal[1]*1e-3, point[2] + normal[2]*0.1];
     let to_light = [light_pos[0]-point[0], light_pos[1]-point[1], light_pos[2]-point[2]];
     let dir = normalize(to_light);
     let mut transmittance = 1.0;
-    for tri in triangles {
+    for rt in triangles {
+        let tri = &rt.triangle;
         let verts = &tri.draw_vertices;
         if verts.len() < 9 {
             continue;
@@ -227,7 +236,7 @@ fn light_transmittance(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist
     transmittance
 }
 
-fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[super::Draw_components], lights: &[super::Light_components], ambient: [u8;3]) -> [f32;3] {
+fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[Render_triangle], lights: &[super::Light_components], ambient: [u8;3]) -> [f32;3] {
     let mut r = ambient[0] as f32 / 255.0;
     let mut g = ambient[1] as f32 / 255.0;
     let mut b = ambient[2] as f32 / 255.0;
@@ -240,14 +249,12 @@ fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[super::Draw_co
         let dist_sq = to_light[0] * to_light[0] + to_light[1] * to_light[1] + to_light[2] * to_light[2];
         let dist = dist_sq.sqrt();
 
-        // Защита от деления на ноль и слишком малых расстояний
         if dist < 1e-6 {
             continue;
         }
 
         let to_light_dir = normalize(to_light);
 
-        // Проверка конуса
         let light_forward = camera_basis(light.light_pitch, light.light_yaw, 0.0).forward;
         let point_dir_from_light = [-to_light_dir[0], -to_light_dir[1], -to_light_dir[2]];
         let cos_angle = dot(&light_forward, &point_dir_from_light);
@@ -257,17 +264,14 @@ fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[super::Draw_co
             continue;
         }
 
-        // Тени (transmittance)
         let transmittance = light_transmittance(point, normal, light_pos, dist, triangles);
         if transmittance <= 0.0 {
             continue;
         }
 
-        // ---- РЕАЛИСТИЧНОЕ КВАДРАТИЧНОЕ ЗАТУХАНИЕ ----
         let falloff = light.light_distance / (1.0 / EPSILON - 1.0).sqrt();
         let attenuation = 1.0 / (1.0 + (dist / falloff).powi(2));
 
-        // Если яркость уже ниже порога – не добавляем вклад (опционально)
         if attenuation < EPSILON {
             continue;
         }
@@ -284,15 +288,17 @@ fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[super::Draw_co
 }
 
 pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: [f32;3],
-                   triangles: &[super::Draw_components], textures: &HashMap<String, RgbaImage>,
-                   lights: &[super::Light_components], ambient_light: [u8;3]) -> super::Pixel_structure {
+                   triangles: &[Render_triangle], textures: &HashMap<String, RgbaImage>,
+                   dynamic_lights: &[super::Light_components], all_lights: &[super::Light_components],
+                   ambient_light: [u8;3]) -> super::Pixel_structure {
     let origin = [start_x, start_y, start_z];
     let max_t = length as f32;
     let mut best_t = max_t;
     let mut best_pixel = super::Empty_pixel.lock().unwrap().clone();
     let mut best_alpha = 0.0;
     
-    for tri in triangles {
+    for rt in triangles {
+        let tri = &rt.triangle;
         let verts = &tri.draw_vertices;
         if verts.len() < 9 {
             continue;
@@ -332,7 +338,17 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
                 let edge2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
                 let normal = normalize(cross(&edge1, &edge2));
                 let hit_point = [origin[0] + dir[0]*t, origin[1] + dir[1]*t, origin[2] + dir[2]*t];
-                let light_factor = compute_lighting(hit_point, normal, triangles, lights, ambient_light);
+                let light_factor = if let Some(baked) = rt.baked_light {
+                    let dynamic_contrib = compute_lighting(hit_point, normal, triangles, dynamic_lights, [0,0,0]);
+                    let amb = [ambient_light[0] as f32/255.0, ambient_light[1] as f32/255.0, ambient_light[2] as f32/255.0];
+                    [
+                        (amb[0] + baked[0] + dynamic_contrib[0]).min(1.0),
+                        (amb[1] + baked[1] + dynamic_contrib[1]).min(1.0),
+                        (amb[2] + baked[2] + dynamic_contrib[2]).min(1.0),
+                    ]
+                } else {
+                    compute_lighting(hit_point, normal, triangles, all_lights, ambient_light)
+                };
                 let lit_r = (r as f32 * light_factor[0]).round() as u8;
                 let lit_g = (g as f32 * light_factor[1]).round() as u8;
                 let lit_b = (b as f32 * light_factor[2]).round() as u8;
@@ -366,7 +382,7 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
     best_pixel
 }
 
-pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Vec<Vec<super::Pixel_structure>>, lights: &[super::Light_components]) {
+pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen: &mut Vec<Vec<super::Pixel_structure>>, dynamic_lights: &[super::Light_components]) {
     let settings = super::Engine_settings.lock().unwrap();
     let width = settings.window_width;
     let height = settings.window_height;
@@ -387,8 +403,20 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
 
     let basis = camera_basis(pitch, yaw, roll);
 
+    let baked_static = Baked_static_triangles.lock().unwrap().clone();
+    let mut triangles: Vec<Render_triangle> = Vec::with_capacity(dynamic_triangles.len() + baked_static.len());
+    for t in dynamic_triangles {
+        triangles.push(Render_triangle { triangle: t.clone(), baked_light: None });
+    }
+    triangles.extend(baked_static);
+
+    let static_lights = super::Static_light.lock().unwrap().clone();
+    let mut all_lights: Vec<super::Light_components> = static_lights;
+    all_lights.extend(dynamic_lights.iter().cloned());
+
     let mut texture_map = HashMap::new();
-    for tri in triangles {
+    for rt in &triangles {
+        let tri = &rt.triangle;
         if tri.draw_texture_path != "none" && !texture_map.contains_key(&tri.draw_texture_path) {
             if let Some(img) = load_texture(&tri.draw_texture_path) {
                 texture_map.insert(tri.draw_texture_path.clone(), img);
@@ -410,7 +438,8 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
         let end_y = if t == num_threads - 1 { height_usize } else { (t + 1) * rows_per_thread };
         
         let triangles = triangles.to_vec();
-        let lights_local = lights.to_vec();
+        let dynamic_lights_local = dynamic_lights.to_vec();
+        let all_lights_local = all_lights.to_vec();
         let ox = ox; let oy = oy; let oz = oz;
         let max_dist = max_dist;
         let width = width_usize;
@@ -435,7 +464,7 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
                         basis.forward[1] + basis.right[1]*px + basis.up[1]*py,
                         basis.forward[2] + basis.right[2]*px + basis.up[2]*py,
                     ]);
-                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &triangles, &texture_map, &lights_local, ambient_light);
+                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &triangles, &texture_map, &dynamic_lights_local, &all_lights_local, ambient_light);
                     result.push((y, x, pixel));
                 }
             }
@@ -450,6 +479,63 @@ pub fn Render_3d_to_screen(triangles: &[super::Draw_components], screen: &mut Ve
     }
 }
 
+fn Bake_scene(){
+    let static_scene = super::Static_scene.lock().unwrap();
+
+    let mut static_triangles: Vec<super::Draw_components> = Vec::new();
+    for object in static_scene.iter(){
+        if object.draw_type == "3d_object".to_string(){
+            let verts = &object.draw_vertices;
+            for i in (0..verts.len()).step_by(9) {
+                if i + 8 >= verts.len() { break; }
+                let tri = super::Draw_components {
+                    draw_type: object.draw_type.clone(),
+                    draw_x: object.draw_x,
+                    draw_y: object.draw_y,
+                    draw_z: object.draw_z,
+                    draw_symbol: object.draw_symbol,
+                    draw_vertices: vec![
+                        verts[i], verts[i+1], verts[i+2],
+                        verts[i+3], verts[i+4], verts[i+5],
+                        verts[i+6], verts[i+7], verts[i+8],
+                    ],
+                    draw_RGBA_color: object.draw_RGBA_color,
+                    draw_texture_path: object.draw_texture_path.clone(),
+                    draw_special_name: object.draw_special_name.clone()
+                };
+                static_triangles.push(tri);
+            }
+        }
+    }
+    drop(static_scene);
+
+    let static_lights = super::Static_light.lock().unwrap().clone();
+
+    let occluders: Vec<Render_triangle> = static_triangles.iter().cloned()
+        .map(|t| Render_triangle { triangle: t, baked_light: None })
+        .collect();
+
+    let mut baked_result: Vec<Render_triangle> = Vec::with_capacity(static_triangles.len());
+    for tri in &static_triangles {
+        let verts = &tri.draw_vertices;
+        if verts.len() < 9 { continue; }
+        let v0 = [verts[0]+tri.draw_x, verts[1]+tri.draw_y, verts[2]+tri.draw_z];
+        let v1 = [verts[3]+tri.draw_x, verts[4]+tri.draw_y, verts[5]+tri.draw_z];
+        let v2 = [verts[6]+tri.draw_x, verts[7]+tri.draw_y, verts[8]+tri.draw_z];
+
+        let edge1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
+        let edge2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+        let normal = normalize(cross(&edge1, &edge2));
+        let centroid = [(v0[0]+v1[0]+v2[0])/3.0, (v0[1]+v1[1]+v2[1])/3.0, (v0[2]+v1[2]+v2[2])/3.0];
+
+        let baked_light = compute_lighting(centroid, normal, &occluders, &static_lights, [0,0,0]);
+        baked_result.push(Render_triangle { triangle: tri.clone(), baked_light: Some(baked_light) });
+    }
+
+    let mut store = Baked_static_triangles.lock().unwrap();
+    *store = baked_result;
+}
+
 pub fn Render_image_to_console() -> Result<(),String>{
     let mut queue_2d:Vec<super::Draw_components> = Vec::new();
     let mut queue_3d:Vec<super::Draw_components> = Vec::new();
@@ -461,9 +547,9 @@ pub fn Render_image_to_console() -> Result<(),String>{
         if object.draw_type == "2d_object".to_string(){
             queue_2d.push(object.clone());
         }
-        if object.draw_type == "3d_object".to_string(){
-            queue_3d.push(object.clone());
-        }
+        // if object.draw_type == "3d_object".to_string(){
+        //     queue_3d.push(object.clone());
+        // }
     }
 
     drop(all_queue);
@@ -482,18 +568,19 @@ pub fn Render_image_to_console() -> Result<(),String>{
     drop(all_queue);
     super::Draw_queue.lock().unwrap().clear();
 
-    let mut all_ligts = super::Static_light.lock().unwrap();
-    for light in all_ligts.iter(){
-        light_queue.push(light.clone());
-    }
-    drop(all_ligts);
-
     let mut all_ligts = super::Light_queue.lock().unwrap();
     for light in all_ligts.iter(){
         light_queue.push(light.clone());
     }
     drop(all_ligts);
     super::Light_queue.lock().unwrap().clear();
+
+    let mut examination = super::Is_scene_changed.lock().unwrap();
+    if *examination {
+        Bake_scene();
+        *examination = false;
+    }
+    drop(examination);
 
     let width = super::Engine_settings.lock().unwrap().window_width as i128;
     let height = super::Engine_settings.lock().unwrap().window_height as i128;
