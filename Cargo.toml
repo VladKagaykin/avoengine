@@ -10,3 +10,4 @@ path = "avoengine.rs"
 winit = "0.30.13"
 image = "0.24"
 softbuffer = "0.4.8"
+rhai = { version = "1.25.1", features = ["sync"] }

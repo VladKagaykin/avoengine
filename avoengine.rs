@@ -1,9 +1,11 @@
-use std::sync::Mutex;
+use std::sync::{Mutex, LazyLock};
+use std::collections::HashMap;
 
 pub mod console_rc_render;
 pub mod tick_system;
 pub mod console_input;
 pub mod window_processing;
+pub mod maps;
 
 pub struct Settings{
     pub window_width: i128,
@@ -45,6 +47,17 @@ pub struct Light_components{
 
 pub static Light_queue: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
 pub static Static_light: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
+
+#[derive(Clone)]
+pub struct Script{
+    pub function: String,
+    pub content: String
+}
+
+pub static Map_scripts: Mutex<Vec<Script>> = Mutex::new(Vec::new());
+pub static Map_objects: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| {
+    Mutex::new(HashMap::new())
+});
 
 #[derive(Clone)]
 pub struct Pixel_structure{
