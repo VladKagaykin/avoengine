@@ -206,20 +206,129 @@ fn is_occluded(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_ligh
     false
 }
 
-fn light_transmittance(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_light: f32, triangles: &[Render_triangle]) -> f32 {
-    let offset = [point[0] + normal[0]*1e-3, point[1] + normal[1]*1e-3, point[2] + normal[2]*0.1];
-    let to_light = [light_pos[0]-point[0], light_pos[1]-point[1], light_pos[2]-point[2]];
+struct BvhNode {
+    aabb_min: [f32; 3],
+    aabb_max: [f32; 3],
+    left: Option<Box<BvhNode>>,
+    right: Option<Box<BvhNode>>,
+    triangles: Vec<usize>,
+}
+
+fn compute_triangle_aabb(tri: &super::Draw_components) -> ([f32; 3], [f32; 3]) {
+    let verts = &tri.draw_vertices;
+    let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+    let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+    let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for v in [v0, v1, v2] {
+        for i in 0..3 {
+            if v[i] < min[i] { min[i] = v[i]; }
+            if v[i] > max[i] { max[i] = v[i]; }
+        }
+    }
+    (min, max)
+}
+
+fn build_bvh_recursive(indices: &mut [usize], aabbs: &[([f32; 3], [f32; 3])], triangles: &[Render_triangle], depth: u32) -> BvhNode {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for &i in indices.iter() {
+        let (aabb_min, aabb_max) = aabbs[i];
+        for k in 0..3 {
+            if aabb_min[k] < min[k] { min[k] = aabb_min[k]; }
+            if aabb_max[k] > max[k] { max[k] = aabb_max[k]; }
+        }
+    }
+    if indices.len() <= 8 || depth > 20 {
+        return BvhNode {
+            aabb_min: min,
+            aabb_max: max,
+            left: None,
+            right: None,
+            triangles: indices.to_vec(),
+        };
+    }
+    let extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    let axis = if extent[0] >= extent[1] && extent[0] >= extent[2] { 0 } else if extent[1] >= extent[2] { 1 } else { 2 };
+    indices.sort_by(|&a, &b| {
+        let ca = (aabbs[a].0[axis] + aabbs[a].1[axis]) * 0.5;
+        let cb = (aabbs[b].0[axis] + aabbs[b].1[axis]) * 0.5;
+        ca.partial_cmp(&cb).unwrap()
+    });
+    let mid = indices.len() / 2;
+    let (left_indices, right_indices) = indices.split_at_mut(mid);
+    let left = build_bvh_recursive(left_indices, aabbs, triangles, depth + 1);
+    let right = build_bvh_recursive(right_indices, aabbs, triangles, depth + 1);
+    BvhNode {
+        aabb_min: min,
+        aabb_max: max,
+        left: Some(Box::new(left)),
+        right: Some(Box::new(right)),
+        triangles: Vec::new(),
+    }
+}
+
+fn build_bvh(triangles: &[Render_triangle]) -> BvhNode {
+    let mut indices: Vec<usize> = (0..triangles.len()).collect();
+    let aabbs: Vec<([f32; 3], [f32; 3])> = triangles.iter().map(|rt| compute_triangle_aabb(&rt.triangle)).collect();
+    build_bvh_recursive(&mut indices, &aabbs, triangles, 0)
+}
+
+fn ray_intersect_aabb(origin: &[f32; 3], dir: &[f32; 3], aabb_min: &[f32; 3], aabb_max: &[f32; 3], max_t: f32) -> bool {
+    let mut tmin: f32 = 0.0;
+    let mut tmax: f32 = max_t;
+    for i in 0..3 {
+        if dir[i].abs() < 1e-8 {
+            if origin[i] < aabb_min[i] || origin[i] > aabb_max[i] {
+                return false;
+            }
+        } else {
+            let inv = 1.0 / dir[i];
+            let t1 = (aabb_min[i] - origin[i]) * inv;
+            let t2 = (aabb_max[i] - origin[i]) * inv;
+            let (t_near, t_far) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+            tmin = tmin.max(t_near);
+            tmax = tmax.min(t_far);
+            if tmin > tmax {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn collect_candidates(origin: &[f32; 3], dir: &[f32; 3], max_t: f32, node: &BvhNode, triangles: &[Render_triangle], out: &mut Vec<usize>) {
+    if !ray_intersect_aabb(origin, dir, &node.aabb_min, &node.aabb_max, max_t) {
+        return;
+    }
+    if node.triangles.is_empty() {
+        if let Some(left) = &node.left {
+            collect_candidates(origin, dir, max_t, left, triangles, out);
+        }
+        if let Some(right) = &node.right {
+            collect_candidates(origin, dir, max_t, right, triangles, out);
+        }
+    } else {
+        out.extend_from_slice(&node.triangles);
+    }
+}
+
+fn light_transmittance(point: [f32; 3], normal: [f32; 3], light_pos: [f32; 3], dist_to_light: f32, bvh: &BvhNode, triangles: &[Render_triangle]) -> f32 {
+    let offset = [point[0] + normal[0] * 1e-3, point[1] + normal[1] * 1e-3, point[2] + normal[2] * 0.1];
+    let to_light = [light_pos[0] - point[0], light_pos[1] - point[1], light_pos[2] - point[2]];
     let dir = normalize(to_light);
+    let mut candidates = Vec::new();
+    collect_candidates(&offset, &dir, dist_to_light, bvh, triangles, &mut candidates);
     let mut transmittance = 1.0;
-    for rt in triangles {
+    for &idx in &candidates {
+        let rt = &triangles[idx];
         let tri = &rt.triangle;
         let verts = &tri.draw_vertices;
-        if verts.len() < 9 {
-            continue;
-        }
-        let v0 = [verts[0]+tri.draw_x, verts[1]+tri.draw_y, verts[2]+tri.draw_z];
-        let v1 = [verts[3]+tri.draw_x, verts[4]+tri.draw_y, verts[5]+tri.draw_z];
-        let v2 = [verts[6]+tri.draw_x, verts[7]+tri.draw_y, verts[8]+tri.draw_z];
+        if verts.len() < 9 { continue; }
+        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
         if let Some((t, _, _)) = ray_triangle_intersect(&offset, &dir, &v0, &v1, &v2) {
             if t > 1e-3 && t < dist_to_light {
                 let alpha = tri.draw_RGBA_color[3] as f32 / 255.0;
@@ -236,7 +345,7 @@ fn light_transmittance(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist
     transmittance
 }
 
-fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[Render_triangle], lights: &[super::Light_components], ambient: [u8;3]) -> [f32;3] {
+fn compute_lighting(point: [f32; 3], normal: [f32; 3], bvh: &BvhNode, triangles: &[Render_triangle], lights: &[super::Light_components], ambient: [u8; 3]) -> [f32; 3] {
     let mut r = ambient[0] as f32 / 255.0;
     let mut g = ambient[1] as f32 / 255.0;
     let mut b = ambient[2] as f32 / 255.0;
@@ -248,11 +357,7 @@ fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[Render_triangl
         let to_light = [light_pos[0] - point[0], light_pos[1] - point[1], light_pos[2] - point[2]];
         let dist_sq = to_light[0] * to_light[0] + to_light[1] * to_light[1] + to_light[2] * to_light[2];
         let dist = dist_sq.sqrt();
-
-        if dist < 1e-6 {
-            continue;
-        }
-
+        if dist < 1e-6 { continue; }
         let to_light_dir = normalize(to_light);
 
         let light_forward = camera_basis(light.light_pitch, light.light_yaw, 0.0).forward;
@@ -260,21 +365,14 @@ fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[Render_triangl
         let cos_angle = dot(&light_forward, &point_dir_from_light);
         let half_cone = (light.light_cone_angle * 0.5) * PI / 180.0;
         let cos_half_cone = half_cone.cos();
-        if cos_angle < cos_half_cone {
-            continue;
-        }
+        if cos_angle < cos_half_cone { continue; }
 
-        let transmittance = light_transmittance(point, normal, light_pos, dist, triangles);
-        if transmittance <= 0.0 {
-            continue;
-        }
+        let transmittance = light_transmittance(point, normal, light_pos, dist, bvh, triangles);
+        if transmittance <= 0.0 { continue; }
 
         let falloff = light.light_distance / (1.0 / EPSILON - 1.0).sqrt();
         let attenuation = 1.0 / (1.0 + (dist / falloff).powi(2));
-
-        if attenuation < EPSILON {
-            continue;
-        }
+        if attenuation < EPSILON { continue; }
 
         let diff = dot(&normal, &to_light_dir).max(0.0);
         let factor = attenuation * diff * transmittance;
@@ -287,22 +385,24 @@ fn compute_lighting(point: [f32;3], normal: [f32;3], triangles: &[Render_triangl
     [r.min(1.0), g.min(1.0), b.min(1.0)]
 }
 
-pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: [f32;3],
-                   triangles: &[Render_triangle], textures: &HashMap<String, RgbaImage>,
+pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: [f32; 3],
+                   bvh: &BvhNode, triangles: &[Render_triangle], textures: &HashMap<String, RgbaImage>,
                    dynamic_lights: &[super::Light_components], all_lights: &[super::Light_components],
-                   ambient_light: [u8;3]) -> super::Pixel_structure {
+                   ambient_light: [u8; 3]) -> super::Pixel_structure {
     let origin = [start_x, start_y, start_z];
     let max_t = length as f32;
     let mut best_t = max_t;
     let mut best_pixel = super::Empty_pixel.lock().unwrap().clone();
     let mut best_alpha = 0.0;
-    
-    for rt in triangles {
+
+    let mut candidates = Vec::new();
+    collect_candidates(&origin, &dir, max_t, bvh, triangles, &mut candidates);
+
+    for &idx in &candidates {
+        let rt = &triangles[idx];
         let tri = &rt.triangle;
         let verts = &tri.draw_vertices;
-        if verts.len() < 9 {
-            continue;
-        }
+        if verts.len() < 9 { continue; }
         let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
         let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
         let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
@@ -334,20 +434,20 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
                     (c[0], c[1], c[2], c[3] as f32 / 255.0)
                 };
 
-                let edge1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
-                let edge2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+                let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+                let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
                 let normal = normalize(cross(&edge1, &edge2));
-                let hit_point = [origin[0] + dir[0]*t, origin[1] + dir[1]*t, origin[2] + dir[2]*t];
+                let hit_point = [origin[0] + dir[0] * t, origin[1] + dir[1] * t, origin[2] + dir[2] * t];
                 let light_factor = if let Some(baked) = rt.baked_light {
-                    let dynamic_contrib = compute_lighting(hit_point, normal, triangles, dynamic_lights, [0,0,0]);
-                    let amb = [ambient_light[0] as f32/255.0, ambient_light[1] as f32/255.0, ambient_light[2] as f32/255.0];
+                    let dynamic_contrib = compute_lighting(hit_point, normal, bvh, triangles, dynamic_lights, [0, 0, 0]);
+                    let amb = [ambient_light[0] as f32 / 255.0, ambient_light[1] as f32 / 255.0, ambient_light[2] as f32 / 255.0];
                     [
                         (amb[0] + baked[0] + dynamic_contrib[0]).min(1.0),
                         (amb[1] + baked[1] + dynamic_contrib[1]).min(1.0),
                         (amb[2] + baked[2] + dynamic_contrib[2]).min(1.0),
                     ]
                 } else {
-                    compute_lighting(hit_point, normal, triangles, all_lights, ambient_light)
+                    compute_lighting(hit_point, normal, bvh, triangles, all_lights, ambient_light)
                 };
                 let lit_r = (r as f32 * light_factor[0]).round() as u8;
                 let lit_g = (g as f32 * light_factor[1]).round() as u8;
@@ -382,6 +482,43 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
     best_pixel
 }
 
+fn point_in_view_frustum(point: [f32; 3], origin: [f32; 3], basis: &CameraBasis, tan_h: f32, tan_v: f32) -> bool {
+    let rel = [point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]];
+    let z = dot(&rel, &basis.forward);
+    if z <= 0.0 { return false; }
+    let x = dot(&rel, &basis.right);
+    let y = dot(&rel, &basis.up);
+    x.abs() <= z * tan_h && y.abs() <= z * tan_v
+}
+
+fn light_cone_intersects_frustum(light: &super::Light_components, origin: [f32; 3], basis: &CameraBasis, tan_h: f32, tan_v: f32) -> bool {
+    let apex = [light.light_x, light.light_y, light.light_z];
+    let dir = camera_basis(light.light_pitch, light.light_yaw, 0.0).forward;
+    let half_cone = (light.light_cone_angle * 0.5) * PI / 180.0;
+    let cos_h = half_cone.cos();
+    let sin_h = half_cone.sin();
+    let rel = [apex[0] - origin[0], apex[1] - origin[1], apex[2] - origin[2]];
+    let planes: [[f32; 3]; 5] = [
+        [basis.right[0] - basis.forward[0] * tan_h, basis.right[1] - basis.forward[1] * tan_h, basis.right[2] - basis.forward[2] * tan_h],
+        [-basis.right[0] - basis.forward[0] * tan_h, -basis.right[1] - basis.forward[1] * tan_h, -basis.right[2] - basis.forward[2] * tan_h],
+        [basis.up[0] - basis.forward[0] * tan_v, basis.up[1] - basis.forward[1] * tan_v, basis.up[2] - basis.forward[2] * tan_v],
+        [-basis.up[0] - basis.forward[0] * tan_v, -basis.up[1] - basis.forward[1] * tan_v, -basis.up[2] - basis.forward[2] * tan_v],
+        [-basis.forward[0], -basis.forward[1], -basis.forward[2]],
+    ];
+    for n in planes {
+        let rel_dot = dot(&rel, &n);
+        if rel_dot <= 0.0 { continue; }
+        let a = dot(&dir, &n);
+        let n_len_sq = dot(&n, &n);
+        let b = (n_len_sq - a * a).max(0.0).sqrt();
+        let min_dot = a.min(a * cos_h + b * sin_h);
+        if min_dot >= 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen: &mut Vec<Vec<super::Pixel_structure>>, dynamic_lights: &[super::Light_components]) {
     let settings = super::Engine_settings.lock().unwrap();
     let width = settings.window_width;
@@ -389,10 +526,10 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
 
     let cam = super::Camera.lock().unwrap();
     let (ox, oy, oz) = (cam.camera_x, cam.camera_y, cam.camera_z);
-    let pitch = cam.camera_pitch;    
-    let yaw = cam.camera_yaw;          
-    let roll = cam.camera_roll;      
-    let fov = cam.camera_fov as f32;   
+    let pitch = cam.camera_pitch;
+    let yaw = cam.camera_yaw;
+    let roll = cam.camera_roll;
+    let fov = cam.camera_fov as f32;
     let max_dist = cam.max_dist as i128;
     let ambient_light = [cam.ambient_light[0], cam.ambient_light[1], cam.ambient_light[2]];
     drop(cam);
@@ -400,8 +537,11 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     let aspect = width as f32 / height as f32;
     let fov_rad = fov * PI / 180.0;
     let half_tan = (fov_rad / 2.0).tan();
+    let tan_h = half_tan * aspect;
+    let tan_v = half_tan;
 
     let basis = camera_basis(pitch, yaw, roll);
+    let origin = [ox, oy, oz];
 
     let baked_static = Baked_static_triangles.lock().unwrap().clone();
     let mut triangles: Vec<Render_triangle> = Vec::with_capacity(dynamic_triangles.len() + baked_static.len());
@@ -410,12 +550,39 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     }
     triangles.extend(baked_static);
 
+    let mut culled_triangles: Vec<Render_triangle> = Vec::with_capacity(triangles.len());
+    for rt in triangles {
+        let tri = &rt.triangle;
+        let verts = &tri.draw_vertices;
+        if verts.len() < 9 { continue; }
+        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
+        if point_in_view_frustum(v0, origin, &basis, tan_h, tan_v) ||
+           point_in_view_frustum(v1, origin, &basis, tan_h, tan_v) ||
+           point_in_view_frustum(v2, origin, &basis, tan_h, tan_v) {
+            culled_triangles.push(rt);
+        }
+    }
+    triangles = culled_triangles;
+
     let static_lights = super::Static_light.lock().unwrap().clone();
     let mut all_lights: Vec<super::Light_components> = static_lights;
     all_lights.extend(dynamic_lights.iter().cloned());
+    let all_lights: Vec<super::Light_components> = all_lights.into_iter()
+        .filter(|l| light_cone_intersects_frustum(l, origin, &basis, tan_h, tan_v))
+        .collect();
+    let dynamic_lights_culled: Vec<super::Light_components> = dynamic_lights.iter()
+        .filter(|l| light_cone_intersects_frustum(l, origin, &basis, tan_h, tan_v))
+        .cloned()
+        .collect();
+
+    let bvh = build_bvh(&triangles);
+    let bvh_arc = Arc::new(bvh);
+    let triangles_arc = Arc::new(triangles);
 
     let mut texture_map = HashMap::new();
-    for rt in &triangles {
+    for rt in triangles_arc.iter() {
         let tri = &rt.triangle;
         if tri.draw_texture_path != "none" && !texture_map.contains_key(&tri.draw_texture_path) {
             if let Some(img) = load_texture(&tri.draw_texture_path) {
@@ -436,15 +603,16 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     for t in 0..num_threads {
         let start_y = t * rows_per_thread;
         let end_y = if t == num_threads - 1 { height_usize } else { (t + 1) * rows_per_thread };
-        
-        let triangles = triangles.to_vec();
-        let dynamic_lights_local = dynamic_lights.to_vec();
+
+        let bvh_clone = bvh_arc.clone();
+        let triangles_clone = triangles_arc.clone();
+        let dynamic_lights_local = dynamic_lights_culled.to_vec();
         let all_lights_local = all_lights.to_vec();
         let ox = ox; let oy = oy; let oz = oz;
         let max_dist = max_dist;
         let width = width_usize;
         let height = height_usize;
-        let aspect = aspect; 
+        let aspect = aspect;
         let half_tan = half_tan;
         let basis = basis.clone();
         let texture_map = texture_map.clone();
@@ -452,7 +620,6 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
 
         handles.push(thread::spawn(move || {
             let mut result = Vec::new();
-            
             for y in start_y..end_y {
                 for x in 0..width {
                     let nx = (2.0 * (x as f32 + 0.5) / width as f32) - 1.0;
@@ -460,11 +627,11 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
                     let px = nx * half_tan * aspect;
                     let py = ny * half_tan;
                     let dir = normalize([
-                        basis.forward[0] + basis.right[0]*px + basis.up[0]*py,
-                        basis.forward[1] + basis.right[1]*px + basis.up[1]*py,
-                        basis.forward[2] + basis.right[2]*px + basis.up[2]*py,
+                        basis.forward[0] + basis.right[0] * px + basis.up[0] * py,
+                        basis.forward[1] + basis.right[1] * px + basis.up[1] * py,
+                        basis.forward[2] + basis.right[2] * px + basis.up[2] * py,
                     ]);
-                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &triangles, &texture_map, &dynamic_lights_local, &all_lights_local, ambient_light);
+                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &bvh_clone, &triangles_clone, &texture_map, &dynamic_lights_local, &all_lights_local, ambient_light);
                     result.push((y, x, pixel));
                 }
             }
@@ -479,12 +646,12 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     }
 }
 
-fn Bake_scene(){
+fn Bake_scene() {
     let static_scene = super::Static_scene.lock().unwrap();
 
     let mut static_triangles: Vec<super::Draw_components> = Vec::new();
-    for object in static_scene.iter(){
-        if object.draw_type == "3d_object".to_string(){
+    for object in static_scene.iter() {
+        if object.draw_type == "3d_object".to_string() {
             let verts = &object.draw_vertices;
             for i in (0..verts.len()).step_by(9) {
                 if i + 8 >= verts.len() { break; }
@@ -495,9 +662,9 @@ fn Bake_scene(){
                     draw_z: object.draw_z,
                     draw_symbol: object.draw_symbol,
                     draw_vertices: vec![
-                        verts[i], verts[i+1], verts[i+2],
-                        verts[i+3], verts[i+4], verts[i+5],
-                        verts[i+6], verts[i+7], verts[i+8],
+                        verts[i], verts[i + 1], verts[i + 2],
+                        verts[i + 3], verts[i + 4], verts[i + 5],
+                        verts[i + 6], verts[i + 7], verts[i + 8],
                     ],
                     draw_RGBA_color: object.draw_RGBA_color,
                     draw_texture_path: object.draw_texture_path.clone(),
@@ -515,20 +682,22 @@ fn Bake_scene(){
         .map(|t| Render_triangle { triangle: t, baked_light: None })
         .collect();
 
+    let bvh = build_bvh(&occluders);
+
     let mut baked_result: Vec<Render_triangle> = Vec::with_capacity(static_triangles.len());
     for tri in &static_triangles {
         let verts = &tri.draw_vertices;
         if verts.len() < 9 { continue; }
-        let v0 = [verts[0]+tri.draw_x, verts[1]+tri.draw_y, verts[2]+tri.draw_z];
-        let v1 = [verts[3]+tri.draw_x, verts[4]+tri.draw_y, verts[5]+tri.draw_z];
-        let v2 = [verts[6]+tri.draw_x, verts[7]+tri.draw_y, verts[8]+tri.draw_z];
+        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
 
-        let edge1 = [v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2]];
-        let edge2 = [v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2]];
+        let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
         let normal = normalize(cross(&edge1, &edge2));
-        let centroid = [(v0[0]+v1[0]+v2[0])/3.0, (v0[1]+v1[1]+v2[1])/3.0, (v0[2]+v1[2]+v2[2])/3.0];
+        let centroid = [(v0[0] + v1[0] + v2[0]) / 3.0, (v0[1] + v1[1] + v2[1]) / 3.0, (v0[2] + v1[2] + v2[2]) / 3.0];
 
-        let baked_light = compute_lighting(centroid, normal, &occluders, &static_lights, [0,0,0]);
+        let baked_light = compute_lighting(centroid, normal, &bvh, &occluders, &static_lights, [0, 0, 0]);
         baked_result.push(Render_triangle { triangle: tri.clone(), baked_light: Some(baked_light) });
     }
 
