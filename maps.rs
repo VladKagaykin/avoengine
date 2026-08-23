@@ -301,6 +301,59 @@ pub fn Do_all_scripts() {
     });
     engine.register_fn("get_tick", || tick_system::Get_tick());
 
+    engine.register_fn("push_static_draw", |comp: Draw_components| {
+        Static_scene.lock().unwrap().push(comp);
+    });
+    engine.register_fn("push_static_light", |light: Light_components| {
+        Static_light.lock().unwrap().push(light);
+    });
+    engine.register_fn("clear_dynamic_draw", || {
+        Draw_queue.lock().unwrap().clear();
+    });
+    engine.register_fn("clear_dynamic_light", || {
+        Light_queue.lock().unwrap().clear();
+    });
+    engine.register_fn("clear_static_scene", || {
+        Static_scene.lock().unwrap().clear();
+    });
+    engine.register_fn("clear_static_light", || {
+        Static_light.lock().unwrap().clear();
+    });
+
+    engine.register_fn("get_camera_fov", || {
+        super::Camera.lock().unwrap().camera_fov
+    });
+    engine.register_fn("get_camera_x", || {
+        super::Camera.lock().unwrap().camera_x
+    });
+    engine.register_fn("get_camera_y", || {
+        super::Camera.lock().unwrap().camera_y
+    });
+    engine.register_fn("get_camera_z", || {
+        super::Camera.lock().unwrap().camera_z
+    });
+    engine.register_fn("get_camera_pitch", || {
+        super::Camera.lock().unwrap().camera_pitch
+    });
+    engine.register_fn("get_camera_yaw", || {
+        super::Camera.lock().unwrap().camera_yaw
+    });
+    engine.register_fn("get_camera_roll", || {
+        super::Camera.lock().unwrap().camera_roll
+    });
+    engine.register_fn("get_max_dist", || {
+        super::Camera.lock().unwrap().max_dist
+    });
+    engine.register_fn("get_ambient_light", || {
+        let ambient = super::Camera.lock().unwrap().ambient_light;
+        rhai::Array::from_iter(ambient.iter().map(|&v| Dynamic::from_int(v as i64)))
+    });
+
+    engine.register_fn("set_scene_changed", |val: bool| {
+        let mut flag = super::Is_scene_changed.lock().unwrap();
+        *flag = val;
+    });
+
     engine.register_type::<Draw_components>();
     engine.register_type::<Light_components>();
 

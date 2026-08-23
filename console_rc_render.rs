@@ -391,12 +391,10 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
                    ambient_light: [u8; 3]) -> super::Pixel_structure {
     let origin = [start_x, start_y, start_z];
     let max_t = length as f32;
-    let mut best_t = max_t;
-    let mut best_pixel = super::Empty_pixel.lock().unwrap().clone();
-    let mut best_alpha = 0.0;
-
     let mut candidates = Vec::new();
     collect_candidates(&origin, &dir, max_t, bvh, triangles, &mut candidates);
+
+    let mut hits = Vec::new();
 
     for &idx in &candidates {
         let rt = &triangles[idx];
@@ -407,7 +405,7 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
         let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
         let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
         if let Some((t, u, v)) = ray_triangle_intersect(&origin, &dir, &v0, &v1, &v2) {
-            if t > 0.0 && t < best_t {
+            if t > 0.0 && t < max_t {
                 let (r, g, b, a) = if tri.draw_texture_path != "none" {
                     if let Some(img) = textures.get(&tri.draw_texture_path) {
                         let (uv0, uv1, uv2) = generate_uv_for_triangle(&v0, &v1, &v2);
@@ -453,32 +451,46 @@ pub fn ray_tracing(start_x: f32, start_y: f32, start_z: f32, length: i128, dir: 
                 let lit_g = (g as f32 * light_factor[1]).round() as u8;
                 let lit_b = (b as f32 * light_factor[2]).round() as u8;
 
-                let alpha = a;
-                let fg = [lit_r, lit_g, lit_b, 255];
-                if alpha >= 1.0 {
-                    best_t = t;
-                    best_pixel = super::Pixel_structure {
-                        pixel_symbol: tri.draw_symbol,
-                        pixel_RGBA_color: fg,
-                    };
-                    best_alpha = 1.0;
-                } else if alpha > 0.0 {
-                    let bg = &best_pixel.pixel_RGBA_color;
-                    let mut blended = [0u8; 4];
-                    for i in 0..3 {
-                        blended[i] = ((bg[i] as f32 * (1.0 - alpha)) + (fg[i] as f32 * alpha)) as u8;
-                    }
-                    blended[3] = 255;
-                    best_t = t;
-                    best_pixel = super::Pixel_structure {
-                        pixel_symbol: tri.draw_symbol,
-                        pixel_RGBA_color: blended,
-                    };
-                    best_alpha += alpha * (1.0 - best_alpha);
-                }
+                hits.push((t, lit_r, lit_g, lit_b, a, tri.draw_symbol));
             }
         }
     }
+
+    hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let mut best_pixel = super::Empty_pixel.lock().unwrap().clone();
+    let mut best_alpha = 0.0;
+
+    for (_, r, g, b, a, symbol) in hits {
+        if a <= 0.0 { continue; }
+        let fg = [r, g, b, 255];
+        if a >= 1.0 {
+            let bg = best_pixel.pixel_RGBA_color;
+            let mut blended = [0u8; 4];
+            for i in 0..3 {
+                blended[i] = ((bg[i] as f32 * (1.0 - best_alpha)) + (fg[i] as f32 * a)) as u8;
+            }
+            blended[3] = 255;
+            best_pixel = super::Pixel_structure {
+                pixel_symbol: symbol,
+                pixel_RGBA_color: blended,
+            };
+            break;
+        } else {
+            let bg = best_pixel.pixel_RGBA_color;
+            let mut blended = [0u8; 4];
+            for i in 0..3 {
+                blended[i] = ((bg[i] as f32 * (1.0 - best_alpha)) + (fg[i] as f32 * a)) as u8;
+            }
+            blended[3] = 255;
+            best_pixel = super::Pixel_structure {
+                pixel_symbol: symbol,
+                pixel_RGBA_color: blended,
+            };
+            best_alpha += a * (1.0 - best_alpha);
+        }
+    }
+
     best_pixel
 }
 
@@ -549,22 +561,6 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
         triangles.push(Render_triangle { triangle: t.clone(), baked_light: None });
     }
     triangles.extend(baked_static);
-
-    let mut culled_triangles: Vec<Render_triangle> = Vec::with_capacity(triangles.len());
-    for rt in triangles {
-        let tri = &rt.triangle;
-        let verts = &tri.draw_vertices;
-        if verts.len() < 9 { continue; }
-        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
-        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
-        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
-        if point_in_view_frustum(v0, origin, &basis, tan_h, tan_v) ||
-           point_in_view_frustum(v1, origin, &basis, tan_h, tan_v) ||
-           point_in_view_frustum(v2, origin, &basis, tan_h, tan_v) {
-            culled_triangles.push(rt);
-        }
-    }
-    triangles = culled_triangles;
 
     let static_lights = super::Static_light.lock().unwrap().clone();
     let mut all_lights: Vec<super::Light_components> = static_lights;
@@ -716,9 +712,6 @@ pub fn Render_image_to_console() -> Result<(),String>{
         if object.draw_type == "2d_object".to_string(){
             queue_2d.push(object.clone());
         }
-        // if object.draw_type == "3d_object".to_string(){
-        //     queue_3d.push(object.clone());
-        // }
     }
 
     drop(all_queue);
