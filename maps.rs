@@ -413,20 +413,45 @@ pub fn Do_all_scripts() {
             light_special_name: name.to_string(),
         }
     });
+    engine.register_fn("remove_draw_by_name", |name: &str| -> i64 {
+        let mut queue = Draw_queue.lock().unwrap();
+        let before = queue.len();
+        queue.retain(|comp| comp.draw_special_name != name);
+        (before - queue.len()) as i64
+    });
+
+    engine.register_fn("remove_light_by_name", |name: &str| -> i64 {
+        let mut queue = Light_queue.lock().unwrap();
+        let before = queue.len();
+        queue.retain(|light| light.light_special_name != name);
+        (before - queue.len()) as i64
+    });
+
+    engine.register_fn("remove_static_draw_by_name", |name: &str| -> i64 {
+        let mut scene = Static_scene.lock().unwrap();
+        let before = scene.len();
+        scene.retain(|comp| comp.draw_special_name != name);
+        (before - scene.len()) as i64
+    });
+
+    engine.register_fn("remove_static_light_by_name", |name: &str| -> i64 {
+        let mut lights = Static_light.lock().unwrap();
+        let before = lights.len();
+        lights.retain(|light| light.light_special_name != name);
+        (before - lights.len()) as i64
+    });
 
     for script in scripts {
-        if script.function == "on_tick" {
-            let ast = match engine.compile(&script.content) {
-                Ok(ast) => ast,
-                Err(e) => {
-                    eprintln!("[Script] Compilation error: {}", e);
-                    continue;
-                }
-            };
-            let mut scope = Scope::new();
-            if let Err(e) = engine.run_ast_with_scope(&mut scope, &ast) {
-                eprintln!("[Script] Execution error: {}", e);
+        let ast = match engine.compile(&script.content) {
+            Ok(ast) => ast,
+            Err(e) => {
+                eprintln!("[Script] Compilation error: {}", e);
+                continue;
             }
+        };
+        let mut scope = Scope::new();
+        if let Err(e) = engine.run_ast_with_scope(&mut scope, &ast) {
+            eprintln!("[Script] Execution error: {}", e);
         }
     }
 }
