@@ -11,6 +11,7 @@ pub struct Render_triangle {
 }
 
 static Baked_static_triangles: Mutex<Vec<Render_triangle>> = Mutex::new(Vec::new());
+static Baked_static_bvh: Mutex<Option<BvhNode>> = Mutex::new(None);
 
 pub fn To_console(){
     let width = super::Engine_settings.lock().unwrap().window_width as usize;
@@ -206,12 +207,14 @@ fn is_occluded(point: [f32;3], normal: [f32;3], light_pos: [f32;3], dist_to_ligh
     false
 }
 
+#[derive(Clone)]
 struct BvhNode {
     aabb_min: [f32; 3],
     aabb_max: [f32; 3],
     left: Option<Box<BvhNode>>,
     right: Option<Box<BvhNode>>,
     triangles: Vec<usize>,
+    triangle_offset: usize,
 }
 
 fn compute_triangle_aabb(tri: &super::Draw_components) -> ([f32; 3], [f32; 3]) {
@@ -230,7 +233,7 @@ fn compute_triangle_aabb(tri: &super::Draw_components) -> ([f32; 3], [f32; 3]) {
     (min, max)
 }
 
-fn build_bvh_recursive(indices: &mut [usize], aabbs: &[([f32; 3], [f32; 3])], triangles: &[Render_triangle], depth: u32) -> BvhNode {
+fn build_bvh_recursive(indices: &mut [usize], aabbs: &[([f32; 3], [f32; 3])], triangles: &[Render_triangle], depth: u32, offset: usize) -> BvhNode {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for &i in indices.iter() {
@@ -247,6 +250,7 @@ fn build_bvh_recursive(indices: &mut [usize], aabbs: &[([f32; 3], [f32; 3])], tr
             left: None,
             right: None,
             triangles: indices.to_vec(),
+            triangle_offset: offset,
         };
     }
     let extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
@@ -258,21 +262,22 @@ fn build_bvh_recursive(indices: &mut [usize], aabbs: &[([f32; 3], [f32; 3])], tr
     });
     let mid = indices.len() / 2;
     let (left_indices, right_indices) = indices.split_at_mut(mid);
-    let left = build_bvh_recursive(left_indices, aabbs, triangles, depth + 1);
-    let right = build_bvh_recursive(right_indices, aabbs, triangles, depth + 1);
+    let left = build_bvh_recursive(left_indices, aabbs, triangles, depth + 1, offset);
+    let right = build_bvh_recursive(right_indices, aabbs, triangles, depth + 1, offset);
     BvhNode {
         aabb_min: min,
         aabb_max: max,
         left: Some(Box::new(left)),
         right: Some(Box::new(right)),
         triangles: Vec::new(),
+        triangle_offset: offset,
     }
 }
 
-fn build_bvh(triangles: &[Render_triangle]) -> BvhNode {
+fn build_bvh(triangles: &[Render_triangle], offset: usize) -> BvhNode {
     let mut indices: Vec<usize> = (0..triangles.len()).collect();
     let aabbs: Vec<([f32; 3], [f32; 3])> = triangles.iter().map(|rt| compute_triangle_aabb(&rt.triangle)).collect();
-    build_bvh_recursive(&mut indices, &aabbs, triangles, 0)
+    build_bvh_recursive(&mut indices, &aabbs, triangles, 0, offset)
 }
 
 fn ray_intersect_aabb(origin: &[f32; 3], dir: &[f32; 3], aabb_min: &[f32; 3], aabb_max: &[f32; 3], max_t: f32) -> bool {
@@ -310,7 +315,9 @@ fn collect_candidates(origin: &[f32; 3], dir: &[f32; 3], max_t: f32, node: &BvhN
             collect_candidates(origin, dir, max_t, right, triangles, out);
         }
     } else {
-        out.extend_from_slice(&node.triangles);
+        for &idx in &node.triangles {
+            out.push(node.triangle_offset + idx);
+        }
     }
 }
 
@@ -556,11 +563,44 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     let origin = [ox, oy, oz];
 
     let baked_static = Baked_static_triangles.lock().unwrap().clone();
-    let mut triangles: Vec<Render_triangle> = Vec::with_capacity(dynamic_triangles.len() + baked_static.len());
-    for t in dynamic_triangles {
-        triangles.push(Render_triangle { triangle: t.clone(), baked_light: None });
-    }
-    triangles.extend(baked_static);
+    let static_bvh_opt = Baked_static_bvh.lock().unwrap().clone();
+    let static_bvh = match static_bvh_opt {
+        Some(node) => node,
+        None => build_bvh(&baked_static, 0),
+    };
+
+    let dynamic_render: Vec<Render_triangle> = dynamic_triangles.iter()
+        .map(|t| Render_triangle { triangle: t.clone(), baked_light: None })
+        .collect();
+
+    let mut all_triangles = baked_static.clone();
+    all_triangles.extend(dynamic_render.clone());
+
+    let combined_bvh = if dynamic_render.is_empty() {
+        static_bvh
+    } else if baked_static.is_empty() {
+        build_bvh(&dynamic_render, 0)
+    } else {
+        let dynamic_bvh = build_bvh(&dynamic_render, baked_static.len());
+        let top_min = [
+            static_bvh.aabb_min[0].min(dynamic_bvh.aabb_min[0]),
+            static_bvh.aabb_min[1].min(dynamic_bvh.aabb_min[1]),
+            static_bvh.aabb_min[2].min(dynamic_bvh.aabb_min[2]),
+        ];
+        let top_max = [
+            static_bvh.aabb_max[0].max(dynamic_bvh.aabb_max[0]),
+            static_bvh.aabb_max[1].max(dynamic_bvh.aabb_max[1]),
+            static_bvh.aabb_max[2].max(dynamic_bvh.aabb_max[2]),
+        ];
+        BvhNode {
+            aabb_min: top_min,
+            aabb_max: top_max,
+            left: Some(Box::new(static_bvh)),
+            right: Some(Box::new(dynamic_bvh)),
+            triangles: Vec::new(),
+            triangle_offset: 0,
+        }
+    };
 
     let static_lights = super::Static_light.lock().unwrap().clone();
     let mut all_lights: Vec<super::Light_components> = static_lights;
@@ -573,9 +613,8 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
         .cloned()
         .collect();
 
-    let bvh = build_bvh(&triangles);
-    let bvh_arc = Arc::new(bvh);
-    let triangles_arc = Arc::new(triangles);
+    let bvh_arc = Arc::new(combined_bvh);
+    let triangles_arc = Arc::new(all_triangles);
 
     let mut texture_map = HashMap::new();
     for rt in triangles_arc.iter() {
@@ -678,7 +717,7 @@ fn Bake_scene() {
         .map(|t| Render_triangle { triangle: t, baked_light: None })
         .collect();
 
-    let bvh = build_bvh(&occluders);
+    let occluders_bvh = build_bvh(&occluders, 0);
 
     let mut baked_result: Vec<Render_triangle> = Vec::with_capacity(static_triangles.len());
     for tri in &static_triangles {
@@ -693,12 +732,16 @@ fn Bake_scene() {
         let normal = normalize(cross(&edge1, &edge2));
         let centroid = [(v0[0] + v1[0] + v2[0]) / 3.0, (v0[1] + v1[1] + v2[1]) / 3.0, (v0[2] + v1[2] + v2[2]) / 3.0];
 
-        let baked_light = compute_lighting(centroid, normal, &bvh, &occluders, &static_lights, [0, 0, 0]);
+        let baked_light = compute_lighting(centroid, normal, &occluders_bvh, &occluders, &static_lights, [0, 0, 0]);
         baked_result.push(Render_triangle { triangle: tri.clone(), baked_light: Some(baked_light) });
     }
 
+    let baked_bvh = build_bvh(&baked_result, 0);
     let mut store = Baked_static_triangles.lock().unwrap();
     *store = baked_result;
+    drop(store);
+    let mut bvh_store = Baked_static_bvh.lock().unwrap();
+    *bvh_store = Some(baked_bvh);
 }
 
 pub fn Render_image_to_console() -> Result<(),String>{

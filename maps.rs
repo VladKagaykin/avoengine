@@ -286,6 +286,17 @@ pub fn Do_all_scripts() {
 
     let mut engine = Engine::new();
 
+    engine.set_max_expr_depths(128,128);      
+    engine.set_max_operations(536_870_912);  
+    engine.set_max_call_levels(128); 
+
+    engine.register_fn("to_int", |s: &str| -> i64 {
+        s.trim().parse::<i64>().unwrap_or(0)
+    });
+    engine.register_fn("to_float", |s: &str| -> f64 {
+        s.trim().parse::<f64>().unwrap_or(0.0)
+    });
+
     engine.register_fn("get_map_object", |key: &str| {
         Map_objects.lock().unwrap().get(key).cloned().unwrap_or_default()
     });
