@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use crate::{
     Draw_components, Light_components, Script, Static_light, Static_scene, Map_objects, Map_scripts,
@@ -278,17 +279,14 @@ fn format_char(c: char) -> String {
 
 use rhai::*;
 
-pub fn Do_all_scripts() {
-    let scripts = Map_scripts.lock().unwrap().clone();
-    if scripts.is_empty() {
-        return;
-    }
+static SCRIPT_CACHE: OnceLock<Mutex<Option<Vec<AST>>>> = OnceLock::new();
 
+fn build_engine() -> Engine {
     let mut engine = Engine::new();
 
-    engine.set_max_expr_depths(128,128);      
-    engine.set_max_operations(536_870_912);  
-    engine.set_max_call_levels(128); 
+    engine.set_max_expr_depths(128,128);
+    engine.set_max_operations(536_870_912);
+    engine.set_max_call_levels(128);
 
     engine.register_fn("to_int", |s: &str| -> i64 {
         s.trim().parse::<i64>().unwrap_or(0)
@@ -441,14 +439,43 @@ pub fn Do_all_scripts() {
         (before - lights.len()) as i64
     });
 
-    for script in scripts {
-        let ast = match engine.compile(&script.content) {
-            Ok(ast) => ast,
-            Err(e) => {
-                eprintln!("[Script] Compilation error: {}", e);
-                continue;
+    engine
+}
+
+pub fn Do_all_scripts() {
+    let cache = SCRIPT_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cache_guard = cache.lock().unwrap();
+    let asts = if let Some(ref cached_asts) = *cache_guard {
+        cached_asts.clone()
+    } else {
+        let scripts = Map_scripts.lock().unwrap().clone();
+        if scripts.is_empty() {
+            return;
+        }
+        let engine = build_engine();
+        let mut compiled = Vec::new();
+        let mut has_error = false;
+        for script in scripts {
+            match engine.compile(&script.content) {
+                Ok(ast) => compiled.push(ast),
+                Err(e) => {
+                    eprintln!("[Script] Compilation error: {}", e);
+                    has_error = true;
+                }
             }
-        };
+        }
+        if !has_error {
+            *cache_guard = Some(compiled.clone());
+        }
+        compiled
+    };
+
+    if asts.is_empty() {
+        return;
+    }
+
+    let engine = build_engine();
+    for ast in asts {
         let mut scope = Scope::new();
         if let Err(e) = engine.run_ast_with_scope(&mut scope, &ast) {
             eprintln!("[Script] Execution error: {}", e);
@@ -537,6 +564,10 @@ pub fn Load_map(path: String) -> io::Result<()> {
         Map_objects.lock().unwrap().clear();
         Static_light.lock().unwrap().clear();
         Static_scene.lock().unwrap().clear();
+    }
+
+    if let Some(cache) = SCRIPT_CACHE.get() {
+        *cache.lock().unwrap() = None;
     }
 
     let mut current_section = String::new();
