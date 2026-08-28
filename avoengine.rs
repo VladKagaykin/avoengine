@@ -84,6 +84,17 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure{camera_
                                                                          camera_z: 0.0, camera_pitch: 0.0, camera_yaw: 0.0,
                                                                          camera_roll: 0.0, max_dist: 256, ambient_light: [128,128,128]});
 
+#[derive(Clone)]
+pub struct Physics_components{
+    pub x:f32,
+    pub y:f32,
+    pub z:f32,
+    pub vertices:Vec<f32>,
+    pub soundproofing: u8,
+    pub center_mass:[f32;3], //x,y,z
+    pub special_name: String
+}
+
 pub fn Setup_window(width: &i128, height:&i128){
     let new_screen = vec![vec![Empty_pixel.lock().unwrap().clone(); *width as usize]; *height as usize];
     

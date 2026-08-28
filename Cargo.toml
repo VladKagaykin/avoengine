@@ -1,6 +1,6 @@
 [package]
 name = "avoengine"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 
 [lib]
@@ -11,3 +11,5 @@ winit = "0.30.13"
 image = "0.24"
 softbuffer = "0.4.8"
 rhai = { version = "1.25.1", features = ["sync"] }
+cpal = "0.18.2"
+ocl = "0.19.7"

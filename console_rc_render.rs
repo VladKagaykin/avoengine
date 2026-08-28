@@ -3,6 +3,7 @@ use std::thread;
 use image::RgbaImage;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Mutex};
+use ocl::{ProQue, Platform, Device, flags};
 
 #[derive(Clone)]
 pub struct Render_triangle {
@@ -538,10 +539,281 @@ fn light_cone_intersects_frustum(light: &super::Light_components, origin: [f32; 
     true
 }
 
+const KERNEL_SRC: &str = r#"
+#define PI 3.14159265358979323846
+
+uchar4 unpackColor(uint packed) {
+    uchar4 c;
+    c.x = (packed >> 24) & 0xFF;
+    c.y = (packed >> 16) & 0xFF;
+    c.z = (packed >> 8) & 0xFF;
+    c.w = packed & 0xFF;
+    return c;
+}
+
+uint packColor(uchar4 c) {
+    return (c.x << 24) | (c.y << 16) | (c.z << 8) | c.w;
+}
+
+bool rayTriangleIntersect(float3 origin, float3 dir, float3 v0, float3 v1, float3 v2, float* t, float* u, float* v) {
+    float eps = 1e-6;
+    float3 edge1 = v1 - v0;
+    float3 edge2 = v2 - v0;
+    float3 h = cross(dir, edge2);
+    float a = dot(edge1, h);
+    if (fabs(a) < eps) return false;
+    float f = 1.0 / a;
+    float3 s = origin - v0;
+    *u = f * dot(s, h);
+    if (*u < 0.0 || *u > 1.0) return false;
+    float3 q = cross(s, edge1);
+    *v = f * dot(dir, q);
+    if (*v < 0.0 || *u + *v > 1.0) return false;
+    *t = f * dot(edge2, q);
+    return *t > eps;
+}
+
+__kernel void render_kernel(
+    __global const float* triVerts,
+    __global const float* triUVs,
+    __global const uint* triColors,
+    __global const int* triTextureIndex,
+    __global const uchar* triSymbol,
+    __global const float* lightData,
+    __global const uchar* textureData,
+    __global const int* textureMeta,
+    const int numTriangles,
+    const int numLights,
+    const int numTextures,
+    const float camOriginX, const float camOriginY, const float camOriginZ,
+    const float camForwardX, const float camForwardY, const float camForwardZ,
+    const float camRightX, const float camRightY, const float camRightZ,
+    const float camUpX, const float camUpY, const float camUpZ,
+    const float tan_h,
+    const float tan_v,
+    const int width,
+    const int height,
+    const float maxDist,
+    const float ambientLightR, const float ambientLightG, const float ambientLightB,
+    __global uint* outputColor,
+    __global uchar* outputSymbol
+)
+{
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+    if (x >= width || y >= height) return;
+
+    float3 camOrigin = (float3)(camOriginX, camOriginY, camOriginZ);
+    float3 camForward = (float3)(camForwardX, camForwardY, camForwardZ);
+    float3 camRight = (float3)(camRightX, camRightY, camRightZ);
+    float3 camUp = (float3)(camUpX, camUpY, camUpZ);
+    float3 ambientLight = (float3)(ambientLightR, ambientLightG, ambientLightB);
+
+    float nx = (2.0f * (x + 0.5f) / width) - 1.0f;
+    float ny = 1.0f - (2.0f * (y + 0.5f) / height);
+    float px = nx * tan_h;
+    float py = ny * tan_v;
+    float3 dir = normalize(camForward + camRight * px + camUp * py);
+    float3 origin = camOrigin;
+
+    #define MAX_HITS 64
+    float hitT[MAX_HITS];
+    uint hitColorPacked[MAX_HITS];
+    float hitAlpha[MAX_HITS];
+    uchar hitSymbol[MAX_HITS];
+    int hitCount = 0;
+
+    for (int i = 0; i < numTriangles; i++) {
+        int base = i * 9;
+        float3 v0 = (float3)(triVerts[base], triVerts[base+1], triVerts[base+2]);
+        float3 v1 = (float3)(triVerts[base+3], triVerts[base+4], triVerts[base+5]);
+        float3 v2 = (float3)(triVerts[base+6], triVerts[base+7], triVerts[base+8]);
+        float t, u, v;
+        if (rayTriangleIntersect(origin, dir, v0, v1, v2, &t, &u, &v)) {
+            if (t > 0.0f && t < maxDist) {
+                uint packedBaseColor = triColors[i];
+                uchar4 baseColor = unpackColor(packedBaseColor);
+                float alpha = baseColor.w / 255.0f;
+                uchar4 col = baseColor;
+
+                int texIndex = triTextureIndex[i];
+                if (texIndex >= 0) {
+                    int tw = textureMeta[texIndex*3];
+                    int th = textureMeta[texIndex*3+1];
+                    int offset = textureMeta[texIndex*3+2];
+                    float w = 1.0f - u - v;
+                    float uvx = w * triUVs[i*6] + u * triUVs[i*6+2] + v * triUVs[i*6+4];
+                    float uvy = w * triUVs[i*6+1] + u * triUVs[i*6+3] + v * triUVs[i*6+5];
+                    int tx = (int)(uvx * (tw - 1));
+                    int ty = (int)(uvy * (th - 1));
+                    tx = clamp(tx, 0, tw-1);
+                    ty = clamp(ty, 0, th-1);
+                    int texelIndex = offset + (ty * tw + tx) * 4;
+                    uchar4 texel = (uchar4)(textureData[texelIndex], textureData[texelIndex+1], textureData[texelIndex+2], textureData[texelIndex+3]);
+                    col = (uchar4)(
+                        (uchar)((texel.x/255.0f) * (baseColor.x/255.0f) * 255.0f),
+                        (uchar)((texel.y/255.0f) * (baseColor.y/255.0f) * 255.0f),
+                        (uchar)((texel.z/255.0f) * (baseColor.z/255.0f) * 255.0f),
+                        (uchar)((texel.w/255.0f) * alpha * 255.0f)
+                    );
+                    alpha = col.w / 255.0f;
+                }
+
+                float3 normal = normalize(cross(v1 - v0, v2 - v0));
+                float3 point = origin + dir * t;
+                float3 lightSum = ambientLight;
+
+                for (int j = 0; j < numLights; j++) {
+                    int lbase = j * 10;
+                    float3 lightPos = (float3)(lightData[lbase], lightData[lbase+1], lightData[lbase+2]);
+                    float3 lightColor = (float3)(lightData[lbase+3], lightData[lbase+4], lightData[lbase+5]);
+                    float pitch = lightData[lbase+6];
+                    float yaw = lightData[lbase+7];
+                    float coneAngle = lightData[lbase+8];
+                    float lightDist = lightData[lbase+9];
+
+                    float3 toLight = lightPos - point;
+                    float distSq = dot(toLight, toLight);
+                    float dist = sqrt(distSq);
+                    if (dist < 1e-6) continue;
+                    float3 toLightDir = normalize(toLight);
+
+                    float p = pitch * PI / 180.0f;
+                    float y = yaw * PI / 180.0f;
+                    float3 lightForward = (float3)(sin(y)*sin(p), cos(p), cos(y)*sin(p));
+                    float3 pointDirFromLight = -toLightDir;
+                    float cosAngle = dot(lightForward, pointDirFromLight);
+                    float halfCone = (coneAngle * 0.5f) * PI / 180.0f;
+                    float cosHalfCone = cos(halfCone);
+                    if (cosAngle < cosHalfCone) continue;
+
+                    bool occluded = false;
+                    float3 offset = point + normal * 0.001f;
+                    for (int k = 0; k < numTriangles; k++) {
+                        int kbase = k * 9;
+                        float3 sv0 = (float3)(triVerts[kbase], triVerts[kbase+1], triVerts[kbase+2]);
+                        float3 sv1 = (float3)(triVerts[kbase+3], triVerts[kbase+4], triVerts[kbase+5]);
+                        float3 sv2 = (float3)(triVerts[kbase+6], triVerts[kbase+7], triVerts[kbase+8]);
+                        float st, su, sv;
+                        if (rayTriangleIntersect(offset, toLightDir, sv0, sv1, sv2, &st, &su, &sv)) {
+                            if (st > 0.001f && st < dist) {
+                                uint packedOccColor = triColors[k];
+                                uchar4 occColor = unpackColor(packedOccColor);
+                                float occAlpha = occColor.w / 255.0f;
+                                if (occAlpha >= 1.0f) {
+                                    occluded = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (occluded) continue;
+
+                    float falloff = lightDist / sqrt(1.0f/0.01f - 1.0f);
+                    float attenuation = 1.0f / (1.0f + (dist/falloff)*(dist/falloff));
+                    if (attenuation < 0.01f) continue;
+
+                    float diff = fmax(dot(normal, toLightDir), 0.0f);
+                    float factor = attenuation * diff;
+                    lightSum += lightColor * factor;
+                }
+
+                float3 lit = (float3)(col.x/255.0f, col.y/255.0f, col.z/255.0f);
+                lit = lit * lightSum;
+                lit = fmin(lit, 1.0f);
+                col = (uchar4)((uchar)(lit.x*255.0f), (uchar)(lit.y*255.0f), (uchar)(lit.z*255.0f), col.w);
+
+                if (hitCount < MAX_HITS) {
+                    hitT[hitCount] = t;
+                    hitColorPacked[hitCount] = packColor(col);
+                    hitAlpha[hitCount] = alpha;
+                    hitSymbol[hitCount] = triSymbol[i];
+                    hitCount++;
+                }
+            }
+        }
+    }
+
+    // Сортировка хитов по расстоянию (пузырьком, так как максимум 64)
+    for (int i = 1; i < hitCount; i++) {
+        float keyT = hitT[i];
+        uint keyC = hitColorPacked[i];
+        float keyA = hitAlpha[i];
+        uchar keyS = hitSymbol[i];
+        int j = i - 1;
+        while (j >= 0 && hitT[j] > keyT) {
+            hitT[j+1] = hitT[j];
+            hitColorPacked[j+1] = hitColorPacked[j];
+            hitAlpha[j+1] = hitAlpha[j];
+            hitSymbol[j+1] = hitSymbol[j];
+            j--;
+        }
+        hitT[j+1] = keyT;
+        hitColorPacked[j+1] = keyC;
+        hitAlpha[j+1] = keyA;
+        hitSymbol[j+1] = keyS;
+    }
+
+    // Находим ближайший непрозрачный хит
+    int opaqueIndex = -1;
+    for (int i = 0; i < hitCount; i++) {
+        if (hitAlpha[i] >= 1.0f) {
+            opaqueIndex = i;
+            break;
+        }
+    }
+
+    uchar4 finalColor;
+    uchar finalSymbol = ' ';
+
+    if (opaqueIndex != -1) {
+        // Базовый цвет - непрозрачный
+        finalColor = unpackColor(hitColorPacked[opaqueIndex]);
+        finalSymbol = hitSymbol[opaqueIndex];
+        // Смешиваем все прозрачные хиты перед непрозрачным (с ближнего к дальнему)
+        for (int i = opaqueIndex - 1; i >= 0; i--) {
+            float a = hitAlpha[i];
+            if (a <= 0.0f || a >= 1.0f) continue; // только прозрачные
+            uchar4 fg = unpackColor(hitColorPacked[i]);
+            // Смешивание fg поверх finalColor
+            float invA = 1.0f - a;
+            finalColor = (uchar4)(
+                (uchar)(fg.x * a + finalColor.x * invA),
+                (uchar)(fg.y * a + finalColor.y * invA),
+                (uchar)(fg.z * a + finalColor.z * invA),
+                255
+            );
+            finalSymbol = hitSymbol[i];
+        }
+    } else {
+        // Нет непрозрачных: смешиваем прозрачные с фоном (чёрный), от дальнего к ближнему
+        finalColor = (uchar4)(0,0,0,255);
+        for (int i = hitCount - 1; i >= 0; i--) {
+            float a = hitAlpha[i];
+            if (a <= 0.0f) continue;
+            uchar4 fg = unpackColor(hitColorPacked[i]);
+            float invA = 1.0f - a;
+            finalColor = (uchar4)(
+                (uchar)(fg.x * a + finalColor.x * invA),
+                (uchar)(fg.y * a + finalColor.y * invA),
+                (uchar)(fg.z * a + finalColor.z * invA),
+                255
+            );
+            finalSymbol = hitSymbol[i];
+        }
+    }
+
+    int pixelIndex = y * width + x;
+    outputColor[pixelIndex] = packColor(finalColor);
+    outputSymbol[pixelIndex] = finalSymbol;
+}
+"#;
+
 pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen: &mut Vec<Vec<super::Pixel_structure>>, dynamic_lights: &[super::Light_components]) {
     let settings = super::Engine_settings.lock().unwrap();
     let width = settings.window_width;
     let height = settings.window_height;
+    drop(settings);
 
     let cam = super::Camera.lock().unwrap();
     let (ox, oy, oz) = (cam.camera_x, cam.camera_y, cam.camera_z);
@@ -549,7 +821,7 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     let yaw = cam.camera_yaw;
     let roll = cam.camera_roll;
     let fov = cam.camera_fov as f32;
-    let max_dist = cam.max_dist as i128;
+    let max_dist = cam.max_dist as f32;
     let ambient_light = [cam.ambient_light[0], cam.ambient_light[1], cam.ambient_light[2]];
     drop(cam);
 
@@ -576,7 +848,7 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     let mut all_triangles = baked_static.clone();
     all_triangles.extend(dynamic_render.clone());
 
-    let combined_bvh = if dynamic_render.is_empty() {
+    let _combined_bvh = if dynamic_render.is_empty() {
         static_bvh
     } else if baked_static.is_empty() {
         build_bvh(&dynamic_render, 0)
@@ -608,16 +880,13 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     let all_lights: Vec<super::Light_components> = all_lights.into_iter()
         .filter(|l| light_cone_intersects_frustum(l, origin, &basis, tan_h, tan_v))
         .collect();
-    let dynamic_lights_culled: Vec<super::Light_components> = dynamic_lights.iter()
+    let _dynamic_lights_culled: Vec<super::Light_components> = dynamic_lights.iter()
         .filter(|l| light_cone_intersects_frustum(l, origin, &basis, tan_h, tan_v))
         .cloned()
         .collect();
 
-    let bvh_arc = Arc::new(combined_bvh);
-    let triangles_arc = Arc::new(all_triangles);
-
     let mut texture_map = HashMap::new();
-    for rt in triangles_arc.iter() {
+    for rt in all_triangles.iter() {
         let tri = &rt.triangle;
         if tri.draw_texture_path != "none" && !texture_map.contains_key(&tri.draw_texture_path) {
             if let Some(img) = load_texture(&tri.draw_texture_path) {
@@ -625,58 +894,208 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
             }
         }
     }
-    let texture_map = Arc::new(texture_map);
 
-    let num_threads = thread::available_parallelism().expect("Can't get num of threads").get() * settings.cores_multiply.clone() as usize - 1;
-    let mut handles = vec![];
-    drop(settings);
+    let num_triangles = all_triangles.len();
+    let num_lights = all_lights.len();
+    let num_textures = texture_map.len();
 
-    let height_usize = height as usize;
-    let width_usize = width as usize;
-    let rows_per_thread = height_usize / num_threads;
-
-    for t in 0..num_threads {
-        let start_y = t * rows_per_thread;
-        let end_y = if t == num_threads - 1 { height_usize } else { (t + 1) * rows_per_thread };
-
-        let bvh_clone = bvh_arc.clone();
-        let triangles_clone = triangles_arc.clone();
-        let dynamic_lights_local = dynamic_lights_culled.to_vec();
-        let all_lights_local = all_lights.to_vec();
-        let ox = ox; let oy = oy; let oz = oz;
-        let max_dist = max_dist;
-        let width = width_usize;
-        let height = height_usize;
-        let aspect = aspect;
-        let half_tan = half_tan;
-        let basis = basis.clone();
-        let texture_map = texture_map.clone();
-        let ambient_light = ambient_light;
-
-        handles.push(thread::spawn(move || {
-            let mut result = Vec::new();
-            for y in start_y..end_y {
-                for x in 0..width {
-                    let nx = (2.0 * (x as f32 + 0.5) / width as f32) - 1.0;
-                    let ny = 1.0 - (2.0 * (y as f32 + 0.5) / height as f32);
-                    let px = nx * half_tan * aspect;
-                    let py = ny * half_tan;
-                    let dir = normalize([
-                        basis.forward[0] + basis.right[0] * px + basis.up[0] * py,
-                        basis.forward[1] + basis.right[1] * px + basis.up[1] * py,
-                        basis.forward[2] + basis.right[2] * px + basis.up[2] * py,
-                    ]);
-                    let pixel = ray_tracing(ox, oy, oz, max_dist, dir, &bvh_clone, &triangles_clone, &texture_map, &dynamic_lights_local, &all_lights_local, ambient_light);
-                    result.push((y, x, pixel));
-                }
+    if num_triangles == 0 {
+        // Если нет треугольников, просто очищаем экран
+        let empty_pixel = super::Empty_pixel.lock().unwrap().clone();
+        for row in screen.iter_mut() {
+            for pixel in row.iter_mut() {
+                *pixel = empty_pixel.clone();
             }
-            result
-        }));
+        }
+        return;
     }
 
-    for handle in handles {
-        for (y, x, pixel) in handle.join().unwrap() {
-            screen[y][x] = pixel;
+    let mut tri_verts: Vec<f32> = Vec::with_capacity(num_triangles * 9);
+    let mut tri_uvs: Vec<f32> = Vec::with_capacity(num_triangles * 6);
+    let mut tri_colors: Vec<u32> = Vec::with_capacity(num_triangles);
+    let mut tri_tex_index: Vec<i32> = Vec::with_capacity(num_triangles);
+    let mut tri_symbol: Vec<u8> = Vec::with_capacity(num_triangles);
+
+    let mut texture_data: Vec<u8> = Vec::new();
+    let mut texture_meta: Vec<i32> = Vec::with_capacity(num_textures * 3);
+    let mut tex_offset_map: HashMap<String, usize> = HashMap::new();
+
+    for (path, img) in texture_map.iter() {
+        let offset = texture_data.len();
+        let (w, h) = (img.width() as i32, img.height() as i32);
+        texture_meta.push(w);
+        texture_meta.push(h);
+        texture_meta.push(offset as i32);
+        tex_offset_map.insert(path.clone(), offset);
+        texture_data.extend_from_slice(img.as_raw());
+    }
+
+    for rt in all_triangles.iter() {
+        let tri = &rt.triangle;
+        let verts = &tri.draw_vertices;
+        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
+        tri_verts.extend_from_slice(&[v0[0], v0[1], v0[2], v1[0], v1[1], v1[2], v2[0], v2[1], v2[2]]);
+
+        let (uv0, uv1, uv2) = if tri.draw_texture_path != "none" {
+            generate_uv_for_triangle(&v0, &v1, &v2)
+        } else {
+            ((0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
+        };
+        tri_uvs.extend_from_slice(&[uv0.0, uv0.1, uv1.0, uv1.1, uv2.0, uv2.1]);
+
+        let c = tri.draw_RGBA_color;
+        let packed = ((c[0] as u32) << 24) | ((c[1] as u32) << 16) | ((c[2] as u32) << 8) | (c[3] as u32);
+        tri_colors.push(packed);
+
+        let tex_idx = if tri.draw_texture_path != "none" {
+            if let Some(idx) = texture_map.keys().position(|p| p == &tri.draw_texture_path) {
+                idx as i32
+            } else {
+                -1
+            }
+        } else {
+            -1
+        };
+        tri_tex_index.push(tex_idx);
+        tri_symbol.push(tri.draw_symbol as u8);
+    }
+
+    let mut light_data: Vec<f32> = Vec::with_capacity(num_lights * 10);
+    for light in all_lights.iter() {
+        light_data.push(light.light_x);
+        light_data.push(light.light_y);
+        light_data.push(light.light_z);
+        light_data.push(light.light_RGB_color[0] as f32 / 255.0);
+        light_data.push(light.light_RGB_color[1] as f32 / 255.0);
+        light_data.push(light.light_RGB_color[2] as f32 / 255.0);
+        light_data.push(light.light_pitch);
+        light_data.push(light.light_yaw);
+        light_data.push(light.light_cone_angle);
+        light_data.push(light.light_distance);
+    }
+
+    // Если нет света, создаём фиктивный буфер с одним элементом
+    if light_data.is_empty() {
+        light_data.push(0.0);
+    }
+    if texture_data.is_empty() {
+        texture_data.push(0);
+    }
+    if texture_meta.is_empty() {
+        texture_meta.push(0);
+    }
+
+    let platforms = Platform::list();
+    let mut selected_platform: Option<Platform> = None;
+    let mut selected_device: Option<Device> = None;
+
+    for platform in platforms.iter() {
+        if let Ok(devices) = Device::list(platform, Some(flags::DeviceType::GPU)) {
+            if let Some(device) = devices.into_iter().next() {
+                selected_platform = Some(platform.clone());
+                selected_device = Some(device);
+                break;
+            }
+        }
+    }
+
+    if selected_device.is_none() {
+        for platform in platforms.iter() {
+            if let Ok(devices) = Device::list(platform, Some(flags::DeviceType::CPU)) {
+                if let Some(device) = devices.into_iter().next() {
+                    selected_platform = Some(platform.clone());
+                    selected_device = Some(device);
+                    break;
+                }
+            }
+        }
+    }
+
+    let (platform, device) = match (selected_platform, selected_device) {
+        (Some(p), Some(d)) => (p, d),
+        _ => panic!("No OpenCL device found"),
+    };
+
+    let pro_que = ProQue::builder()
+        .src(KERNEL_SRC)
+        .dims((width as usize, height as usize))
+        .platform(platform)
+        .device(device)
+        .build()
+        .expect("Failed to build OpenCL program");
+
+    let buffer_tri_verts = pro_que.buffer_builder::<f32>().len(tri_verts.len()).copy_host_slice(&tri_verts).build().unwrap();
+    let buffer_tri_uvs = pro_que.buffer_builder::<f32>().len(tri_uvs.len()).copy_host_slice(&tri_uvs).build().unwrap();
+    let buffer_tri_colors = pro_que.buffer_builder::<u32>().len(tri_colors.len()).copy_host_slice(&tri_colors).build().unwrap();
+    let buffer_tri_tex_index = pro_que.buffer_builder::<i32>().len(tri_tex_index.len()).copy_host_slice(&tri_tex_index).build().unwrap();
+    let buffer_tri_symbol = pro_que.buffer_builder::<u8>().len(tri_symbol.len()).copy_host_slice(&tri_symbol).build().unwrap();
+    let buffer_light_data = pro_que.buffer_builder::<f32>().len(light_data.len()).copy_host_slice(&light_data).build().unwrap();
+    let buffer_texture_data = pro_que.buffer_builder::<u8>().len(texture_data.len()).copy_host_slice(&texture_data).build().unwrap();
+    let buffer_texture_meta = pro_que.buffer_builder::<i32>().len(texture_meta.len()).copy_host_slice(&texture_meta).build().unwrap();
+
+    let buffer_output_color = pro_que.buffer_builder::<u32>().len((width as usize) * (height as usize)).build().unwrap();
+    let buffer_output_symbol = pro_que.buffer_builder::<u8>().len((width as usize) * (height as usize)).build().unwrap();
+
+    let kernel = pro_que.kernel_builder("render_kernel")
+        .arg(&buffer_tri_verts)
+        .arg(&buffer_tri_uvs)
+        .arg(&buffer_tri_colors)
+        .arg(&buffer_tri_tex_index)
+        .arg(&buffer_tri_symbol)
+        .arg(&buffer_light_data)
+        .arg(&buffer_texture_data)
+        .arg(&buffer_texture_meta)
+        .arg(&(num_triangles as i32))
+        .arg(&(num_lights as i32))
+        .arg(&(num_textures as i32))
+        .arg(&(origin[0]))
+        .arg(&(origin[1]))
+        .arg(&(origin[2]))
+        .arg(&(basis.forward[0]))
+        .arg(&(basis.forward[1]))
+        .arg(&(basis.forward[2]))
+        .arg(&(basis.right[0]))
+        .arg(&(basis.right[1]))
+        .arg(&(basis.right[2]))
+        .arg(&(basis.up[0]))
+        .arg(&(basis.up[1]))
+        .arg(&(basis.up[2]))
+        .arg(&tan_h)
+        .arg(&tan_v)
+        .arg(&(width as i32))
+        .arg(&(height as i32))
+        .arg(&max_dist)
+        .arg(&(ambient_light[0] as f32 / 255.0))
+        .arg(&(ambient_light[1] as f32 / 255.0))
+        .arg(&(ambient_light[2] as f32 / 255.0))
+        .arg(&buffer_output_color)
+        .arg(&buffer_output_symbol)
+        .build()
+        .expect("Failed to build kernel");
+
+    unsafe {
+        kernel.enq().expect("Failed to enqueue kernel");
+    }
+
+    let mut output_colors = vec![0u32; (width as usize) * (height as usize)];
+    let mut output_symbols = vec![0u8; (width as usize) * (height as usize)];
+    buffer_output_color.read(&mut output_colors).enq().expect("Failed to read color buffer");
+    buffer_output_symbol.read(&mut output_symbols).enq().expect("Failed to read symbol buffer");
+
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let idx = y * width as usize + x;
+            let packed = output_colors[idx];
+            let r = (packed >> 24) as u8;
+            let g = (packed >> 16) as u8;
+            let b = (packed >> 8) as u8;
+            let a = (packed & 0xFF) as u8;
+            screen[y][x] = super::Pixel_structure {
+                pixel_symbol: output_symbols[idx] as char,
+                pixel_RGBA_color: [r, g, b, a],
+            };
         }
     }
 }
