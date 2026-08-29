@@ -4,6 +4,7 @@ use image::RgbaImage;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Mutex};
 use ocl::{Platform, Device, Context, Program, Kernel, Queue, Buffer, builders::DeviceSpecifier, flags};
+use ocl::prm::Float3;
 
 #[derive(Clone)]
 pub struct Render_triangle {
@@ -16,7 +17,9 @@ static Baked_static_bvh: Mutex<Option<BvhNode>> = Mutex::new(None);
 
 struct OpenCLState {
     context: Context,
-    program: Program,
+    prepare_program: Program,
+    bake_program: Program,
+    bvh_program: Program,
     queue: Queue,
 }
 
@@ -41,22 +44,341 @@ fn init_opencl() -> Result<OpenCLState, String> {
         .devices(device)
         .build()
         .map_err(|e| e.to_string())?;
-    let program = Program::builder()
+    
+    let prepare_program = Program::builder()
         .devices(device)
-        .src(KERNEL_SRC)
+        .src(PREPARE_KERNEL_SRC)
         .build(&context)
         .map_err(|e| e.to_string())?;
+    
+    let bake_program = Program::builder()
+        .devices(device)
+        .src(BAKE_KERNEL_SRC)
+        .build(&context)
+        .map_err(|e| e.to_string())?;
+    
+    let bvh_program = Program::builder()
+        .devices(device)
+        .src(BVH_KERNEL_SRC)
+        .build(&context)
+        .map_err(|e| e.to_string())?;
+    
     let queue = Queue::new(&context, device, None)
         .map_err(|e| e.to_string())?;
 
     Ok(OpenCLState {
         context,
-        program,
+        prepare_program,
+        bake_program,
+        bvh_program,
         queue,
     })
 }
 
-const KERNEL_SRC: &str = r#"
+const BVH_KERNEL_SRC: &str = r#"
+__kernel void compute_aabb(
+    __global const float* vertices,
+    __global float* aabb_min,
+    __global float* aabb_max,
+    __global float* centroids,
+    const int num_triangles
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_triangles) return;
+    
+    int base = gid * 9;
+    float3 v0 = (float3)(vertices[base+0], vertices[base+1], vertices[base+2]);
+    float3 v1 = (float3)(vertices[base+3], vertices[base+4], vertices[base+5]);
+    float3 v2 = (float3)(vertices[base+6], vertices[base+7], vertices[base+8]);
+    
+    float3 min_val = fmin(fmin(v0, v1), v2);
+    float3 max_val = fmax(fmax(v0, v1), v2);
+    float3 centroid = (v0 + v1 + v2) / 3.0f;
+    
+    aabb_min[gid*3+0] = min_val.x;
+    aabb_min[gid*3+1] = min_val.y;
+    aabb_min[gid*3+2] = min_val.z;
+    
+    aabb_max[gid*3+0] = max_val.x;
+    aabb_max[gid*3+1] = max_val.y;
+    aabb_max[gid*3+2] = max_val.z;
+    
+    centroids[gid*3+0] = centroid.x;
+    centroids[gid*3+1] = centroid.y;
+    centroids[gid*3+2] = centroid.z;
+}
+
+uint expandBits(uint v) {
+    v = (v * 0x00010001u) & 0xFF0000FFu;
+    v = (v * 0x00000101u) & 0x0F00F00Fu;
+    v = (v * 0x00000011u) & 0xC30C30C3u;
+    v = (v * 0x00000005u) & 0x49249249u;
+    return v;
+}
+
+uint morton3D(float x, float y, float z, float3 scene_min, float3 scene_size) {
+    x = (x - scene_min.x) / scene_size.x;
+    y = (y - scene_min.y) / scene_size.y;
+    z = (z - scene_min.z) / scene_size.z;
+    
+    x = clamp(x * 1024.0f, 0.0f, 1023.0f);
+    y = clamp(y * 1024.0f, 0.0f, 1023.0f);
+    z = clamp(z * 1024.0f, 0.0f, 1023.0f);
+    
+    uint xx = expandBits((uint)x);
+    uint yy = expandBits((uint)y);
+    uint zz = expandBits((uint)z);
+    
+    return xx * 4 + yy * 2 + zz;
+}
+
+__kernel void compute_morton_codes(
+    __global const float* centroids,
+    __global uint* morton_codes,
+    __global int* indices,
+    const float3 scene_min,
+    const float3 scene_size,
+    const int num_triangles
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_triangles) return;
+    
+    float x = centroids[gid*3+0];
+    float y = centroids[gid*3+1];
+    float z = centroids[gid*3+2];
+    
+    uint code = morton3D(x, y, z, scene_min, scene_size);
+    morton_codes[gid] = code;
+    indices[gid] = gid;
+}
+
+__kernel void radix_sort_step(
+    __global const uint* input_codes,
+    __global const int* input_indices,
+    __global uint* output_codes,
+    __global int* output_indices,
+    __global int* counters,
+    const int bit_offset,
+    const int num_items
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_items) return;
+    
+    uint code = input_codes[gid];
+    int idx = input_indices[gid];
+    uint bit = (code >> bit_offset) & 1;
+    
+    int pos = atomic_add(&counters[bit], 1);
+    if (bit == 0) {
+        output_codes[pos] = code;
+        output_indices[pos] = idx;
+    } else {
+        int zero_count = counters[0];
+        output_codes[zero_count + pos] = code;
+        output_indices[zero_count + pos] = idx;
+    }
+}
+
+__kernel void build_bvh_nodes(
+    __global const uint* morton_codes,
+    __global const int* sorted_indices,
+    __global const float* aabb_min,
+    __global const float* aabb_max,
+    __global float* node_aabb_min,
+    __global float* node_aabb_max,
+    __global int* node_left,
+    __global int* node_right,
+    const int num_triangles
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_triangles - 1) return;
+    
+    int first = 0;
+    int last = num_triangles - 1;
+    
+    uint first_code = morton_codes[sorted_indices[first]];
+    uint last_code = morton_codes[sorted_indices[last]];
+    
+    if (first_code == last_code) {
+        int split = (first + last) / 2;
+        node_left[gid] = split;
+        node_right[gid] = split + 1;
+        return;
+    }
+    
+    int common_prefix = clz(first_code ^ last_code);
+    
+    int split = first;
+    int step = last - first;
+    
+    do {
+        step = (step + 1) >> 1;
+        int new_split = split + step;
+        
+        if (new_split < last) {
+            uint split_code = morton_codes[sorted_indices[new_split]];
+            int split_prefix = clz(first_code ^ split_code);
+            if (split_prefix > common_prefix) {
+                split = new_split;
+            }
+        }
+    } while (step > 1);
+    
+    node_left[gid] = split;
+    node_right[gid] = split + 1;
+}
+
+__kernel void calculate_bounding_boxes(
+    __global const float* aabb_min,
+    __global const float* aabb_max,
+    __global const int* node_left,
+    __global const int* node_right,
+    __global float* node_aabb_min,
+    __global float* node_aabb_max,
+    __global int* processed,
+    const int num_triangles
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_triangles) return;
+    
+    int node_idx = gid;
+    
+    while (node_idx >= 0) {
+        int was_processed = atomic_xchg(&processed[node_idx], 1);
+        if (was_processed) {
+            break;
+        }
+        
+        int left_idx = node_left[node_idx];
+        int right_idx = node_right[node_idx];
+        
+        float3 min_val = (float3)(1e30f, 1e30f, 1e30f);
+        float3 max_val = (float3)(-1e30f, -1e30f, -1e30f);
+        
+        if (left_idx < num_triangles) {
+            min_val = fmin(min_val, (float3)(aabb_min[left_idx*3], aabb_min[left_idx*3+1], aabb_min[left_idx*3+2]));
+            max_val = fmax(max_val, (float3)(aabb_max[left_idx*3], aabb_max[left_idx*3+1], aabb_max[left_idx*3+2]));
+        } else {
+            int left_node = left_idx - num_triangles;
+            min_val = fmin(min_val, (float3)(node_aabb_min[left_node*3], node_aabb_min[left_node*3+1], node_aabb_min[left_node*3+2]));
+            max_val = fmax(max_val, (float3)(node_aabb_max[left_node*3], node_aabb_max[left_node*3+1], node_aabb_max[left_node*3+2]));
+        }
+        
+        if (right_idx < num_triangles) {
+            min_val = fmin(min_val, (float3)(aabb_min[right_idx*3], aabb_min[right_idx*3+1], aabb_min[right_idx*3+2]));
+            max_val = fmax(max_val, (float3)(aabb_max[right_idx*3], aabb_max[right_idx*3+1], aabb_max[right_idx*3+2]));
+        } else {
+            int right_node = right_idx - num_triangles;
+            min_val = fmin(min_val, (float3)(node_aabb_min[right_node*3], node_aabb_min[right_node*3+1], node_aabb_min[right_node*3+2]));
+            max_val = fmax(max_val, (float3)(node_aabb_max[right_node*3], node_aabb_max[right_node*3+1], node_aabb_max[right_node*3+2]));
+        }
+        
+        node_aabb_min[node_idx*3] = min_val.x;
+        node_aabb_min[node_idx*3+1] = min_val.y;
+        node_aabb_min[node_idx*3+2] = min_val.z;
+        node_aabb_max[node_idx*3] = max_val.x;
+        node_aabb_max[node_idx*3+1] = max_val.y;
+        node_aabb_max[node_idx*3+2] = max_val.z;
+        
+        if (node_idx == 0) break;
+        node_idx = (node_idx - 1) / 2;
+    }
+}
+"#;
+
+const PREPARE_KERNEL_SRC: &str = r#"
+__kernel void prepare_triangle_data(
+    __global const float* vertices,
+    __global float* output,
+    const int num_triangles
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_triangles) return;
+    
+    int base = gid * 9;
+    float3 v0 = (float3)(vertices[base+0], vertices[base+1], vertices[base+2]);
+    float3 v1 = (float3)(vertices[base+3], vertices[base+4], vertices[base+5]);
+    float3 v2 = (float3)(vertices[base+6], vertices[base+7], vertices[base+8]);
+    
+    float3 centroid = (v0 + v1 + v2) / 3.0f;
+    
+    float3 edge1 = v1 - v0;
+    float3 edge2 = v2 - v0;
+    float3 normal = cross(edge1, edge2);
+    
+    float len = length(normal);
+    if (len > 1e-8f) {
+        normal = normal / len;
+    }
+    
+    int out_base = gid * 6;
+    output[out_base+0] = centroid.x;
+    output[out_base+1] = centroid.y;
+    output[out_base+2] = centroid.z;
+    output[out_base+3] = normal.x;
+    output[out_base+4] = normal.y;
+    output[out_base+5] = normal.z;
+}
+
+__kernel void prepare_occluder_data(
+    __global const float* vertices,
+    __global const float* alphas,
+    __global float* output,
+    const int num_occluders
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_occluders) return;
+    
+    int v_base = gid * 9;
+    int out_base = gid * 10;
+    
+    output[out_base+0] = vertices[v_base+0];
+    output[out_base+1] = vertices[v_base+1];
+    output[out_base+2] = vertices[v_base+2];
+    output[out_base+3] = vertices[v_base+3];
+    output[out_base+4] = vertices[v_base+4];
+    output[out_base+5] = vertices[v_base+5];
+    output[out_base+6] = vertices[v_base+6];
+    output[out_base+7] = vertices[v_base+7];
+    output[out_base+8] = vertices[v_base+8];
+    output[out_base+9] = alphas[gid];
+}
+
+__kernel void prepare_light_data(
+    __global const float* positions,
+    __global const float* directions,
+    __global const float* cone_angles,
+    __global const float* distances,
+    __global const float* colors,
+    __global float* output,
+    const int num_lights
+) {
+    int gid = get_global_id(0);
+    if (gid >= num_lights) return;
+    
+    int out_base = gid * 11;
+    
+    output[out_base+0] = positions[gid*3+0];
+    output[out_base+1] = positions[gid*3+1];
+    output[out_base+2] = positions[gid*3+2];
+    
+    output[out_base+3] = directions[gid*3+0];
+    output[out_base+4] = directions[gid*3+1];
+    output[out_base+5] = directions[gid*3+2];
+    
+    float half_cone = (cone_angles[gid] * 0.5f) * 3.14159265f / 180.0f;
+    output[out_base+6] = cos(half_cone);
+    
+    float falloff = distances[gid] / sqrt(1.0f / 0.01f - 1.0f);
+    output[out_base+7] = falloff;
+    
+    output[out_base+8] = colors[gid*3+0] / 255.0f;
+    output[out_base+9] = colors[gid*3+1] / 255.0f;
+    output[out_base+10] = colors[gid*3+2] / 255.0f;
+}
+"#;
+
+const BAKE_KERNEL_SRC: &str = r#"
 __kernel void bake_lighting(
     __global const float* tri_data,
     __global const float* occluder_data,
@@ -65,8 +387,7 @@ __kernel void bake_lighting(
     const int num_occluders,
     const int num_lights,
     __global float* output
-)
-{
+) {
     int gid = get_global_id(0);
     if (gid >= num_triangles) return;
     
@@ -817,6 +1138,338 @@ pub fn Render_3d_to_screen(dynamic_triangles: &[super::Draw_components], screen:
     }
 }
 
+fn build_bvh_on_gpu(triangles: &[Render_triangle]) -> BvhNode {
+    let num_triangles = triangles.len();
+    if num_triangles == 0 {
+        return BvhNode {
+            aabb_min: [0.0; 3],
+            aabb_max: [0.0; 3],
+            left: None,
+            right: None,
+            triangles: Vec::new(),
+            triangle_offset: 0,
+        };
+    }
+
+    let mut raw_vertices: Vec<f32> = Vec::with_capacity(num_triangles * 9);
+    for tri in triangles {
+        let verts = &tri.triangle.draw_vertices;
+        raw_vertices.push(verts[0] + tri.triangle.draw_x);
+        raw_vertices.push(verts[1] + tri.triangle.draw_y);
+        raw_vertices.push(verts[2] + tri.triangle.draw_z);
+        raw_vertices.push(verts[3] + tri.triangle.draw_x);
+        raw_vertices.push(verts[4] + tri.triangle.draw_y);
+        raw_vertices.push(verts[5] + tri.triangle.draw_z);
+        raw_vertices.push(verts[6] + tri.triangle.draw_x);
+        raw_vertices.push(verts[7] + tri.triangle.draw_y);
+        raw_vertices.push(verts[8] + tri.triangle.draw_z);
+    }
+
+    let state_mutex = get_opencl_state().expect("Failed to get OpenCL state");
+    let state_guard = state_mutex.lock().unwrap();
+    
+    if let Some(state) = state_guard.as_ref() {
+        let vertices_buffer: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_READ_ONLY)
+            .len(raw_vertices.len())
+            .copy_host_slice(&raw_vertices)
+            .build().unwrap();
+
+        let aabb_min_buffer: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len(num_triangles * 3)
+            .build().unwrap();
+
+        let aabb_max_buffer: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len(num_triangles * 3)
+            .build().unwrap();
+
+        let centroids_buffer: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len(num_triangles * 3)
+            .build().unwrap();
+
+        let compute_aabb_kernel = Kernel::builder()
+            .program(&state.bvh_program)
+            .name("compute_aabb")
+            .queue(state.queue.clone())
+            .arg(&vertices_buffer)
+            .arg(&aabb_min_buffer)
+            .arg(&aabb_max_buffer)
+            .arg(&centroids_buffer)
+            .arg(&(num_triangles as i32))
+            .global_work_size(num_triangles)
+            .build().unwrap();
+
+        unsafe { compute_aabb_kernel.enq().unwrap(); }
+
+        let mut aabb_min_cpu = vec![0.0f32; num_triangles * 3];
+        let mut aabb_max_cpu = vec![0.0f32; num_triangles * 3];
+        let mut centroids_cpu = vec![0.0f32; num_triangles * 3];
+
+        aabb_min_buffer.read(&mut aabb_min_cpu).enq().unwrap();
+        aabb_max_buffer.read(&mut aabb_max_cpu).enq().unwrap();
+        centroids_buffer.read(&mut centroids_cpu).enq().unwrap();
+
+        let mut scene_min = [f32::INFINITY; 3];
+        let mut scene_max = [f32::NEG_INFINITY; 3];
+        for i in 0..num_triangles {
+            for j in 0..3 {
+                scene_min[j] = scene_min[j].min(aabb_min_cpu[i*3+j]);
+                scene_max[j] = scene_max[j].max(aabb_max_cpu[i*3+j]);
+            }
+        }
+        let scene_size = [
+            (scene_max[0] - scene_min[0]).max(1e-6),
+            (scene_max[1] - scene_min[1]).max(1e-6),
+            (scene_max[2] - scene_min[2]).max(1e-6),
+        ];
+
+        let morton_codes_buffer: Buffer<u32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len(num_triangles)
+            .build().unwrap();
+
+        let indices_buffer: Buffer<i32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len(num_triangles)
+            .build().unwrap();
+
+        let scene_min_f3 = Float3::new(scene_min[0], scene_min[1], scene_min[2]);
+        let scene_size_f3 = Float3::new(scene_size[0], scene_size[1], scene_size[2]);
+
+        let compute_morton_kernel = Kernel::builder()
+            .program(&state.bvh_program)
+            .name("compute_morton_codes")
+            .queue(state.queue.clone())
+            .arg(&centroids_buffer)
+            .arg(&morton_codes_buffer)
+            .arg(&indices_buffer)
+            .arg(scene_min_f3)
+            .arg(scene_size_f3)
+            .arg(&(num_triangles as i32))
+            .global_work_size(num_triangles)
+            .build().unwrap();
+
+        unsafe { compute_morton_kernel.enq().unwrap(); }
+
+        let mut current_codes_buffer = morton_codes_buffer;
+        let mut current_indices_buffer = indices_buffer;
+
+        for bit in 0..30 {
+            let temp_codes_buffer: Buffer<u32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_WRITE_ONLY)
+                .len(num_triangles)
+                .build().unwrap();
+
+            let temp_indices_buffer: Buffer<i32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_WRITE_ONLY)
+                .len(num_triangles)
+                .build().unwrap();
+
+            let counters_buffer: Buffer<i32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_WRITE | flags::MEM_COPY_HOST_PTR)
+                .len(2)
+                .copy_host_slice(&[0i32, 0i32])
+                .build().unwrap();
+
+            let radix_sort_kernel = Kernel::builder()
+                .program(&state.bvh_program)
+                .name("radix_sort_step")
+                .queue(state.queue.clone())
+                .arg(&current_codes_buffer)
+                .arg(&current_indices_buffer)
+                .arg(&temp_codes_buffer)
+                .arg(&temp_indices_buffer)
+                .arg(&counters_buffer)
+                .arg(&(bit as i32))
+                .arg(&(num_triangles as i32))
+                .global_work_size(num_triangles)
+                .build().unwrap();
+
+            unsafe { radix_sort_kernel.enq().unwrap(); }
+
+            current_codes_buffer = temp_codes_buffer;
+            current_indices_buffer = temp_indices_buffer;
+        }
+
+        let morton_codes_buffer = current_codes_buffer;
+        let indices_buffer = current_indices_buffer;
+
+        if num_triangles == 1 {
+            return BvhNode {
+                aabb_min: [aabb_min_cpu[0], aabb_min_cpu[1], aabb_min_cpu[2]],
+                aabb_max: [aabb_max_cpu[0], aabb_max_cpu[1], aabb_max_cpu[2]],
+                left: None,
+                right: None,
+                triangles: vec![0],
+                triangle_offset: 0,
+            };
+        }
+
+        let node_aabb_min_buffer: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len((num_triangles - 1) * 3)
+            .build().unwrap();
+
+        let node_aabb_max_buffer: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len((num_triangles - 1) * 3)
+            .build().unwrap();
+
+        let node_left_buffer: Buffer<i32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len(num_triangles - 1)
+            .build().unwrap();
+
+        let node_right_buffer: Buffer<i32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_WRITE_ONLY)
+            .len(num_triangles - 1)
+            .build().unwrap();
+
+        let build_bvh_kernel = Kernel::builder()
+            .program(&state.bvh_program)
+            .name("build_bvh_nodes")
+            .queue(state.queue.clone())
+            .arg(&morton_codes_buffer)
+            .arg(&indices_buffer)
+            .arg(&aabb_min_buffer)
+            .arg(&aabb_max_buffer)
+            .arg(&node_aabb_min_buffer)
+            .arg(&node_aabb_max_buffer)
+            .arg(&node_left_buffer)
+            .arg(&node_right_buffer)
+            .arg(&(num_triangles as i32))
+            .global_work_size(num_triangles - 1)
+            .build().unwrap();
+
+        unsafe { build_bvh_kernel.enq().unwrap(); }
+
+        let processed_buffer: Buffer<i32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_READ_WRITE | flags::MEM_COPY_HOST_PTR)
+            .len(num_triangles - 1)
+            .copy_host_slice(&vec![0i32; num_triangles - 1])
+            .build().unwrap();
+
+        let calculate_bbox_kernel = Kernel::builder()
+            .program(&state.bvh_program)
+            .name("calculate_bounding_boxes")
+            .queue(state.queue.clone())
+            .arg(&aabb_min_buffer)
+            .arg(&aabb_max_buffer)
+            .arg(&node_left_buffer)
+            .arg(&node_right_buffer)
+            .arg(&node_aabb_min_buffer)
+            .arg(&node_aabb_max_buffer)
+            .arg(&processed_buffer)
+            .arg(&(num_triangles as i32))
+            .global_work_size(num_triangles)
+            .build().unwrap();
+
+        unsafe { calculate_bbox_kernel.enq().unwrap(); }
+
+        let mut node_aabb_min_cpu = vec![0.0f32; (num_triangles - 1) * 3];
+        let mut node_aabb_max_cpu = vec![0.0f32; (num_triangles - 1) * 3];
+        let mut node_left_cpu = vec![0i32; num_triangles - 1];
+        let mut node_right_cpu = vec![0i32; num_triangles - 1];
+        let mut indices_cpu = vec![0i32; num_triangles];
+
+        node_aabb_min_buffer.read(&mut node_aabb_min_cpu).enq().unwrap();
+        node_aabb_max_buffer.read(&mut node_aabb_max_cpu).enq().unwrap();
+        node_left_buffer.read(&mut node_left_cpu).enq().unwrap();
+        node_right_buffer.read(&mut node_right_cpu).enq().unwrap();
+        indices_buffer.read(&mut indices_cpu).enq().unwrap();
+
+        fn build_cpu_bvh(
+            first: usize,
+            last: usize,
+            node_idx: usize,
+            node_left: &[i32],
+            node_right: &[i32],
+            indices: &[i32],
+            aabb_min: &[[f32; 3]],
+            aabb_max: &[[f32; 3]],
+            node_aabb_min: &[[f32; 3]],
+            node_aabb_max: &[[f32; 3]],
+            triangles: &[Render_triangle],
+        ) -> BvhNode {
+            if first == last {
+                let tri_idx = indices[first] as usize;
+                return BvhNode {
+                    aabb_min: aabb_min[tri_idx],
+                    aabb_max: aabb_max[tri_idx],
+                    left: None,
+                    right: None,
+                    triangles: vec![tri_idx],
+                    triangle_offset: 0,
+                };
+            }
+
+            let left_child = node_left[node_idx] as usize;
+            let right_child = node_right[node_idx] as usize;
+
+            let left_node = if left_child < indices.len() {
+                build_cpu_bvh(first, left_child, left_child, node_left, node_right, indices, aabb_min, aabb_max, node_aabb_min, node_aabb_max, triangles)
+            } else {
+                let node_idx_in_bvh = left_child - indices.len();
+                build_cpu_bvh(first, node_left[node_idx_in_bvh] as usize, node_idx_in_bvh, node_left, node_right, indices, aabb_min, aabb_max, node_aabb_min, node_aabb_max, triangles)
+            };
+
+            let right_node = if right_child < indices.len() {
+                build_cpu_bvh(right_child, last, right_child, node_left, node_right, indices, aabb_min, aabb_max, node_aabb_min, node_aabb_max, triangles)
+            } else {
+                let node_idx_in_bvh = right_child - indices.len();
+                build_cpu_bvh(node_right[node_idx_in_bvh] as usize, last, node_idx_in_bvh, node_left, node_right, indices, aabb_min, aabb_max, node_aabb_min, node_aabb_max, triangles)
+            };
+
+            BvhNode {
+                aabb_min: node_aabb_min[node_idx],
+                aabb_max: node_aabb_max[node_idx],
+                left: Some(Box::new(left_node)),
+                right: Some(Box::new(right_node)),
+                triangles: Vec::new(),
+                triangle_offset: 0,
+            }
+        }
+
+        let aabb_min_vec: Vec<[f32; 3]> = (0..num_triangles).map(|i| [aabb_min_cpu[i*3], aabb_min_cpu[i*3+1], aabb_min_cpu[i*3+2]]).collect();
+        let aabb_max_vec: Vec<[f32; 3]> = (0..num_triangles).map(|i| [aabb_max_cpu[i*3], aabb_max_cpu[i*3+1], aabb_max_cpu[i*3+2]]).collect();
+        let node_aabb_min_vec: Vec<[f32; 3]> = (0..num_triangles-1).map(|i| [node_aabb_min_cpu[i*3], node_aabb_min_cpu[i*3+1], node_aabb_min_cpu[i*3+2]]).collect();
+        let node_aabb_max_vec: Vec<[f32; 3]> = (0..num_triangles-1).map(|i| [node_aabb_max_cpu[i*3], node_aabb_max_cpu[i*3+1], node_aabb_max_cpu[i*3+2]]).collect();
+
+        build_cpu_bvh(
+            0,
+            num_triangles - 1,
+            0,
+            &node_left_cpu,
+            &node_right_cpu,
+            &indices_cpu,
+            &aabb_min_vec,
+            &aabb_max_vec,
+            &node_aabb_min_vec,
+            &node_aabb_max_vec,
+            triangles,
+        )
+    } else {
+        build_bvh(triangles, 0)
+    }
+}
+
 fn Bake_scene() {
     let static_scene = super::Static_scene.lock().unwrap();
 
@@ -857,109 +1510,194 @@ fn Bake_scene() {
     let num_occluders = occluders.len();
     let num_lights = static_lights.len();
 
-    let mut tri_data: Vec<f32> = Vec::with_capacity(num_triangles * 6);
-    let mut occluder_data: Vec<f32> = Vec::with_capacity(num_occluders * 10);
-    let mut light_data: Vec<f32> = Vec::with_capacity(num_lights * 11);
+    let mut raw_vertices: Vec<f32> = Vec::with_capacity(num_triangles * 9);
+    let mut raw_alphas: Vec<f32> = Vec::with_capacity(num_occluders);
+    let mut light_positions: Vec<f32> = Vec::with_capacity(num_lights * 3);
+    let mut light_directions: Vec<f32> = Vec::with_capacity(num_lights * 3);
+    let mut light_cone_angles: Vec<f32> = Vec::with_capacity(num_lights);
+    let mut light_distances: Vec<f32> = Vec::with_capacity(num_lights);
+    let mut light_colors: Vec<f32> = Vec::with_capacity(num_lights * 3);
 
     for tri in &static_triangles {
         let verts = &tri.draw_vertices;
-        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
-        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
-        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
-
-        let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
-        let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-        let normal = normalize(cross(&edge1, &edge2));
-        let centroid = [(v0[0] + v1[0] + v2[0]) / 3.0, (v0[1] + v1[1] + v2[1]) / 3.0, (v0[2] + v1[2] + v2[2]) / 3.0];
-
-        tri_data.push(centroid[0]);
-        tri_data.push(centroid[1]);
-        tri_data.push(centroid[2]);
-        tri_data.push(normal[0]);
-        tri_data.push(normal[1]);
-        tri_data.push(normal[2]);
+        raw_vertices.push(verts[0] + tri.draw_x);
+        raw_vertices.push(verts[1] + tri.draw_y);
+        raw_vertices.push(verts[2] + tri.draw_z);
+        raw_vertices.push(verts[3] + tri.draw_x);
+        raw_vertices.push(verts[4] + tri.draw_y);
+        raw_vertices.push(verts[5] + tri.draw_z);
+        raw_vertices.push(verts[6] + tri.draw_x);
+        raw_vertices.push(verts[7] + tri.draw_y);
+        raw_vertices.push(verts[8] + tri.draw_z);
     }
 
     for rt in &occluders {
         let tri = &rt.triangle;
         let verts = &tri.draw_vertices;
-        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
-        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
-        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
-        let alpha = tri.draw_RGBA_color[3] as f32 / 255.0;
-
-        occluder_data.push(v0[0]);
-        occluder_data.push(v0[1]);
-        occluder_data.push(v0[2]);
-        occluder_data.push(v1[0]);
-        occluder_data.push(v1[1]);
-        occluder_data.push(v1[2]);
-        occluder_data.push(v2[0]);
-        occluder_data.push(v2[1]);
-        occluder_data.push(v2[2]);
-        occluder_data.push(alpha);
+        raw_vertices.push(verts[0] + tri.draw_x);
+        raw_vertices.push(verts[1] + tri.draw_y);
+        raw_vertices.push(verts[2] + tri.draw_z);
+        raw_vertices.push(verts[3] + tri.draw_x);
+        raw_vertices.push(verts[4] + tri.draw_y);
+        raw_vertices.push(verts[5] + tri.draw_z);
+        raw_vertices.push(verts[6] + tri.draw_x);
+        raw_vertices.push(verts[7] + tri.draw_y);
+        raw_vertices.push(verts[8] + tri.draw_z);
+        raw_alphas.push(tri.draw_RGBA_color[3] as f32 / 255.0);
     }
 
     for light in &static_lights {
-        let light_pos = [light.light_x, light.light_y, light.light_z];
+        light_positions.push(light.light_x);
+        light_positions.push(light.light_y);
+        light_positions.push(light.light_z);
         let light_forward = camera_basis(light.light_pitch, light.light_yaw, 0.0).forward;
-        let half_cone = (light.light_cone_angle * 0.5) * PI / 180.0;
-        let cos_half_cone = half_cone.cos();
-        let falloff = light.light_distance / (1.0f32 / 0.01f32 - 1.0f32).sqrt();
-
-        light_data.push(light_pos[0]);
-        light_data.push(light_pos[1]);
-        light_data.push(light_pos[2]);
-        light_data.push(light_forward[0]);
-        light_data.push(light_forward[1]);
-        light_data.push(light_forward[2]);
-        light_data.push(cos_half_cone);
-        light_data.push(falloff);
-        light_data.push(light.light_RGB_color[0] as f32 / 255.0);
-        light_data.push(light.light_RGB_color[1] as f32 / 255.0);
-        light_data.push(light.light_RGB_color[2] as f32 / 255.0);
+        light_directions.push(light_forward[0]);
+        light_directions.push(light_forward[1]);
+        light_directions.push(light_forward[2]);
+        light_cone_angles.push(light.light_cone_angle);
+        light_distances.push(light.light_distance);
+        light_colors.push(light.light_RGB_color[0] as f32);
+        light_colors.push(light.light_RGB_color[1] as f32);
+        light_colors.push(light.light_RGB_color[2] as f32);
     }
 
+    let mut tri_data = vec![0.0f32; num_triangles * 6];
+    let mut occluder_data = vec![0.0f32; num_occluders * 10];
+    let mut light_data = vec![0.0f32; num_lights * 11];
     let mut output = vec![0.0f32; num_triangles * 3];
 
     if num_triangles > 0 && num_lights > 0 {
         let state_mutex = get_opencl_state().expect("Failed to get OpenCL state");
         let state_guard = state_mutex.lock().unwrap();
         if let Some(state) = state_guard.as_ref() {
-            let tri_buffer = Buffer::builder()
+            let raw_vertices_buffer: Buffer<f32> = Buffer::builder()
                 .queue(state.queue.clone())
                 .flags(flags::MEM_READ_ONLY)
+                .len(raw_vertices.len())
+                .copy_host_slice(&raw_vertices)
+                .build().unwrap();
+
+            let tri_data_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_WRITE_ONLY)
                 .len(tri_data.len())
-                .copy_host_slice(&tri_data)
                 .build().unwrap();
 
-            let occluder_buffer = Buffer::builder()
+            let prepare_tri_kernel = Kernel::builder()
+                .program(&state.prepare_program)
+                .name("prepare_triangle_data")
+                .queue(state.queue.clone())
+                .arg(&raw_vertices_buffer)
+                .arg(&tri_data_buffer)
+                .arg(&(num_triangles as i32))
+                .global_work_size(num_triangles)
+                .build().unwrap();
+
+            unsafe { prepare_tri_kernel.enq().unwrap(); }
+
+            let raw_occluder_vertices_buffer: Buffer<f32> = Buffer::builder()
                 .queue(state.queue.clone())
                 .flags(flags::MEM_READ_ONLY)
+                .len(num_occluders * 9)
+                .copy_host_slice(&raw_vertices[0..num_occluders * 9])
+                .build().unwrap();
+
+            let raw_alphas_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(raw_alphas.len())
+                .copy_host_slice(&raw_alphas)
+                .build().unwrap();
+
+            let occluder_data_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_WRITE_ONLY)
                 .len(occluder_data.len())
-                .copy_host_slice(&occluder_data)
                 .build().unwrap();
 
-            let light_buffer = Buffer::builder()
+            let prepare_occluder_kernel = Kernel::builder()
+                .program(&state.prepare_program)
+                .name("prepare_occluder_data")
+                .queue(state.queue.clone())
+                .arg(&raw_occluder_vertices_buffer)
+                .arg(&raw_alphas_buffer)
+                .arg(&occluder_data_buffer)
+                .arg(&(num_occluders as i32))
+                .global_work_size(num_occluders)
+                .build().unwrap();
+
+            unsafe { prepare_occluder_kernel.enq().unwrap(); }
+
+            let light_positions_buffer: Buffer<f32> = Buffer::builder()
                 .queue(state.queue.clone())
                 .flags(flags::MEM_READ_ONLY)
-                .len(light_data.len())
-                .copy_host_slice(&light_data)
+                .len(light_positions.len())
+                .copy_host_slice(&light_positions)
                 .build().unwrap();
 
-            let output_buffer = Buffer::builder()
+            let light_directions_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(light_directions.len())
+                .copy_host_slice(&light_directions)
+                .build().unwrap();
+
+            let light_cone_angles_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(light_cone_angles.len())
+                .copy_host_slice(&light_cone_angles)
+                .build().unwrap();
+
+            let light_distances_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(light_distances.len())
+                .copy_host_slice(&light_distances)
+                .build().unwrap();
+
+            let light_colors_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(light_colors.len())
+                .copy_host_slice(&light_colors)
+                .build().unwrap();
+
+            let light_data_buffer: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_WRITE_ONLY)
+                .len(light_data.len())
+                .build().unwrap();
+
+            let prepare_light_kernel = Kernel::builder()
+                .program(&state.prepare_program)
+                .name("prepare_light_data")
+                .queue(state.queue.clone())
+                .arg(&light_positions_buffer)
+                .arg(&light_directions_buffer)
+                .arg(&light_cone_angles_buffer)
+                .arg(&light_distances_buffer)
+                .arg(&light_colors_buffer)
+                .arg(&light_data_buffer)
+                .arg(&(num_lights as i32))
+                .global_work_size(num_lights)
+                .build().unwrap();
+
+            unsafe { prepare_light_kernel.enq().unwrap(); }
+
+            let output_buffer: Buffer<f32> = Buffer::builder()
                 .queue(state.queue.clone())
                 .flags(flags::MEM_WRITE_ONLY)
                 .len(output.len())
                 .build().unwrap();
 
-            let kernel = Kernel::builder()
-                .program(&state.program)
+            let bake_kernel = Kernel::builder()
+                .program(&state.bake_program)
                 .name("bake_lighting")
                 .queue(state.queue.clone())
-                .arg(&tri_buffer)
-                .arg(&occluder_buffer)
-                .arg(&light_buffer)
+                .arg(&tri_data_buffer)
+                .arg(&occluder_data_buffer)
+                .arg(&light_data_buffer)
                 .arg(&(num_triangles as i32))
                 .arg(&(num_occluders as i32))
                 .arg(&(num_lights as i32))
@@ -967,8 +1705,11 @@ fn Bake_scene() {
                 .global_work_size(num_triangles)
                 .build().unwrap();
 
-            unsafe { kernel.enq().unwrap(); }
+            unsafe { bake_kernel.enq().unwrap(); }
 
+            tri_data_buffer.read(&mut tri_data).enq().unwrap();
+            occluder_data_buffer.read(&mut occluder_data).enq().unwrap();
+            light_data_buffer.read(&mut light_data).enq().unwrap();
             output_buffer.read(&mut output).enq().unwrap();
         } else {
             let occluders_bvh = build_bvh(&occluders, 0);
@@ -1000,7 +1741,7 @@ fn Bake_scene() {
         });
     }
 
-    let baked_bvh = build_bvh(&baked_result, 0);
+    let baked_bvh = build_bvh_on_gpu(&baked_result);
     let mut store = Baked_static_triangles.lock().unwrap();
     *store = baked_result;
     drop(store);
