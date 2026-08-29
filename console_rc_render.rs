@@ -3,6 +3,7 @@ use std::thread;
 use image::RgbaImage;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, Mutex};
+use ocl::{Platform, Device, Context, Program, Kernel, Queue, Buffer, builders::DeviceSpecifier, flags};
 
 #[derive(Clone)]
 pub struct Render_triangle {
@@ -12,6 +13,141 @@ pub struct Render_triangle {
 
 static Baked_static_triangles: Mutex<Vec<Render_triangle>> = Mutex::new(Vec::new());
 static Baked_static_bvh: Mutex<Option<BvhNode>> = Mutex::new(None);
+
+struct OpenCLState {
+    context: Context,
+    program: Program,
+    queue: Queue,
+}
+
+static OPENCL_STATE: OnceLock<Mutex<Option<OpenCLState>>> = OnceLock::new();
+
+fn get_opencl_state() -> Result<&'static Mutex<Option<OpenCLState>>, String> {
+    OPENCL_STATE.get_or_init(|| {
+        Mutex::new(init_opencl().ok())
+    });
+    OPENCL_STATE.get().ok_or_else(|| "OpenCL not initialized".to_string())
+}
+
+fn init_opencl() -> Result<OpenCLState, String> {
+    let platforms = Platform::list();
+    let platform = platforms.into_iter().next().ok_or("No OpenCL platform")?;
+    let devices = Device::list(platform, Some(flags::DeviceType::GPU))
+        .map_err(|e| e.to_string())?;
+    let device = devices.into_iter().next().ok_or("No GPU device found")?;
+
+    let context = Context::builder()
+        .platform(platform)
+        .devices(device)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let program = Program::builder()
+        .devices(device)
+        .src(KERNEL_SRC)
+        .build(&context)
+        .map_err(|e| e.to_string())?;
+    let queue = Queue::new(&context, device, None)
+        .map_err(|e| e.to_string())?;
+
+    Ok(OpenCLState {
+        context,
+        program,
+        queue,
+    })
+}
+
+const KERNEL_SRC: &str = r#"
+__kernel void bake_lighting(
+    __global const float* tri_data,
+    __global const float* occluder_data,
+    __global const float* light_data,
+    const int num_triangles,
+    const int num_occluders,
+    const int num_lights,
+    __global float* output
+)
+{
+    int gid = get_global_id(0);
+    if (gid >= num_triangles) return;
+    
+    float3 centroid = (float3)(tri_data[gid*6+0], tri_data[gid*6+1], tri_data[gid*6+2]);
+    float3 normal = (float3)(tri_data[gid*6+3], tri_data[gid*6+4], tri_data[gid*6+5]);
+    
+    float len = sqrt(dot(normal, normal));
+    if (len > 1e-8f) normal = normal / len;
+    
+    float3 result = (float3)(0.0f, 0.0f, 0.0f);
+    
+    for (int li = 0; li < num_lights; li++) {
+        int base_l = li * 11;
+        float3 light_pos = (float3)(light_data[base_l+0], light_data[base_l+1], light_data[base_l+2]);
+        float3 light_dir = (float3)(light_data[base_l+3], light_data[base_l+4], light_data[base_l+5]);
+        float cos_half = light_data[base_l+6];
+        float falloff = light_data[base_l+7];
+        float3 light_color = (float3)(light_data[base_l+8], light_data[base_l+9], light_data[base_l+10]);
+        
+        float3 to_light = light_pos - centroid;
+        float dist = length(to_light);
+        if (dist < 1e-6f) continue;
+        float3 to_light_dir = to_light / dist;
+        
+        float3 point_dir_from_light = -to_light_dir;
+        float cos_angle = dot(light_dir, point_dir_from_light);
+        if (cos_angle < cos_half) continue;
+        
+        float attenuation = 1.0f / (1.0f + (dist / falloff) * (dist / falloff));
+        if (attenuation < 0.01f) continue;
+        
+        float transmittance = 1.0f;
+        float3 offset = (float3)(centroid.x + normal.x * 0.001f, centroid.y + normal.y * 0.001f, centroid.z + normal.z * 0.1f);
+        
+        for (int oi = 0; oi < num_occluders; oi++) {
+            int base_o = oi * 10;
+            float3 v0 = (float3)(occluder_data[base_o+0], occluder_data[base_o+1], occluder_data[base_o+2]);
+            float3 v1 = (float3)(occluder_data[base_o+3], occluder_data[base_o+4], occluder_data[base_o+5]);
+            float3 v2 = (float3)(occluder_data[base_o+6], occluder_data[base_o+7], occluder_data[base_o+8]);
+            float alpha = occluder_data[base_o+9];
+            
+            float3 edge1 = v1 - v0;
+            float3 edge2 = v2 - v0;
+            float3 h = cross(to_light_dir, edge2);
+            float a = dot(edge1, h);
+            if (fabs(a) < 1e-6f) continue;
+            float f = 1.0f / a;
+            float3 s = offset - v0;
+            float u = f * dot(s, h);
+            if (u < 0.0f || u > 1.0f) continue;
+            float3 q = cross(s, edge1);
+            float v = f * dot(to_light_dir, q);
+            if (v < 0.0f || u + v > 1.0f) continue;
+            float t = f * dot(edge2, q);
+            if (t > 1e-6f && t < dist) {
+                if (alpha >= 1.0f) {
+                    transmittance = 0.0f;
+                    break;
+                } else {
+                    transmittance *= (1.0f - alpha);
+                    if (transmittance < 0.01f) {
+                        transmittance = 0.0f;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (transmittance <= 0.0f) continue;
+        
+        float diff = fmax(dot(normal, to_light_dir), 0.0f);
+        float factor = attenuation * diff * transmittance;
+        result += light_color * factor;
+    }
+    
+    result = fmin(result, (float3)(1.0f, 1.0f, 1.0f));
+    output[gid*3+0] = result.x;
+    output[gid*3+1] = result.y;
+    output[gid*3+2] = result.z;
+}
+"#;
 
 pub fn To_console(){
     let width = super::Engine_settings.lock().unwrap().window_width as usize;
@@ -377,7 +513,7 @@ fn compute_lighting(point: [f32; 3], normal: [f32; 3], bvh: &BvhNode, triangles:
         let transmittance = light_transmittance(point, normal, light_pos, dist, bvh, triangles);
         if transmittance <= 0.0 { continue; }
 
-        let falloff = light.light_distance / (1.0 / EPSILON - 1.0).sqrt();
+        let falloff = light.light_distance / (1.0f32 / EPSILON - 1.0f32).sqrt();
         let attenuation = 1.0 / (1.0 + (dist / falloff).powi(2));
         if attenuation < EPSILON { continue; }
 
@@ -717,12 +853,16 @@ fn Bake_scene() {
         .map(|t| Render_triangle { triangle: t, baked_light: None })
         .collect();
 
-    let occluders_bvh = build_bvh(&occluders, 0);
+    let num_triangles = static_triangles.len();
+    let num_occluders = occluders.len();
+    let num_lights = static_lights.len();
 
-    let mut baked_result: Vec<Render_triangle> = Vec::with_capacity(static_triangles.len());
+    let mut tri_data: Vec<f32> = Vec::with_capacity(num_triangles * 6);
+    let mut occluder_data: Vec<f32> = Vec::with_capacity(num_occluders * 10);
+    let mut light_data: Vec<f32> = Vec::with_capacity(num_lights * 11);
+
     for tri in &static_triangles {
         let verts = &tri.draw_vertices;
-        if verts.len() < 9 { continue; }
         let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
         let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
         let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
@@ -732,8 +872,132 @@ fn Bake_scene() {
         let normal = normalize(cross(&edge1, &edge2));
         let centroid = [(v0[0] + v1[0] + v2[0]) / 3.0, (v0[1] + v1[1] + v2[1]) / 3.0, (v0[2] + v1[2] + v2[2]) / 3.0];
 
-        let baked_light = compute_lighting(centroid, normal, &occluders_bvh, &occluders, &static_lights, [0, 0, 0]);
-        baked_result.push(Render_triangle { triangle: tri.clone(), baked_light: Some(baked_light) });
+        tri_data.push(centroid[0]);
+        tri_data.push(centroid[1]);
+        tri_data.push(centroid[2]);
+        tri_data.push(normal[0]);
+        tri_data.push(normal[1]);
+        tri_data.push(normal[2]);
+    }
+
+    for rt in &occluders {
+        let tri = &rt.triangle;
+        let verts = &tri.draw_vertices;
+        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
+        let alpha = tri.draw_RGBA_color[3] as f32 / 255.0;
+
+        occluder_data.push(v0[0]);
+        occluder_data.push(v0[1]);
+        occluder_data.push(v0[2]);
+        occluder_data.push(v1[0]);
+        occluder_data.push(v1[1]);
+        occluder_data.push(v1[2]);
+        occluder_data.push(v2[0]);
+        occluder_data.push(v2[1]);
+        occluder_data.push(v2[2]);
+        occluder_data.push(alpha);
+    }
+
+    for light in &static_lights {
+        let light_pos = [light.light_x, light.light_y, light.light_z];
+        let light_forward = camera_basis(light.light_pitch, light.light_yaw, 0.0).forward;
+        let half_cone = (light.light_cone_angle * 0.5) * PI / 180.0;
+        let cos_half_cone = half_cone.cos();
+        let falloff = light.light_distance / (1.0f32 / 0.01f32 - 1.0f32).sqrt();
+
+        light_data.push(light_pos[0]);
+        light_data.push(light_pos[1]);
+        light_data.push(light_pos[2]);
+        light_data.push(light_forward[0]);
+        light_data.push(light_forward[1]);
+        light_data.push(light_forward[2]);
+        light_data.push(cos_half_cone);
+        light_data.push(falloff);
+        light_data.push(light.light_RGB_color[0] as f32 / 255.0);
+        light_data.push(light.light_RGB_color[1] as f32 / 255.0);
+        light_data.push(light.light_RGB_color[2] as f32 / 255.0);
+    }
+
+    let mut output = vec![0.0f32; num_triangles * 3];
+
+    if num_triangles > 0 && num_lights > 0 {
+        let state_mutex = get_opencl_state().expect("Failed to get OpenCL state");
+        let state_guard = state_mutex.lock().unwrap();
+        if let Some(state) = state_guard.as_ref() {
+            let tri_buffer = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(tri_data.len())
+                .copy_host_slice(&tri_data)
+                .build().unwrap();
+
+            let occluder_buffer = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(occluder_data.len())
+                .copy_host_slice(&occluder_data)
+                .build().unwrap();
+
+            let light_buffer = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(light_data.len())
+                .copy_host_slice(&light_data)
+                .build().unwrap();
+
+            let output_buffer = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_WRITE_ONLY)
+                .len(output.len())
+                .build().unwrap();
+
+            let kernel = Kernel::builder()
+                .program(&state.program)
+                .name("bake_lighting")
+                .queue(state.queue.clone())
+                .arg(&tri_buffer)
+                .arg(&occluder_buffer)
+                .arg(&light_buffer)
+                .arg(&(num_triangles as i32))
+                .arg(&(num_occluders as i32))
+                .arg(&(num_lights as i32))
+                .arg(&output_buffer)
+                .global_work_size(num_triangles)
+                .build().unwrap();
+
+            unsafe { kernel.enq().unwrap(); }
+
+            output_buffer.read(&mut output).enq().unwrap();
+        } else {
+            let occluders_bvh = build_bvh(&occluders, 0);
+            let mut idx = 0;
+            for tri in &static_triangles {
+                let verts = &tri.draw_vertices;
+                let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+                let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+                let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
+                let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+                let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+                let normal = normalize(cross(&edge1, &edge2));
+                let centroid = [(v0[0] + v1[0] + v2[0]) / 3.0, (v0[1] + v1[1] + v2[1]) / 3.0, (v0[2] + v1[2] + v2[2]) / 3.0];
+                let baked = compute_lighting(centroid, normal, &occluders_bvh, &occluders, &static_lights, [0, 0, 0]);
+                output[idx*3] = baked[0];
+                output[idx*3+1] = baked[1];
+                output[idx*3+2] = baked[2];
+                idx += 1;
+            }
+        }
+    }
+
+    let mut baked_result: Vec<Render_triangle> = Vec::with_capacity(num_triangles);
+    for i in 0..num_triangles {
+        let baked_light = [output[i*3], output[i*3+1], output[i*3+2]];
+        baked_result.push(Render_triangle {
+            triangle: static_triangles[i].clone(),
+            baked_light: Some(baked_light),
+        });
     }
 
     let baked_bvh = build_bvh(&baked_result, 0);
