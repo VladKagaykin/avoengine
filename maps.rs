@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use crate::{
     Draw_components, Light_components, Script, Static_light, Static_scene, Map_objects, Map_scripts,
     Draw_queue, Light_queue, tick_system,
+    Sound_components, Static_sound_scene, Is_sound_scene_changed, Sound_queue,
 };
 
 fn extract_args(s: &str) -> Vec<String> {
@@ -226,6 +227,26 @@ fn parse_light_components(line: &str) -> io::Result<Light_components> {
     })
 }
 
+fn parse_sound_components(line: &str) -> io::Result<Sound_components> {
+    let line = line.trim();
+    if !line.starts_with("Sound_components(") || !line.ends_with(')') {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Sound_components format"));
+    }
+    let args_str = &line[17..line.len()-1];
+    let args = extract_args(args_str);
+    if args.len() != 6 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected 6 arguments, got {}", args.len())));
+    }
+    Ok(Sound_components {
+        x: parse_f32(&args[0])?,
+        y: parse_f32(&args[1])?,
+        z: parse_f32(&args[2])?,
+        vertices: parse_f32_vec(&args[3])?,
+        soundproofing: args[4].trim().parse::<u8>().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u8: {}", e)))?,
+        special_name: parse_string(&args[5])?,
+    })
+}
+
 fn parse_script(line: &str) -> io::Result<Script> {
     let line = line.trim();
     if !line.starts_with("Script(") || !line.ends_with(')') {
@@ -365,6 +386,7 @@ fn build_engine() -> Engine {
 
     engine.register_type::<Draw_components>();
     engine.register_type::<Light_components>();
+    engine.register_type::<Sound_components>();
 
     engine.register_fn("Draw_components", |draw_type: &str, x: f64, y: f64, z: f64, symbol: char, vertices: Array, color: Array, tex: &str, name: &str| {
         let vertices: Vec<f32> = vertices
@@ -411,6 +433,57 @@ fn build_engine() -> Engine {
             light_special_name: name.to_string(),
         }
     });
+
+    engine.register_fn("Sound_components", |x: f64, y: f64, z: f64, vertices: Array, soundproofing: i64, name: &str| {
+        let vertices: Vec<f32> = vertices
+            .into_iter()
+            .map(|v| v.as_float().unwrap_or(0.0) as f32)
+            .collect();
+        Sound_components {
+            x: x as f32,
+            y: y as f32,
+            z: z as f32,
+            vertices,
+            soundproofing: soundproofing as u8,
+            special_name: name.to_string(),
+        }
+    });
+
+    engine.register_fn("push_sound", |sound: Sound_components| {
+        Sound_queue.lock().unwrap().push(sound);
+    });
+
+    engine.register_fn("push_static_sound", |sound: Sound_components| {
+        Static_sound_scene.lock().unwrap().push(sound);
+    });
+
+    engine.register_fn("clear_dynamic_sound", || {
+        Sound_queue.lock().unwrap().clear();
+    });
+
+    engine.register_fn("clear_static_sound", || {
+        Static_sound_scene.lock().unwrap().clear();
+    });
+
+    engine.register_fn("remove_sound_by_name", |name: &str| -> i64 {
+        let mut queue = Sound_queue.lock().unwrap();
+        let before = queue.len();
+        queue.retain(|s| s.special_name != name);
+        (before - queue.len()) as i64
+    });
+
+    engine.register_fn("remove_static_sound_by_name", |name: &str| -> i64 {
+        let mut scene = Static_sound_scene.lock().unwrap();
+        let before = scene.len();
+        scene.retain(|s| s.special_name != name);
+        (before - scene.len()) as i64
+    });
+
+    engine.register_fn("set_sound_scene_changed", |val: bool| {
+        let mut flag = Is_sound_scene_changed.lock().unwrap();
+        *flag = val;
+    });
+
     engine.register_fn("remove_draw_by_name", |name: &str| -> i64 {
         let mut queue = Draw_queue.lock().unwrap();
         let before = queue.len();
@@ -537,6 +610,24 @@ pub fn Save_map(path: String) -> io::Result<()> {
     }
     writeln!(file)?;
 
+    writeln!(file, "// Static_sound_scene")?;
+    {
+        let sounds = Static_sound_scene.lock().unwrap();
+        for sound in sounds.iter() {
+            let line = format!(
+                "Sound_components({}, {}, {}, {}, {}, {})",
+                sound.x,
+                sound.y,
+                sound.z,
+                format_f32_vec(&sound.vertices),
+                sound.soundproofing,
+                format_string(&sound.special_name),
+            );
+            writeln!(file, "{}", line)?;
+        }
+    }
+    writeln!(file)?;
+
     writeln!(file, "// Map_scripts")?;
     {
         let scripts = Map_scripts.lock().unwrap();
@@ -564,6 +655,7 @@ pub fn Load_map(path: String) -> io::Result<()> {
         Map_objects.lock().unwrap().clear();
         Static_light.lock().unwrap().clear();
         Static_scene.lock().unwrap().clear();
+        Static_sound_scene.lock().unwrap().clear();
     }
 
     if let Some(cache) = SCRIPT_CACHE.get() {
@@ -591,6 +683,10 @@ pub fn Load_map(path: String) -> io::Result<()> {
             continue;
         } else if trimmed.starts_with("// Static_light") {
             current_section = "lights".to_string();
+            i += 1;
+            continue;
+        } else if trimmed.starts_with("// Static_sound_scene") {
+            current_section = "sound_scene".to_string();
             i += 1;
             continue;
         } else if trimmed.starts_with("// Map_scripts") {
@@ -633,6 +729,16 @@ pub fn Load_map(path: String) -> io::Result<()> {
                     Ok(light) => Static_light.lock().unwrap().push(light),
                     Err(e) => {
                         eprintln!("[LoadMap] Line {}: failed to parse Light_components: {}", i+1, e);
+                        error_count += 1;
+                    }
+                }
+                i += 1;
+            }
+            "sound_scene" => {
+                match parse_sound_components(trimmed) {
+                    Ok(sound) => Static_sound_scene.lock().unwrap().push(sound),
+                    Err(e) => {
+                        eprintln!("[LoadMap] Line {}: failed to parse Sound_components: {}", i+1, e);
                         error_count += 1;
                     }
                 }
@@ -718,6 +824,10 @@ pub fn Load_map(path: String) -> io::Result<()> {
     let mut examination = super::Is_scene_changed.lock().unwrap();
     *examination = true;
     drop(examination);
+
+    let mut sound_examination = Is_sound_scene_changed.lock().unwrap();
+    *sound_examination = true;
+    drop(sound_examination);
 
     Ok(())
 }

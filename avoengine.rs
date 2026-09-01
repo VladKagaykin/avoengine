@@ -96,6 +96,20 @@ pub struct Physics_components{
     pub special_name: String
 }
 
+#[derive(Clone)]
+pub struct Sound_components{
+    pub x:f32,
+    pub y:f32,
+    pub z:f32,
+    pub vertices:Vec<f32>,
+    pub soundproofing: u8,
+    pub special_name: String
+}
+
+pub static Sound_queue: Mutex<Vec<Sound_components>> = Mutex::new(Vec::new());
+pub static Static_sound_scene: Mutex<Vec<Sound_components>> = Mutex::new(Vec::new());
+pub static Is_sound_scene_changed: Mutex<bool> = Mutex::new(false);
+
 pub fn Setup_window(width: &i128, height:&i128){
     let new_screen = vec![vec![Empty_pixel.lock().unwrap().clone(); *width as usize]; *height as usize];
     
