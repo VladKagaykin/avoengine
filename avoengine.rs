@@ -6,6 +6,7 @@ pub mod tick_system;
 pub mod console_input;
 pub mod window_processing;
 pub mod maps;
+pub mod sound;
 
 pub struct Settings{
     pub window_width: i128,
@@ -13,7 +14,7 @@ pub struct Settings{
     pub tick_speed: i128, // милисекунды 
     pub cores_multiply: u8
 }
-pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings{window_width: 58, window_height: 44, tick_speed: 50,
+pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings{window_width: 640, window_height: 480, tick_speed: 50,
                                                                   cores_multiply: 2});
 
 #[derive(Clone)]
