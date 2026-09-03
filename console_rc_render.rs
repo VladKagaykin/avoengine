@@ -360,7 +360,10 @@ float3 compute_dynamic_lighting(
     __global const float* tris_v1,
     __global const float* tris_v2,
     __global const float* tris_color,
-    __global const int* tri_indices
+    __global const int* tri_indices,
+    __global const int* tris_tex_id,
+    __global const uchar* tex_data,
+    __global const int* tex_info
 ) {
     float3 result = (float3)(0.0f, 0.0f, 0.0f);
 
@@ -388,6 +391,7 @@ float3 compute_dynamic_lighting(
 
         float3 offset = point + normal * 1e-3f;
         float3 shadow_dir = to_light_dir;
+        float3 filtered_color = (float3)(1.0f, 1.0f, 1.0f);
         bool occluded = false;
 
         int stack[64];
@@ -444,10 +448,57 @@ float3 compute_dynamic_lighting(
 
                     if (intersect_tri(offset, shadow_dir, tv0, tv1, tv2, dist, &t_hit, &u_hit, &v_hit)) {
                         float alpha = tris_color[t_idx * 4 + 3];
+                        int tex_id = tris_tex_id[t_idx];
+
+                        if (tex_id >= 0) {
+                            float4 tex_col = sample_triangle_texture(
+                                tex_data,
+                                tex_info,
+                                tex_id,
+                                tv0,
+                                tv1,
+                                tv2,
+                                u_hit,
+                                v_hit
+                            );
+                            alpha *= tex_col.w;
+                        }
 
                         if (alpha >= 1.0f) {
                             occluded = true;
                             break;
+                        } else {
+                            float3 obj_color = (float3)(
+                                tris_color[t_idx * 4 + 0],
+                                tris_color[t_idx * 4 + 1],
+                                tris_color[t_idx * 4 + 2]
+                            );
+
+                            if (tex_id >= 0) {
+                                float4 tex_col = sample_triangle_texture(
+                                    tex_data,
+                                    tex_info,
+                                    tex_id,
+                                    tv0,
+                                    tv1,
+                                    tv2,
+                                    u_hit,
+                                    v_hit
+                                );
+                                obj_color.x *= tex_col.x;
+                                obj_color.y *= tex_col.y;
+                                obj_color.z *= tex_col.z;
+                            }
+
+                            float inv_alpha = 1.0f - alpha;
+                            filtered_color.x *= (obj_color.x * alpha + inv_alpha);
+                            filtered_color.y *= (obj_color.y * alpha + inv_alpha);
+                            filtered_color.z *= (obj_color.z * alpha + inv_alpha);
+
+                            if (filtered_color.x < 0.01f && filtered_color.y < 0.01f && filtered_color.z < 0.01f) {
+                                occluded = true;
+                                break;
+                            }
                         }
                     }
                 }
@@ -461,7 +512,10 @@ float3 compute_dynamic_lighting(
 
         if (!occluded) {
             float diff = fmax(dot(normal, to_light_dir), 0.0f);
-            result += light_color * (attenuation * diff);
+            float3 lit = light_color * (attenuation * diff);
+            result.x += lit.x * filtered_color.x;
+            result.y += lit.y * filtered_color.y;
+            result.z += lit.z * filtered_color.z;
         }
     }
 
@@ -686,7 +740,10 @@ __kernel void render_scene(
                 tris_v1,
                 tris_v2,
                 tris_color,
-                tri_indices
+                tri_indices,
+                tris_tex_id,
+                tex_data,
+                tex_info
             );
 
             light_factor = (float3)(
@@ -708,7 +765,10 @@ __kernel void render_scene(
                 tris_v1,
                 tris_v2,
                 tris_color,
-                tri_indices
+                tri_indices,
+                tris_tex_id,
+                tex_data,
+                tex_info
             );
 
             light_factor = (float3)(
