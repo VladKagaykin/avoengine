@@ -83,7 +83,7 @@ pub struct Camera_structure{
 }
 pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure{camera_fov: 58, camera_x: 0.0, camera_y: 1.0,
                                                                          camera_z: 0.0, camera_pitch: 0.0, camera_yaw: 0.0,
-                                                                         camera_roll: 0.0, max_dist: 256, ambient_light: [128,128,128]});
+                                                                         camera_roll: 0.0, max_dist: 256, ambient_light: [64,64,64]});
 
 #[derive(Clone)]
 pub struct Physics_components{
