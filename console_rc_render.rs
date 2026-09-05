@@ -550,6 +550,8 @@ __kernel void render_scene(
     __global const float* tris_normal,
     __global const float* tris_color,
     __global const float* tris_baked,
+    __global const float* tris_ior,
+    __global const float* tris_reflection,
     __global const int* tris_tex_id,
     __global const int* tri_indices,
     int num_tex,
@@ -568,156 +570,109 @@ __kernel void render_scene(
     float px = nx * half_tan * aspect;
     float py = ny * half_tan;
 
-    float3 dir = normalize(cam_fwd + cam_right * px + cam_up * py);
-
-    Hit hits[8];
-    int hit_count = 0;
-
-    int stack[64];
-    int stack_ptr = 0;
-    stack[stack_ptr++] = 0;
-
-    while (stack_ptr > 0) {
-        int node_idx = stack[--stack_ptr];
-
-        float3 nmin = (float3)(
-            nodes_min[node_idx * 3],
-            nodes_min[node_idx * 3 + 1],
-            nodes_min[node_idx * 3 + 2]
-        );
-
-        float3 nmax = (float3)(
-            nodes_max[node_idx * 3],
-            nodes_max[node_idx * 3 + 1],
-            nodes_max[node_idx * 3 + 2]
-        );
-
-        float dummy_t;
-        if (!intersect_aabb(cam_origin, dir, nmin, nmax, max_dist, &dummy_t)) continue;
-
-        int left = nodes_left[node_idx];
-        int right = nodes_right[node_idx];
-
-        if (left < 0) {
-            int start = -left - 1;
-            int count = right;
-
-            for (int j = 0; j < count; j++) {
-                int t_idx = tri_indices[start + j];
-
-                float3 tv0 = (float3)(
-                    tris_v0[t_idx * 3],
-                    tris_v0[t_idx * 3 + 1],
-                    tris_v0[t_idx * 3 + 2]
-                );
-
-                float3 tv1 = (float3)(
-                    tris_v1[t_idx * 3],
-                    tris_v1[t_idx * 3 + 1],
-                    tris_v1[t_idx * 3 + 2]
-                );
-
-                float3 tv2 = (float3)(
-                    tris_v2[t_idx * 3],
-                    tris_v2[t_idx * 3 + 1],
-                    tris_v2[t_idx * 3 + 2]
-                );
-
-                float t_hit, u_hit, v_hit;
-
-                if (intersect_tri(cam_origin, dir, tv0, tv1, tv2, max_dist, &t_hit, &u_hit, &v_hit)) {
-                    if (hit_count < 8) {
-                        hits[hit_count].t = t_hit;
-                        hits[hit_count].u = u_hit;
-                        hits[hit_count].v = v_hit;
-                        hits[hit_count].tri_idx = t_idx;
-                        hit_count++;
-                    } else {
-                        int max_i = 0;
-
-                        for (int k = 1; k < 8; k++) {
-                            if (hits[k].t > hits[max_i].t) {
-                                max_i = k;
-                            }
-                        }
-
-                        if (t_hit < hits[max_i].t) {
-                            hits[max_i].t = t_hit;
-                            hits[max_i].u = u_hit;
-                            hits[max_i].v = v_hit;
-                            hits[max_i].tri_idx = t_idx;
-                        }
-                    }
-                }
-            }
-        } else {
-            stack[stack_ptr++] = left;
-            stack[stack_ptr++] = right;
-        }
-    }
-
-    sort_hits(hits, hit_count);
+    float3 current_origin = cam_origin;
+    float3 current_dir = normalize(cam_fwd + cam_right * px + cam_up * py);
 
     float3 final_color = (float3)(0.0f, 0.0f, 0.0f);
-    float transmittance = 1.0f;
+    float3 throughput = (float3)(1.0f, 1.0f, 1.0f);
 
-    for (int i = 0; i < hit_count; i++) {
-        Hit h = hits[i];
-        int t_idx = h.tri_idx;
+    for (int bounce = 0; bounce < 128; bounce++) {
+        float best_t = max_dist;
+        int best_tri_idx = -1;
+        float best_u = 0.0f, best_v = 0.0f;
 
-        float3 tv0 = (float3)(
-            tris_v0[t_idx * 3],
-            tris_v0[t_idx * 3 + 1],
-            tris_v0[t_idx * 3 + 2]
-        );
+        int stack[64];
+        int stack_ptr = 0;
+        stack[stack_ptr++] = 0;
 
-        float3 tv1 = (float3)(
-            tris_v1[t_idx * 3],
-            tris_v1[t_idx * 3 + 1],
-            tris_v1[t_idx * 3 + 2]
-        );
+        while (stack_ptr > 0) {
+            int node_idx = stack[--stack_ptr];
 
-        float3 tv2 = (float3)(
-            tris_v2[t_idx * 3],
-            tris_v2[t_idx * 3 + 1],
-            tris_v2[t_idx * 3 + 2]
-        );
+            float3 nmin = (float3)(
+                nodes_min[node_idx * 3],
+                nodes_min[node_idx * 3 + 1],
+                nodes_min[node_idx * 3 + 2]
+            );
 
-        float3 base_rgb = (float3)(
-            tris_color[t_idx * 4],
-            tris_color[t_idx * 4 + 1],
-            tris_color[t_idx * 4 + 2]
-        );
+            float3 nmax = (float3)(
+                nodes_max[node_idx * 3],
+                nodes_max[node_idx * 3 + 1],
+                nodes_max[node_idx * 3 + 2]
+            );
 
+            float dummy_t;
+            if (!intersect_aabb(current_origin, current_dir, nmin, nmax, max_dist, &dummy_t)) continue;
+
+            int left = nodes_left[node_idx];
+            int right = nodes_right[node_idx];
+
+            if (left < 0) {
+                int start = -left - 1;
+                int count = right;
+
+                for (int j = 0; j < count; j++) {
+                    int t_idx = tri_indices[start + j];
+
+                    float3 tv0 = (float3)(
+                        tris_v0[t_idx * 3],
+                        tris_v0[t_idx * 3 + 1],
+                        tris_v0[t_idx * 3 + 2]
+                    );
+
+                    float3 tv1 = (float3)(
+                        tris_v1[t_idx * 3],
+                        tris_v1[t_idx * 3 + 1],
+                        tris_v1[t_idx * 3 + 2]
+                    );
+
+                    float3 tv2 = (float3)(
+                        tris_v2[t_idx * 3],
+                        tris_v2[t_idx * 3 + 1],
+                        tris_v2[t_idx * 3 + 2]
+                    );
+
+                    float t_hit, u_hit, v_hit;
+
+                    if (intersect_tri(current_origin, current_dir, tv0, tv1, tv2, best_t, &t_hit, &u_hit, &v_hit)) {
+                        best_t = t_hit;
+                        best_tri_idx = t_idx;
+                        best_u = u_hit;
+                        best_v = v_hit;
+                    }
+                }
+            } else {
+                stack[stack_ptr++] = left;
+                stack[stack_ptr++] = right;
+            }
+        }
+
+        if (best_tri_idx < 0) {
+            break;
+        }
+
+        int t_idx = best_tri_idx;
+
+        float3 tv0 = (float3)(tris_v0[t_idx * 3], tris_v0[t_idx * 3 + 1], tris_v0[t_idx * 3 + 2]);
+        float3 tv1 = (float3)(tris_v1[t_idx * 3], tris_v1[t_idx * 3 + 1], tris_v1[t_idx * 3 + 2]);
+        float3 tv2 = (float3)(tris_v2[t_idx * 3], tris_v2[t_idx * 3 + 1], tris_v2[t_idx * 3 + 2]);
+
+        float3 base_rgb = (float3)(tris_color[t_idx * 4], tris_color[t_idx * 4 + 1], tris_color[t_idx * 4 + 2]);
         float base_alpha = tris_color[t_idx * 4 + 3];
 
         int tex_id = tris_tex_id[t_idx];
 
         if (tex_id >= 0) {
-            float4 tex_col = sample_triangle_texture(
-                tex_data,
-                tex_info,
-                tex_id,
-                tv0,
-                tv1,
-                tv2,
-                h.u,
-                h.v
-            );
-
+            float4 tex_col = sample_triangle_texture(tex_data, tex_info, tex_id, tv0, tv1, tv2, best_u, best_v);
             base_rgb.x = tex_col.x * base_rgb.x;
             base_rgb.y = tex_col.y * base_rgb.y;
             base_rgb.z = tex_col.z * base_rgb.z;
             base_alpha = tex_col.w * base_alpha;
         }
 
-        float3 hit_point = cam_origin + dir * h.t;
-
-        float3 normal = (float3)(
-            tris_normal[t_idx * 3],
-            tris_normal[t_idx * 3 + 1],
-            tris_normal[t_idx * 3 + 2]
-        );
+        float3 hit_point = current_origin + current_dir * best_t;
+        float3 normal = (float3)(tris_normal[t_idx * 3], tris_normal[t_idx * 3 + 1], tris_normal[t_idx * 3 + 2]);
+        float ior = tris_ior[t_idx];
+        float reflection = tris_reflection[t_idx];
 
         float baked_x = tris_baked[t_idx * 3];
         float baked_y = tris_baked[t_idx * 3 + 1];
@@ -788,18 +743,75 @@ __kernel void render_scene(
             base_rgb.z * light_factor.z
         );
 
-        float alpha = base_alpha;
-        if (alpha <= 0.0f) continue;
+        if (reflection > 0.0f) {
+            float3 n = normal;
+            float cos_i = -dot(current_dir, n);
+            if (cos_i < 0.0f) {
+                n = -n;
+                cos_i = -cos_i;
+            }
+            
+            float trans = base_alpha * (1.0f - reflection);
+            final_color += lit_color * trans * throughput;
+            
+            throughput *= (1.0f - reflection);
 
-        float weight = alpha * transmittance;
+            if (fmax(throughput.x, fmax(throughput.y, throughput.z)) < 0.01f) break;
+        }
 
-        final_color.x += lit_color.x * weight;
-        final_color.y += lit_color.y * weight;
-        final_color.z += lit_color.z * weight;
+        if (base_alpha < 1.0f && ior != 1.0f) {
+            float cos_i = -dot(current_dir, normal);
+            float3 n = normal;
+            float eta = 1.0f / ior;
 
-        transmittance *= (1.0f - alpha);
+            if (cos_i < 0.0f) {
+                n = -n;
+                cos_i = -cos_i;
+                eta = ior;
+            }
 
-        if (transmittance <= 0.0f) break;
+            float k = 1.0f - eta * eta * (1.0f - cos_i * cos_i);
+
+            if (k < 0.0f) {
+                current_dir = current_dir + n * (2.0f * cos_i);
+            } else {
+                current_dir = current_dir * eta + n * (eta * cos_i - sqrt(k));
+            }
+            current_dir = normalize(current_dir);
+            current_origin = hit_point + current_dir * 1e-3f;
+
+            throughput *= (lit_color * base_alpha + (float3)(1.0f - base_alpha, 1.0f - base_alpha, 1.0f - base_alpha));
+
+            if (fmax(throughput.x, fmax(throughput.y, throughput.z)) < 0.01f) break;
+            continue;
+        }
+
+        if (reflection > 0.0f && base_alpha >= 1.0f) {
+            float3 n = normal;
+            float cos_i = -dot(current_dir, n);
+            if (cos_i < 0.0f) {
+                n = -n;
+                cos_i = -cos_i;
+            }
+
+            current_dir = current_dir + n * (2.0f * cos_i);
+            current_dir = normalize(current_dir);
+            current_origin = hit_point + current_dir * 1e-3f;
+
+            if (fmax(throughput.x, fmax(throughput.y, throughput.z)) < 0.01f) break;
+            continue;
+        }
+
+        if (base_alpha > 0.0f) {
+            final_color += lit_color * base_alpha * throughput;
+            throughput *= (1.0f - base_alpha);
+        }
+
+        if (base_alpha >= 1.0f || fmax(throughput.x, fmax(throughput.y, throughput.z)) < 0.01f) {
+            break;
+        }
+
+        current_origin = hit_point + current_dir * 1e-3f;
     }
 
     int out_idx = gid * 4;
@@ -1093,7 +1105,7 @@ fn point_in_polygon_offset(px: f32, py: f32, vertices: &[f32], offset_x: f32, of
         let xi = vertices[2 * i] + offset_x;
         let yi = vertices[2 * i + 1] + offset_y;
         let xj = vertices[2 * j] + offset_x;
-        let yj = vertices[2 * j + 1] + offset_y;
+        let yj = vertices[2 * j] + offset_y;
 
         let intersect = ((yi > py) != (yj > py))
             && (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
@@ -1579,6 +1591,31 @@ fn compute_lighting(
     [r.min(1.0), g.min(1.0), b.min(1.0)]
 }
 
+fn parse_material_properties(props: &str) -> (f32, f32) {
+    let mut ior = 1.0;
+    let mut reflection = 0.0;
+    for part in props.split(',') {
+        let part = part.trim();
+        if let Some(start) = part.find("refraction[") {
+            let rest = &part[start + 11..];
+            if let Some(end) = rest.find(']') {
+                if let Ok(v) = rest[..end].parse::<f32>() {
+                    ior = v;
+                }
+            }
+        }
+        if let Some(start) = part.find("reflection[") {
+            let rest = &part[start + 11..];
+            if let Some(end) = rest.find(']') {
+                if let Ok(v) = rest[..end].parse::<f32>() {
+                    reflection = (v / 255.0).clamp(0.0, 1.0);
+                }
+            }
+        }
+    }
+    (ior, reflection)
+}
+
 pub fn ray_tracing(
     start_x: f32,
     start_y: f32,
@@ -1592,161 +1629,219 @@ pub fn ray_tracing(
     all_lights: &[super::Light_components],
     ambient_light: [u8; 3],
 ) -> super::Pixel_structure {
-    let origin = [start_x, start_y, start_z];
+    let mut final_color = [0.0f32, 0.0f32, 0.0f32];
+    let mut throughput = [1.0f32, 1.0f32, 1.0f32];
+    let mut current_origin = [start_x, start_y, start_z];
+    let mut current_dir = dir;
     let max_t = length as f32;
+    let mut final_symbol = super::Empty_pixel.lock().unwrap().pixel_symbol;
 
-    let mut candidates = Vec::new();
+    let mut bounce_count = 0;
+    'ray_loop: loop {
+        if bounce_count >= 128 { break 'ray_loop; }
+        bounce_count += 1;
 
-    collect_candidates(&origin, &dir, max_t, bvh, triangles, &mut candidates);
+        let mut candidates = Vec::new();
+        collect_candidates(&current_origin, &current_dir, max_t, bvh, triangles, &mut candidates);
 
-    let mut hits = Vec::new();
+        let mut hits = Vec::new();
+        for &idx in &candidates {
+            let rt = &triangles[idx];
+            let tri = &rt.triangle;
+            let verts = &tri.draw_vertices;
 
-    for &idx in &candidates {
-        let rt = &triangles[idx];
-        let tri = &rt.triangle;
-        let verts = &tri.draw_vertices;
+            if verts.len() < 9 { continue; }
 
-        if verts.len() < 9 {
-            continue;
-        }
+            let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
+            let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
+            let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
 
-        let v0 = [verts[0] + tri.draw_x, verts[1] + tri.draw_y, verts[2] + tri.draw_z];
-        let v1 = [verts[3] + tri.draw_x, verts[4] + tri.draw_y, verts[5] + tri.draw_z];
-        let v2 = [verts[6] + tri.draw_x, verts[7] + tri.draw_y, verts[8] + tri.draw_z];
-
-        if let Some((t, u, v)) = ray_triangle_intersect(&origin, &dir, &v0, &v1, &v2) {
-            if t > 0.0 && t < max_t {
-                let (r, g, b, a) = if tri.draw_texture_path != "none" {
-                    if let Some(img) = textures.get(&tri.draw_texture_path) {
-                        let (uv0, uv1, uv2) = generate_uv_for_triangle(&v0, &v1, &v2);
-
-                        let w = 1.0 - u - v;
-
-                        let tex_u = w * uv0.0 + u * uv1.0 + v * uv2.0;
-                        let tex_v = w * uv0.1 + u * uv1.1 + v * uv2.1;
-
-                        let tex_x = (tex_u * (img.width() as f32 - 1.0)).round() as u32;
-                        let tex_y = (tex_v * (img.height() as f32 - 1.0)).round() as u32;
-
-                        let tex_x = tex_x.min(img.width() - 1);
-                        let tex_y = tex_y.min(img.height() - 1);
-
-                        let pixel = img.get_pixel(tex_x, tex_y);
-                        let c = &tri.draw_RGBA_color;
-
-                        let a = (pixel[3] as f32 / 255.0) * (c[3] as f32 / 255.0);
-
-                        let r = ((pixel[0] as f32 / 255.0) * (c[0] as f32 / 255.0) * 255.0).round() as u8;
-                        let g = ((pixel[1] as f32 / 255.0) * (c[1] as f32 / 255.0) * 255.0).round() as u8;
-                        let b = ((pixel[2] as f32 / 255.0) * (c[2] as f32 / 255.0) * 255.0).round() as u8;
-
-                        (r, g, b, a)
+            if let Some((t, u, v)) = ray_triangle_intersect(&current_origin, &current_dir, &v0, &v1, &v2) {
+                if t > 1e-6 && t < max_t {
+                    let (r, g, b, a) = if tri.draw_texture_path != "none" {
+                        if let Some(img) = textures.get(&tri.draw_texture_path) {
+                            let (uv0, uv1, uv2) = generate_uv_for_triangle(&v0, &v1, &v2);
+                            let w = 1.0 - u - v;
+                            let tex_u = w * uv0.0 + u * uv1.0 + v * uv2.0;
+                            let tex_v = w * uv0.1 + u * uv1.1 + v * uv2.1;
+                            let tex_x = (tex_u * (img.width() as f32 - 1.0)).round() as u32;
+                            let tex_y = (tex_v * (img.height() as f32 - 1.0)).round() as u32;
+                            let tex_x = tex_x.min(img.width() - 1);
+                            let tex_y = tex_y.min(img.height() - 1);
+                            let pixel = img.get_pixel(tex_x, tex_y);
+                            let c = &tri.draw_RGBA_color;
+                            let a = (pixel[3] as f32 / 255.0) * (c[3] as f32 / 255.0);
+                            let r = ((pixel[0] as f32 / 255.0) * (c[0] as f32 / 255.0) * 255.0).round() as u8;
+                            let g = ((pixel[1] as f32 / 255.0) * (c[1] as f32 / 255.0) * 255.0).round() as u8;
+                            let b = ((pixel[2] as f32 / 255.0) * (c[2] as f32 / 255.0) * 255.0).round() as u8;
+                            (r, g, b, a)
+                        } else {
+                            let c = &tri.draw_RGBA_color;
+                            (c[0], c[1], c[2], c[3] as f32 / 255.0)
+                        }
                     } else {
                         let c = &tri.draw_RGBA_color;
                         (c[0], c[1], c[2], c[3] as f32 / 255.0)
-                    }
-                } else {
-                    let c = &tri.draw_RGBA_color;
-                    (c[0], c[1], c[2], c[3] as f32 / 255.0)
-                };
+                    };
 
-                let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
-                let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
-
-                let normal = normalize(cross(&edge1, &edge2));
-
-                let hit_point = [
-                    origin[0] + dir[0] * t,
-                    origin[1] + dir[1] * t,
-                    origin[2] + dir[2] * t,
-                ];
-
-                let mut light_factor = if let Some(baked) = rt.baked_light {
-                    let dynamic_contrib = compute_lighting(
-                        hit_point,
-                        normal,
-                        bvh,
-                        triangles,
-                        dynamic_lights,
-                        [0, 0, 0],
-                    );
-
-                    let amb = [
-                        ambient_light[0] as f32 / 255.0,
-                        ambient_light[1] as f32 / 255.0,
-                        ambient_light[2] as f32 / 255.0,
+                    let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+                    let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+                    let normal = normalize(cross(&edge1, &edge2));
+                    let hit_point = [
+                        current_origin[0] + current_dir[0] * t,
+                        current_origin[1] + current_dir[1] * t,
+                        current_origin[2] + current_dir[2] * t,
                     ];
 
-                    [
-                        (amb[0] + baked[0] + dynamic_contrib[0]).min(1.0),
-                        (amb[1] + baked[1] + dynamic_contrib[1]).min(1.0),
-                        (amb[2] + baked[2] + dynamic_contrib[2]).min(1.0),
-                    ]
-                } else {
-                    compute_lighting(hit_point, normal, bvh, triangles, all_lights, ambient_light)
-                };
+                    let light_factor = if let Some(baked) = rt.baked_light {
+                        let dynamic_contrib = compute_lighting(hit_point, normal, bvh, triangles, dynamic_lights, [0, 0, 0]);
+                        let amb = [
+                            ambient_light[0] as f32 / 255.0,
+                            ambient_light[1] as f32 / 255.0,
+                            ambient_light[2] as f32 / 255.0,
+                        ];
+                        [
+                            (amb[0] + baked[0] + dynamic_contrib[0]).min(1.0),
+                            (amb[1] + baked[1] + dynamic_contrib[1]).min(1.0),
+                            (amb[2] + baked[2] + dynamic_contrib[2]).min(1.0),
+                        ]
+                    } else {
+                        compute_lighting(hit_point, normal, bvh, triangles, all_lights, ambient_light)
+                    };
 
-                if light_factor[0] <= 0.0 && light_factor[1] <= 0.0 && light_factor[2] <= 0.0 {
-                    light_factor = [1.0, 1.0, 1.0];
+                    let light_factor = if light_factor[0] <= 0.0 && light_factor[1] <= 0.0 && light_factor[2] <= 0.0 {
+                        [1.0, 1.0, 1.0]
+                    } else {
+                        light_factor
+                    };
+
+                    let lit_r = (r as f32 * light_factor[0]).round() as u8;
+                    let lit_g = (g as f32 * light_factor[1]).round() as u8;
+                    let lit_b = (b as f32 * light_factor[2]).round() as u8;
+
+                    hits.push((t, idx, lit_r, lit_g, lit_b, a, normal, hit_point, tri.draw_symbol));
+                }
+            }
+        }
+
+        hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        let mut hit_something = false;
+
+        for &(t, idx, r, g, b, a, normal, hit_point, symbol) in &hits {
+            hit_something = true;
+            final_symbol = symbol;
+            let rt = &triangles[idx];
+            let tri = &rt.triangle;
+
+            let (ior, reflection) = parse_material_properties(&tri.special_properties);
+
+            if reflection > 0.0 {
+                let fg = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+                for i in 0..3 {
+                    final_color[i] += throughput[i] * fg[i] * reflection;
+                    throughput[i] *= 1.0 - reflection;
                 }
 
-                let lit_r = (r as f32 * light_factor[0]).round() as u8;
-                let lit_g = (g as f32 * light_factor[1]).round() as u8;
-                let lit_b = (b as f32 * light_factor[2]).round() as u8;
-
-                hits.push((t, lit_r, lit_g, lit_b, a, tri.draw_symbol));
+                if throughput.iter().all(|&x| x <= 0.01) {
+                    break 'ray_loop;
+                }
             }
+
+            if a < 1.0 && ior != 1.0 {
+                let mut n = normal;
+                let mut cos_i = -(current_dir[0] * n[0] + current_dir[1] * n[1] + current_dir[2] * n[2]);
+                let mut eta = 1.0 / ior;
+
+                if cos_i < 0.0 {
+                    n = [-n[0], -n[1], -n[2]];
+                    cos_i = -cos_i;
+                    eta = ior;
+                }
+
+                let k = 1.0 - eta * eta * (1.0 - cos_i * cos_i);
+
+                if k < 0.0 {
+                    current_dir = [
+                        current_dir[0] + 2.0 * cos_i * n[0],
+                        current_dir[1] + 2.0 * cos_i * n[1],
+                        current_dir[2] + 2.0 * cos_i * n[2],
+                    ];
+                } else {
+                    current_dir = [
+                        current_dir[0] * eta + n[0] * (eta * cos_i - k.sqrt()),
+                        current_dir[1] * eta + n[1] * (eta * cos_i - k.sqrt()),
+                        current_dir[2] * eta + n[2] * (eta * cos_i - k.sqrt()),
+                    ];
+                }
+                current_dir = normalize(current_dir);
+                current_origin = [
+                    hit_point[0] + current_dir[0] * 1e-3,
+                    hit_point[1] + current_dir[1] * 1e-3,
+                    hit_point[2] + current_dir[2] * 1e-3,
+                ];
+
+                let fg = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+                for i in 0..3 {
+                    throughput[i] *= fg[i] * a + (1.0 - a);
+                }
+
+                if throughput.iter().all(|&x| x <= 0.01) {
+                    break 'ray_loop;
+                }
+                continue 'ray_loop;
+            }
+
+            if reflection > 0.0 && a >= 1.0 {
+                let mut n = normal;
+                let mut cos_i = -(current_dir[0] * n[0] + current_dir[1] * n[1] + current_dir[2] * n[2]);
+                if cos_i < 0.0 {
+                    n = [-n[0], -n[1], -n[2]];
+                    cos_i = -cos_i;
+                }
+
+                current_dir = [
+                    current_dir[0] + 2.0 * cos_i * n[0],
+                    current_dir[1] + 2.0 * cos_i * n[1],
+                    current_dir[2] + 2.0 * cos_i * n[2],
+                ];
+                current_dir = normalize(current_dir);
+                current_origin = [
+                    hit_point[0] + current_dir[0] * 1e-3,
+                    hit_point[1] + current_dir[1] * 1e-3,
+                    hit_point[2] + current_dir[2] * 1e-3,
+                ];
+
+                if throughput.iter().all(|&x| x <= 0.01) {
+                    break 'ray_loop;
+                }
+                continue 'ray_loop;
+            }
+
+            let fg = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0];
+            for i in 0..3 {
+                final_color[i] += throughput[i] * fg[i] * a;
+                throughput[i] *= 1.0 - a;
+            }
+
+            if a >= 1.0 || throughput.iter().all(|&x| x <= 0.01) {
+                break 'ray_loop;
+            }
+        }
+
+        if !hit_something || throughput.iter().all(|&x| x <= 0.01) {
+            break 'ray_loop;
         }
     }
 
-    hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let r = (final_color[0] * 255.0).round().min(255.0).max(0.0) as u8;
+    let g = (final_color[1] * 255.0).round().min(255.0).max(0.0) as u8;
+    let b = (final_color[2] * 255.0).round().min(255.0).max(0.0) as u8;
 
-    let mut best_pixel = super::Empty_pixel.lock().unwrap().clone();
-    let mut best_alpha = 0.0;
-
-    for (_, r, g, b, a, symbol) in hits {
-        if a <= 0.0 {
-            continue;
-        }
-
-        let fg = [r, g, b, 255];
-
-        if a >= 1.0 {
-            let bg = best_pixel.pixel_RGBA_color;
-            let mut blended = [0u8; 4];
-
-            for i in 0..3 {
-                blended[i] = ((bg[i] as f32 * (1.0 - best_alpha)) + (fg[i] as f32 * a)) as u8;
-            }
-
-            blended[3] = 255;
-
-            best_pixel = super::Pixel_structure {
-                pixel_symbol: symbol,
-                pixel_RGBA_color: blended,
-            };
-
-            break;
-        } else {
-            let bg = best_pixel.pixel_RGBA_color;
-            let mut blended = [0u8; 4];
-
-            for i in 0..3 {
-                blended[i] = ((bg[i] as f32 * (1.0 - best_alpha)) + (fg[i] as f32 * a)) as u8;
-            }
-
-            blended[3] = 255;
-
-            best_pixel = super::Pixel_structure {
-                pixel_symbol: symbol,
-                pixel_RGBA_color: blended,
-            };
-
-            best_alpha += a * (1.0 - best_alpha);
-        }
+    super::Pixel_structure {
+        pixel_symbol: final_symbol,
+        pixel_RGBA_color: [r, g, b, 255],
     }
-
-    best_pixel
 }
 
 fn light_cone_intersects_frustum(
@@ -2025,6 +2120,8 @@ pub fn Render_3d_to_screen(
     let mut tri_normal: Vec<f32> = Vec::with_capacity(all_triangles.len() * 3);
     let mut tri_color: Vec<f32> = Vec::with_capacity(all_triangles.len() * 4);
     let mut tri_baked: Vec<f32> = Vec::with_capacity(all_triangles.len() * 3);
+    let mut tri_ior: Vec<f32> = Vec::with_capacity(all_triangles.len());
+    let mut tri_reflection: Vec<f32> = Vec::with_capacity(all_triangles.len());
     let mut tri_tex_id: Vec<i32> = Vec::with_capacity(all_triangles.len());
 
     let mut texture_map: HashMap<String, RgbaImage> = HashMap::new();
@@ -2055,6 +2152,8 @@ pub fn Render_3d_to_screen(
         ];
 
         let baked = rt.baked_light.unwrap_or([-1.0, -1.0, -1.0]);
+
+        let (ior, reflection) = parse_material_properties(&tri.special_properties);
 
         let mut tex_id = -1i32;
 
@@ -2089,6 +2188,8 @@ pub fn Render_3d_to_screen(
         tri_normal.extend_from_slice(&normal);
         tri_color.extend_from_slice(&color);
         tri_baked.extend_from_slice(&baked);
+        tri_ior.push(ior);
+        tri_reflection.push(reflection);
         tri_tex_id.push(tex_id);
     }
 
@@ -2209,6 +2310,24 @@ pub fn Render_3d_to_screen(
             .build()
             .unwrap();
 
+        let tri_ior_safe = if tri_ior.is_empty() { vec![1.0f32] } else { tri_ior };
+        let buf_ior: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_READ_ONLY)
+            .len(tri_ior_safe.len().max(1))
+            .copy_host_slice(&tri_ior_safe)
+            .build()
+            .unwrap();
+
+        let tri_reflection_safe = if tri_reflection.is_empty() { vec![0.0f32] } else { tri_reflection };
+        let buf_reflection: Buffer<f32> = Buffer::builder()
+            .queue(state.queue.clone())
+            .flags(flags::MEM_READ_ONLY)
+            .len(tri_reflection_safe.len().max(1))
+            .copy_host_slice(&tri_reflection_safe)
+            .build()
+            .unwrap();
+
         let tri_tex_id_safe = if tri_tex_id.is_empty() { vec![0i32] } else { tri_tex_id };
         let buf_texid: Buffer<i32> = Buffer::builder()
             .queue(state.queue.clone())
@@ -2310,6 +2429,8 @@ pub fn Render_3d_to_screen(
             .arg(&buf_norm)
             .arg(&buf_col)
             .arg(&buf_baked)
+            .arg(&buf_ior)
+            .arg(&buf_reflection)
             .arg(&buf_texid)
             .arg(&buf_indices)
             .arg(&arg_num_tex)
@@ -2470,6 +2591,7 @@ fn Bake_scene() {
                     ],
                     draw_RGBA_color: object.draw_RGBA_color,
                     draw_texture_path: object.draw_texture_path.clone(),
+                    special_properties: object.special_properties.clone(),
                     draw_special_name: object.draw_special_name.clone(),
                 };
 
@@ -2903,6 +3025,7 @@ pub fn Render_image_to_console() -> Result<(), String> {
                 ],
                 draw_RGBA_color: object.draw_RGBA_color,
                 draw_texture_path: object.draw_texture_path.clone(),
+                special_properties: object.special_properties.clone(),
                 draw_special_name: object.draw_special_name.clone(),
             };
 

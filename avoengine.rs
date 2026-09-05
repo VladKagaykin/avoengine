@@ -27,6 +27,7 @@ pub struct Draw_components{
     pub draw_vertices: Vec<f32>,
     pub draw_RGBA_color: [u8;4],
     pub draw_texture_path: String,
+    pub special_properties: String,
     pub draw_special_name: String
 }
 pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
@@ -83,7 +84,7 @@ pub struct Camera_structure{
 }
 pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure{camera_fov: 58, camera_x: 0.0, camera_y: 1.0,
                                                                          camera_z: 0.0, camera_pitch: 0.0, camera_yaw: 0.0,
-                                                                         camera_roll: 0.0, max_dist: 256, ambient_light: [64,64,64]});
+                                                                         camera_roll: 0.0, max_dist: 256, ambient_light: [128,128,128]});
 
 #[derive(Clone)]
 pub struct Physics_components{

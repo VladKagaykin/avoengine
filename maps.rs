@@ -188,8 +188,8 @@ fn parse_draw_components(line: &str) -> io::Result<Draw_components> {
     }
     let args_str = &line[16..line.len()-1];
     let args = extract_args(args_str);
-    if args.len() != 9 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected 9 arguments, got {}", args.len())));
+    if args.len() != 10 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected 10 arguments, got {}", args.len())));
     }
     Ok(Draw_components {
         draw_type: parse_string(&args[0])?,
@@ -200,7 +200,8 @@ fn parse_draw_components(line: &str) -> io::Result<Draw_components> {
         draw_vertices: parse_f32_vec(&args[5])?,
         draw_RGBA_color: parse_u8_array::<4>(&args[6])?,
         draw_texture_path: parse_string(&args[7])?,
-        draw_special_name: parse_string(&args[8])?,
+        special_properties: parse_string(&args[8])?,
+        draw_special_name: parse_string(&args[9])?,
     })
 }
 
@@ -388,7 +389,7 @@ fn build_engine() -> Engine {
     engine.register_type::<Light_components>();
     engine.register_type::<Sound_components>();
 
-    engine.register_fn("Draw_components", |draw_type: &str, x: f64, y: f64, z: f64, symbol: char, vertices: Array, color: Array, tex: &str, name: &str| {
+    engine.register_fn("Draw_components", |draw_type: &str, x: f64, y: f64, z: f64, symbol: char, vertices: Array, color: Array, tex: &str, special_props: &str, name: &str| {
         let vertices: Vec<f32> = vertices
             .into_iter()
             .map(|v| v.as_float().unwrap_or(0.0) as f32)
@@ -410,6 +411,7 @@ fn build_engine() -> Engine {
             draw_vertices: vertices,
             draw_RGBA_color: color,
             draw_texture_path: tex.to_string(),
+            special_properties: special_props.to_string(),
             draw_special_name: name.to_string(),
         }
     });
@@ -573,7 +575,7 @@ pub fn Save_map(path: String) -> io::Result<()> {
         let scene = Static_scene.lock().unwrap();
         for comp in scene.iter() {
             let line = format!(
-                "Draw_components({}, {}, {}, {}, {}, {}, {}, {}, {})",
+                "Draw_components({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
                 format_string(&comp.draw_type),
                 comp.draw_x,
                 comp.draw_y,
@@ -582,6 +584,7 @@ pub fn Save_map(path: String) -> io::Result<()> {
                 format_f32_vec(&comp.draw_vertices),
                 format_u8_array(&comp.draw_RGBA_color),
                 format_string(&comp.draw_texture_path),
+                format_string(&comp.special_properties),
                 format_string(&comp.draw_special_name),
             );
             writeln!(file, "{}", line)?;
