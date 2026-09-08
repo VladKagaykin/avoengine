@@ -5,12 +5,9 @@ use std::sync::{OnceLock, Mutex};
 use ocl::{Platform, Device, Context, Program, Kernel, Queue, Buffer, flags};
 use ocl::prm::Float3;
 
-const LIGHTMAP_RES: i32 = 16;
-
 #[derive(Clone)]
 pub struct Render_triangle {
     pub triangle: super::Draw_components,
-    pub baked_light: Option<[f32; 3]>,
 }
 
 #[derive(Clone)]
@@ -53,7 +50,6 @@ struct GeometryBuffers {
 
 static Baked_static_triangles: Mutex<Vec<Render_triangle>> = Mutex::new(Vec::new());
 static Baked_static_bvh: Mutex<Option<BvhNode>> = Mutex::new(None);
-static Static_lightmap: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 
 struct OpenCLState {
     context: Context,
@@ -336,143 +332,6 @@ int process_bounce(
     return 1;
 }
 
-uint hash_uint(uint x) {
-    x ^= x >> 16;
-    x *= 0x7feb352du;
-    x ^= x >> 15;
-    x *= 0x846ca68bu;
-    x ^= x >> 16;
-    return x;
-}
-
-void make_basis(float3 n, float3* right, float3* up) {
-    float3 helper = fabs(n.y) < 0.999f ? (float3)(0.0f, 1.0f, 0.0f) : (float3)(1.0f, 0.0f, 0.0f);
-    *right = normalize(cross(helper, n));
-    *up = cross(n, *right);
-}
-
-float3 sample_lightmap(
-    __global const int* lightmap,
-    int t_idx,
-    float u,
-    float v,
-    int res
-) {
-    int x = (int)(u * (float)res);
-    int y = (int)(v * (float)res);
-    if (x < 0) x = 0;
-    if (x >= res) x = res - 1;
-    if (y < 0) y = 0;
-    if (y >= res) y = res - 1;
-    int base = ((t_idx * res + y) * res + x) * 3;
-    return (float3)(
-        (float)lightmap[base + 0] / 4096.0f,
-        (float)lightmap[base + 1] / 4096.0f,
-        (float)lightmap[base + 2] / 4096.0f
-    );
-}
-
-__kernel void trace_light_to_lightmap(
-    __global const float* lights,
-    int num_lights,
-    float sample_weight,
-    int seed_offset,
-    int num_nodes,
-    __global const float* nodes_min,
-    __global const float* nodes_max,
-    __global const int* nodes_left,
-    __global const int* nodes_right,
-    int num_tris,
-    __global const float* tris_v0,
-    __global const float* tris_v1,
-    __global const float* tris_v2,
-    __global const float* tris_normal,
-    __global const float* tris_color,
-    __global const int* tris_tex_id,
-    __global const float* tris_refraction,
-    __global const int* tri_indices,
-    int num_tex,
-    __global const int* tex_info,
-    __global const uchar* tex_data,
-    __global int* lightmap,
-    int lightmap_res
-) {
-    int gid = get_global_id(0);
-    if (num_lights <= 0) return;
-    int light_idx = gid % num_lights;
-    int lb = light_idx * 11;
-    float3 light_pos = (float3)(lights[lb + 0], lights[lb + 1], lights[lb + 2]);
-    float3 light_dir = (float3)(lights[lb + 3], lights[lb + 4], lights[lb + 5]);
-    float cos_half = lights[lb + 6];
-    float falloff = lights[lb + 7];
-    float3 light_color = (float3)(lights[lb + 8], lights[lb + 9], lights[lb + 10]);
-    float max_dist = falloff * 10.0f;
-    float sin_half = sqrt(fmax(0.0f, 1.0f - cos_half * cos_half));
-    float tan_half = sin_half / fmax(cos_half, 1e-3f);
-    tan_half = fmin(tan_half, 10.0f);
-    float3 right;
-    float3 up;
-    make_basis(light_dir, &right, &up);
-    uint seed = (uint)(gid + seed_offset + 1);
-    uint h1 = hash_uint(seed);
-    uint h2 = hash_uint(h1 + 0x9e3779b9u);
-    float r1 = (float)(h1 & 0xFFFFFFu) / 16777216.0f;
-    float r2 = (float)(h2 & 0xFFFFFFu) / 16777216.0f;
-    float rr = sqrt(r1) * tan_half;
-    float phi = 2.0f * 3.141592653589793f * r2;
-    float3 dir = normalize(light_dir + right * (rr * cos(phi)) + up * (rr * sin(phi)));
-    float3 origin = light_pos + dir * 1e-3f;
-    float3 throughput = light_color;
-    float remaining_dist = max_dist;
-    for (int bounce = 0; bounce < 16; bounce++) {
-        RayHit hit = trace_ray(origin, dir, remaining_dist, nodes_min, nodes_max, nodes_left, nodes_right, tri_indices, tris_v0, tris_v1, tris_v2, num_tris);
-        if (!hit.hit) break;
-        int t_idx = hit.tri_idx;
-        float3 tv0 = (float3)(tris_v0[t_idx * 3], tris_v0[t_idx * 3 + 1], tris_v0[t_idx * 3 + 2]);
-        float3 tv1 = (float3)(tris_v1[t_idx * 3], tris_v1[t_idx * 3 + 1], tris_v1[t_idx * 3 + 2]);
-        float3 tv2 = (float3)(tris_v2[t_idx * 3], tris_v2[t_idx * 3 + 1], tris_v2[t_idx * 3 + 2]);
-        float3 base_rgb = (float3)(tris_color[t_idx * 4], tris_color[t_idx * 4 + 1], tris_color[t_idx * 4 + 2]);
-        float alpha = tris_color[t_idx * 4 + 3];
-        int tex_id = tris_tex_id[t_idx];
-        if (tex_id >= 0) {
-            float4 tex_col = sample_triangle_texture(tex_data, tex_info, tex_id, tv0, tv1, tv2, hit.u, hit.v);
-            base_rgb.x = tex_col.x * base_rgb.x;
-            base_rgb.y = tex_col.y * base_rgb.y;
-            base_rgb.z = tex_col.z * base_rgb.z;
-            alpha = tex_col.w * alpha;
-        }
-        float ref_idx = tris_refraction[t_idx];
-        float3 normal = (float3)(tris_normal[t_idx * 3], tris_normal[t_idx * 3 + 1], tris_normal[t_idx * 3 + 2]);
-        int entering = dot(dir, normal) < 0.0f;
-        float3 front_normal = entering ? normal : -normal;
-        float diff = fmax(dot(front_normal, -dir), 0.0f);
-        float deposit_strength = alpha;
-        if (ref_idx > 0.0f) deposit_strength *= 0.2f;
-        if (deposit_strength > 0.0f) {
-            float3 contrib = throughput * diff * sample_weight * deposit_strength;
-            int x = (int)(hit.u * (float)lightmap_res);
-            int y = (int)(hit.v * (float)lightmap_res);
-            if (x < 0) x = 0;
-            if (x >= lightmap_res) x = lightmap_res - 1;
-            if (y < 0) y = 0;
-            if (y >= lightmap_res) y = lightmap_res - 1;
-            int base = ((t_idx * lightmap_res + y) * lightmap_res + x) * 3;
-            int add_r = (int)fmin(contrib.x * 4096.0f, 1048576.0f);
-            int add_g = (int)fmin(contrib.y * 4096.0f, 1048576.0f);
-            int add_b = (int)fmin(contrib.z * 4096.0f, 1048576.0f);
-            if (add_r > 0) atomic_add((volatile __global int*)&lightmap[base + 0], add_r);
-            if (add_g > 0) atomic_add((volatile __global int*)&lightmap[base + 1], add_g);
-            if (add_b > 0) atomic_add((volatile __global int*)&lightmap[base + 2], add_b);
-        }
-        if (alpha >= 1.0f && ref_idx <= 0.0f) break;
-        throughput *= mix((float3)(1.0f, 1.0f, 1.0f), base_rgb, alpha);
-        if (throughput.x < 0.01f && throughput.y < 0.01f && throughput.z < 0.01f) break;
-        if (bounce == 15) break;
-        int bounce_res = process_bounce(hit, &origin, &dir, &remaining_dist, tris_normal, tris_refraction);
-        if (bounce_res == 0) break;
-    }
-}
-
 __kernel void render_scene(
     __global uchar* output,
     int width, int height,
@@ -494,11 +353,7 @@ __kernel void render_scene(
     __global const int* tri_indices,
     int num_tex,
     __global const int* tex_info,
-    __global const uchar* tex_data,
-    __global const int* static_lightmap,
-    __global const int* dynamic_lightmap,
-    int static_count,
-    int lightmap_res
+    __global const uchar* tex_data
 ) {
     int gid = get_global_id(0);
     if (gid >= width * height) return;
@@ -532,12 +387,7 @@ __kernel void render_scene(
         }
         float ref_idx = tris_refraction[t_idx];
         bool is_opaque = (alpha >= 1.0f && ref_idx <= 0.0f);
-        float3 static_irr = (float3)(0.0f, 0.0f, 0.0f);
-        if (t_idx < static_count) {
-            static_irr = sample_lightmap(static_lightmap, t_idx, hit.u, hit.v, lightmap_res);
-        }
-        float3 dynamic_irr = sample_lightmap(dynamic_lightmap, t_idx, hit.u, hit.v, lightmap_res);
-        float3 light_factor = ambient + static_irr + dynamic_irr;
+        float3 light_factor = ambient;
         if (light_factor.x <= 0.0f && light_factor.y <= 0.0f && light_factor.z <= 0.0f) {
             light_factor = (float3)(1.0f, 1.0f, 1.0f);
         }
@@ -559,6 +409,145 @@ __kernel void render_scene(
     output[out_idx + 2] = (uchar)round(fmin(fmax(final_color.z, 0.0f), 1.0f) * 255.0f);
     output[out_idx + 3] = (uchar)255;
 }
+
+typedef struct {
+    int vertex_offset;
+    int vertex_count;
+    float offset_x;
+    float offset_y;
+    float min_x;
+    float max_x;
+    float min_y;
+    float max_y;
+    float color_r;
+    float color_g;
+    float color_b;
+    float color_a;
+    int tex_id;
+    int symbol;
+} Gpu2dObject;
+
+int point_in_polygon(float px, float py, __global const float* vertices, int vertex_offset, int vertex_count, float offset_x, float offset_y) {
+    int inside = 0;
+    int n = vertex_count / 2;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        float xi = vertices[(vertex_offset + 2 * i)] + offset_x;
+        float yi = vertices[(vertex_offset + 2 * i + 1)] + offset_y;
+        float xj = vertices[(vertex_offset + 2 * j)] + offset_x;
+        float yj = vertices[(vertex_offset + 2 * j + 1)] + offset_y;
+        
+        int cond1 = (yi > py) != (yj > py);
+        float intersect_x = (xj - xi) * (py - yi) / (yj - yi) + xi;
+        int cond2 = (px < intersect_x);
+        
+        if (cond1 && cond2) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+float4 sample_2d_texture(
+    __global const uchar* tex_data,
+    __global const int* tex_info,
+    int tex_id,
+    float u, float v
+) {
+    if (tex_id < 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    int info_base = tex_id * 4;
+    int tex_w = tex_info[info_base];
+    int tex_h = tex_info[info_base + 1];
+    int offset = tex_info[info_base + 2];
+    if (tex_w <= 0 || tex_h <= 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    
+    int x = (int)round(u * (tex_w - 1));
+    int y = (int)round(v * (tex_h - 1));
+    x = clamp(x, 0, tex_w - 1);
+    y = clamp(y, 0, tex_h - 1);
+    int idx = (offset + y * tex_w + x) * 4;
+    return (float4)(
+        tex_data[idx] / 255.0f,
+        tex_data[idx + 1] / 255.0f,
+        tex_data[idx + 2] / 255.0f,
+        tex_data[idx + 3] / 255.0f
+    );
+}
+
+__kernel void render_2d(
+    __global uchar* io_color,
+    __global int* io_symbol,
+    int width, int height,
+    int num_2d_objects,
+    __global const Gpu2dObject* objects_2d,
+    __global const float* vertices_2d,
+    int num_tex,
+    __global const int* tex_info,
+    __global const uchar* tex_data
+) {
+    int gid = get_global_id(0);
+    if (gid >= width * height) return;
+    
+    int x = gid % width;
+    int y = gid / width;
+    float px = (float)x;
+    float py = (float)y;
+    
+    float bg_r = io_color[gid * 4] / 255.0f;
+    float bg_g = io_color[gid * 4 + 1] / 255.0f;
+    float bg_b = io_color[gid * 4 + 2] / 255.0f;
+    
+    float out_r = bg_r;
+    float out_g = bg_g;
+    float out_b = bg_b;
+    int out_symbol = io_symbol[gid];
+    
+    for (int i = 0; i < num_2d_objects; i++) {
+        Gpu2dObject obj = objects_2d[i];
+        if (point_in_polygon(px, py, vertices_2d, obj.vertex_offset, obj.vertex_count, obj.offset_x, obj.offset_y)) {
+            float r = obj.color_r;
+            float g = obj.color_g;
+            float b = obj.color_b;
+            float alpha = obj.color_a;
+            
+            if (obj.tex_id >= 0) {
+                float uv_range_x = fmax(obj.max_x - obj.min_x, 1e-8f);
+                float uv_range_y = fmax(obj.max_y - obj.min_y, 1e-8f);
+                float u = (px - obj.min_x) / uv_range_x;
+                float v = 1.0f - (py - obj.min_y) / uv_range_y;
+                
+                float4 tex_col = sample_2d_texture(tex_data, tex_info, obj.tex_id, u, v);
+                r = tex_col.x * r;
+                g = tex_col.y * g;
+                b = tex_col.z * b;
+                alpha = tex_col.w * alpha;
+            }
+            
+            if (alpha >= 1.0f) {
+                out_r = r;
+                out_g = g;
+                out_b = b;
+                out_symbol = obj.symbol;
+            } else if (alpha > 0.0f) {
+                out_r = bg_r * (1.0f - alpha) + r * alpha;
+                out_g = bg_g * (1.0f - alpha) + g * alpha;
+                out_b = bg_b * (1.0f - alpha) + b * alpha;
+                out_symbol = obj.symbol;
+            }
+            
+            bg_r = out_r;
+            bg_g = out_g;
+            bg_b = out_b;
+        }
+    }
+    
+    io_color[gid * 4] = (uchar)round(fmin(fmax(out_r, 0.0f), 1.0f) * 255.0f);
+    io_color[gid * 4 + 1] = (uchar)round(fmin(fmax(out_g, 0.0f), 1.0f) * 255.0f);
+    io_color[gid * 4 + 2] = (uchar)round(fmin(fmax(out_b, 0.0f), 1.0f) * 255.0f);
+    io_color[gid * 4 + 3] = (uchar)255;
+    
+    io_symbol[gid] = out_symbol;
+}
 "#;
 
 pub fn To_console() {
@@ -577,24 +566,6 @@ pub fn To_console() {
         }
         println!();
     }
-}
-
-fn point_in_polygon_offset(px: f32, py: f32, vertices: &[f32], offset_x: f32, offset_y: f32) -> bool {
-    let mut inside = false;
-    let n = vertices.len() / 2;
-    for i in 0..n {
-        let j = (i + 1) % n;
-        let xi = vertices[2 * i] + offset_x;
-        let yi = vertices[2 * i + 1] + offset_y;
-        let xj = vertices[2 * j] + offset_x;
-        let yj = vertices[2 * j + 1] + offset_y;
-        let intersect = ((yi > py) != (yj > py))
-            && (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
-        if intersect {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 fn cross(a: &[f32; 3], b: &[f32; 3]) -> [f32; 3] {
@@ -791,29 +762,6 @@ fn flatten_bvh(node: &BvhNode, nodes: &mut Vec<FlatBvhNode>, indices: &mut Vec<i
         nodes[current_idx as usize].right = node.triangles.len() as i32;
     }
     current_idx
-}
-
-fn pack_lights(lights: &[super::Light_components]) -> Vec<f32> {
-    let mut data = Vec::with_capacity(lights.len() * 11);
-    for l in lights {
-        let fwd = camera_basis(l.light_pitch, l.light_yaw, 0.0).forward;
-        let half_cone = (l.light_cone_angle * 0.5) * PI / 180.0;
-        let falloff = l.light_distance.max(1e-6) / (1.0f32 / 0.01f32 - 1.0f32).sqrt();
-        data.extend_from_slice(&[
-            l.light_x,
-            l.light_y,
-            l.light_z,
-            fwd[0],
-            fwd[1],
-            fwd[2],
-            half_cone.cos(),
-            falloff,
-            l.light_RGB_color[0] as f32 / 255.0,
-            l.light_RGB_color[1] as f32 / 255.0,
-            l.light_RGB_color[2] as f32 / 255.0,
-        ]);
-    }
-    data
 }
 
 fn build_geometry_buffers(
@@ -1023,10 +971,31 @@ fn build_geometry_buffers(
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Gpu2dObject {
+    vertex_offset: i32,
+    vertex_count: i32,
+    offset_x: f32,
+    offset_y: f32,
+    min_x: f32,
+    max_x: f32,
+    min_y: f32,
+    max_y: f32,
+    color_r: f32,
+    color_g: f32,
+    color_b: f32,
+    color_a: f32,
+    tex_id: i32,
+    symbol: i32,
+}
+
+unsafe impl ocl::core::OclPrm for Gpu2dObject {}
+
 pub fn Render_3d_to_screen(
     dynamic_triangles: &[super::Draw_components],
+    queue_2d: &[super::Draw_components],
     screen: &mut Vec<Vec<super::Pixel_structure>>,
-    dynamic_lights: &[super::Light_components],
 ) {
     let settings = super::Engine_settings.lock().unwrap();
     let width = settings.window_width;
@@ -1049,7 +1018,6 @@ pub fn Render_3d_to_screen(
         cam.ambient_light[2] as f32 / 255.0,
     ];
     let fov = cam.camera_fov as f32;
-    let cores_raw = settings.cores_multiply;
     drop(cam);
     drop(settings);
     let aspect = width as f32 / height as f32;
@@ -1064,7 +1032,6 @@ pub fn Render_3d_to_screen(
         .iter()
         .map(|t| Render_triangle {
             triangle: t.clone(),
-            baked_light: None,
         })
         .collect();
     let mut all_triangles = baked_static.clone();
@@ -1123,96 +1090,7 @@ pub fn Render_3d_to_screen(
             .len(pixel_count * 4)
             .build()
             .unwrap();
-        let static_lock = Static_lightmap.lock().unwrap();
-        let static_lightmap_buffer: Buffer<i32> = if static_lock.is_empty() {
-            Buffer::builder()
-                .queue(state.queue.clone())
-                .flags(flags::MEM_READ_ONLY)
-                .len(1)
-                .copy_host_slice(&[0i32])
-                .build()
-                .unwrap()
-        } else {
-            Buffer::builder()
-                .queue(state.queue.clone())
-                .flags(flags::MEM_READ_ONLY)
-                .len(static_lock.len())
-                .copy_host_slice(&static_lock)
-                .build()
-                .unwrap()
-        };
-        let static_count = if static_lock.is_empty() {
-            0
-        } else {
-            baked_static.len() as i32
-        };
-        drop(static_lock);
-        let dynamic_lightmap_len = (all_triangles.len() as usize)
-            * (LIGHTMAP_RES as usize)
-            * (LIGHTMAP_RES as usize)
-            * 3;
-        let dynamic_lightmap_host = vec![0i32; dynamic_lightmap_len.max(1)];
-        let dynamic_lightmap_buffer: Buffer<i32> = Buffer::builder()
-            .queue(state.queue.clone())
-            .flags(flags::MEM_READ_WRITE)
-            .len(dynamic_lightmap_host.len())
-            .copy_host_slice(&dynamic_lightmap_host)
-            .build()
-            .unwrap();
-        let dynamic_light_data = pack_lights(dynamic_lights);
-        let dynamic_light_gpu = if dynamic_light_data.is_empty() { vec![0.0f32] } else { dynamic_light_data };
-        let buf_dynamic_lights: Buffer<f32> = Buffer::builder()
-            .queue(state.queue.clone())
-            .flags(flags::MEM_READ_ONLY)
-            .len(dynamic_light_gpu.len().max(1))
-            .copy_host_slice(&dynamic_light_gpu)
-            .build()
-            .unwrap();
-        let arg_num_dynamic_lights = dynamic_lights.len() as i32;
-        let samples_per_light = if cores_raw > 0 {
-            cores_raw as i32 * 2048
-        } else {
-            2048
-        };
-        let arg_sample_weight = 512.0f32 / samples_per_light as f32;
-        let arg_seed_offset = super::tick_system::Get_tick() as i32;
-        let arg_lightmap_res = LIGHTMAP_RES;
-        if arg_num_dynamic_lights > 0 && geom.num_tris > 0 {
-            let global_light_work = (arg_num_dynamic_lights as usize) * (samples_per_light as usize);
-            let light_kernel = Kernel::builder()
-                .program(&state.render_program)
-                .name("trace_light_to_lightmap")
-                .queue(state.queue.clone())
-                .arg(&buf_dynamic_lights)
-                .arg(&arg_num_dynamic_lights)
-                .arg(&arg_sample_weight)
-                .arg(&arg_seed_offset)
-                .arg(&geom.num_nodes)
-                .arg(&geom.buf_nodes_min)
-                .arg(&geom.buf_nodes_max)
-                .arg(&geom.buf_nodes_left)
-                .arg(&geom.buf_nodes_right)
-                .arg(&geom.num_tris)
-                .arg(&geom.buf_v0)
-                .arg(&geom.buf_v1)
-                .arg(&geom.buf_v2)
-                .arg(&geom.buf_norm)
-                .arg(&geom.buf_col)
-                .arg(&geom.buf_texid)
-                .arg(&geom.buf_refraction)
-                .arg(&geom.buf_indices)
-                .arg(&geom.num_tex)
-                .arg(&geom.buf_tex_info)
-                .arg(&geom.buf_tex_data)
-                .arg(&dynamic_lightmap_buffer)
-                .arg(&arg_lightmap_res)
-                .global_work_size(global_light_work.max(1))
-                .build()
-                .unwrap();
-            unsafe {
-                light_kernel.enq().unwrap();
-            }
-        }
+
         let arg_width = width as i32;
         let arg_height = height as i32;
         let arg_cam_origin = Float3::new(origin[0], origin[1], origin[2]);
@@ -1223,6 +1101,7 @@ pub fn Render_3d_to_screen(
         let arg_aspect = aspect;
         let arg_max_dist = max_dist_f32;
         let arg_ambient = Float3::new(ambient_f32[0], ambient_f32[1], ambient_f32[2]);
+        
         let kernel = Kernel::builder()
             .program(&state.render_program)
             .name("render_scene")
@@ -1255,37 +1134,200 @@ pub fn Render_3d_to_screen(
             .arg(&geom.num_tex)
             .arg(&geom.buf_tex_info)
             .arg(&geom.buf_tex_data)
-            .arg(&static_lightmap_buffer)
-            .arg(&dynamic_lightmap_buffer)
-            .arg(&static_count)
-            .arg(&arg_lightmap_res)
             .global_work_size(pixel_count)
             .build()
             .unwrap();
         unsafe {
             kernel.enq().unwrap();
         }
-        let mut cpu_output = vec![0u8; pixel_count * 4];
-        output_buffer.read(&mut cpu_output).enq().unwrap();
-        let default_symbol = super::Empty_pixel.lock().unwrap().pixel_symbol;
-        for y in 0..height_usize {
-            for x in 0..width_usize {
-                let idx = (y * width_usize + x) * 4;
-                screen[y][x] = super::Pixel_structure {
-                    pixel_symbol: default_symbol,
-                    pixel_RGBA_color: [
-                        cpu_output[idx],
-                        cpu_output[idx + 1],
-                        cpu_output[idx + 2],
-                        cpu_output[idx + 3],
-                    ],
-                };
+
+        if !queue_2d.is_empty() {
+            let mut gpu_2d_objects: Vec<Gpu2dObject> = Vec::new();
+            let mut vertices_2d: Vec<f32> = Vec::new();
+            let mut texture_map: HashMap<String, RgbaImage> = HashMap::new();
+            let mut path_to_tex_id: HashMap<String, i32> = HashMap::new();
+            let mut tex_infos: Vec<i32> = Vec::new();
+            let mut global_tex_data: Vec<u8> = Vec::new();
+
+            let default_symbol_char = super::Empty_pixel.lock().unwrap().pixel_symbol;
+            let default_symbol_i32 = format!("{}", default_symbol_char).chars().next().unwrap_or(' ') as i32;
+
+            for object in queue_2d {
+                if object.draw_vertices.len() < 2 {
+                    continue;
+                }
+                let mut biggest_x: f32 = 0.0;
+                let mut biggest_y: f32 = 0.0;
+                let mut smallest_x: f32 = width as f32;
+                let mut smallest_y: f32 = height as f32;
+                
+                for i in (0..(object.draw_vertices.len() - 1)).step_by(2) {
+                    let vx = object.draw_vertices[i] + object.draw_x;
+                    let vy = object.draw_vertices[i + 1] + object.draw_y;
+                    if vx > biggest_x { biggest_x = vx; }
+                    if vy > biggest_y { biggest_y = vy; }
+                    if vx < smallest_x { smallest_x = vx; }
+                    if vy < smallest_y { smallest_y = vy; }
+                }
+                
+                let vertex_offset = vertices_2d.len() as i32;
+                let vertex_count = object.draw_vertices.len() as i32;
+                vertices_2d.extend_from_slice(&object.draw_vertices);
+                
+                let mut tex_id = -1i32;
+                if object.draw_texture_path != "none" {
+                    if !texture_map.contains_key(&object.draw_texture_path) {
+                        if let Some(img) = load_texture(&object.draw_texture_path) {
+                            let id = (tex_infos.len() / 4) as i32;
+                            let offset = (global_tex_data.len() / 4) as i32;
+                            texture_map.insert(object.draw_texture_path.clone(), img.clone());
+                            path_to_tex_id.insert(object.draw_texture_path.clone(), id);
+                            tex_infos.push(img.width() as i32);
+                            tex_infos.push(img.height() as i32);
+                            tex_infos.push(offset);
+                            tex_infos.push(0);
+                            for pixel in img.pixels() {
+                                global_tex_data.extend_from_slice(&[pixel[0], pixel[1], pixel[2], pixel[3]]);
+                            }
+                        }
+                    }
+                    if let Some(id) = path_to_tex_id.get(&object.draw_texture_path) {
+                        tex_id = *id;
+                    }
+                }
+                
+                let symbol_i32 = format!("{}", object.draw_symbol).chars().next().unwrap_or(' ') as i32;
+                
+                gpu_2d_objects.push(Gpu2dObject {
+                    vertex_offset,
+                    vertex_count,
+                    offset_x: object.draw_x,
+                    offset_y: object.draw_y,
+                    min_x: smallest_x,
+                    max_x: biggest_x,
+                    min_y: smallest_y,
+                    max_y: biggest_y,
+                    color_r: object.draw_RGBA_color[0] as f32 / 255.0,
+                    color_g: object.draw_RGBA_color[1] as f32 / 255.0,
+                    color_b: object.draw_RGBA_color[2] as f32 / 255.0,
+                    color_a: object.draw_RGBA_color[3] as f32 / 255.0,
+                    tex_id,
+                    symbol: symbol_i32,
+                });
+            }
+
+            let tex_info_gpu = if tex_infos.is_empty() { vec![0i32] } else { tex_infos.clone() };
+            let tex_data_gpu = if global_tex_data.is_empty() { vec![0u8] } else { global_tex_data };
+            
+            let buf_tex_info_2d: Buffer<i32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(tex_info_gpu.len().max(1))
+                .copy_host_slice(&tex_info_gpu)
+                .build()
+                .unwrap();
+            let buf_tex_data_2d: Buffer<u8> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(tex_data_gpu.len().max(1))
+                .copy_host_slice(&tex_data_gpu)
+                .build()
+                .unwrap();
+                
+            let buf_objects_2d: Buffer<Gpu2dObject> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(gpu_2d_objects.len().max(1))
+                .copy_host_slice(&gpu_2d_objects)
+                .build()
+                .unwrap();
+                
+            let buf_vertices_2d: Buffer<f32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_ONLY)
+                .len(vertices_2d.len().max(1))
+                .copy_host_slice(&vertices_2d)
+                .build()
+                .unwrap();
+                
+            let mut cpu_symbols = vec![default_symbol_i32; pixel_count];
+            let symbol_buffer: Buffer<i32> = Buffer::builder()
+                .queue(state.queue.clone())
+                .flags(flags::MEM_READ_WRITE)
+                .len(pixel_count)
+                .copy_host_slice(&cpu_symbols)
+                .build()
+                .unwrap();
+                
+            let arg_num_2d_objects = gpu_2d_objects.len() as i32;
+            let arg_num_tex_2d = (tex_infos.len() / 4).max(1) as i32;
+            
+            let kernel_2d = Kernel::builder()
+                .program(&state.render_program)
+                .name("render_2d")
+                .queue(state.queue.clone())
+                .arg(&output_buffer)
+                .arg(&symbol_buffer)
+                .arg(&(width as i32))
+                .arg(&(height as i32))
+                .arg(&arg_num_2d_objects)
+                .arg(&buf_objects_2d)
+                .arg(&buf_vertices_2d)
+                .arg(&arg_num_tex_2d)
+                .arg(&buf_tex_info_2d)
+                .arg(&buf_tex_data_2d)
+                .global_work_size(pixel_count)
+                .build()
+                .unwrap();
+                
+            unsafe {
+                kernel_2d.enq().unwrap();
+            }
+            
+            let mut cpu_output = vec![0u8; pixel_count * 4];
+            output_buffer.read(&mut cpu_output).enq().unwrap();
+            let mut cpu_symbols_out = vec![0i32; pixel_count];
+            symbol_buffer.read(&mut cpu_symbols_out).enq().unwrap();
+            
+            for y in 0..height_usize {
+                for x in 0..width_usize {
+                    let idx = (y * width_usize + x) * 4;
+                    let sym = cpu_symbols_out[y * width_usize + x];
+                    let sym_char = char::from_u32(sym as u32).unwrap_or(' ');
+                    screen[y][x] = super::Pixel_structure {
+                        pixel_symbol: sym_char,
+                        pixel_RGBA_color: [
+                            cpu_output[idx],
+                            cpu_output[idx + 1],
+                            cpu_output[idx + 2],
+                            cpu_output[idx + 3],
+                        ],
+                    };
+                }
+            }
+        } else {
+            let mut cpu_output = vec![0u8; pixel_count * 4];
+            output_buffer.read(&mut cpu_output).enq().unwrap();
+            let default_symbol = super::Empty_pixel.lock().unwrap().pixel_symbol;
+            for y in 0..height_usize {
+                for x in 0..width_usize {
+                    let idx = (y * width_usize + x) * 4;
+                    screen[y][x] = super::Pixel_structure {
+                        pixel_symbol: default_symbol,
+                        pixel_RGBA_color: [
+                            cpu_output[idx],
+                            cpu_output[idx + 1],
+                            cpu_output[idx + 2],
+                            cpu_output[idx + 3],
+                        ],
+                    };
+                }
             }
         }
     }
 }
 
-fn Bake_scene() {
+fn Build_static_scene() {
     let static_scene = super::Static_scene.lock().unwrap();
     let mut static_triangles: Vec<super::Draw_components> = Vec::new();
     for object in static_scene.iter() {
@@ -1326,7 +1368,6 @@ fn Bake_scene() {
         .into_iter()
         .map(|t| Render_triangle {
             triangle: t,
-            baked_light: None,
         })
         .collect();
     let baked_bvh = if baked_result.is_empty() {
@@ -1338,97 +1379,11 @@ fn Bake_scene() {
     *store = baked_result.clone();
     let mut bvh_store = Baked_static_bvh.lock().unwrap();
     *bvh_store = baked_bvh.clone();
-    drop(store);
-    drop(bvh_store);
-    if baked_result.is_empty() {
-        *Static_lightmap.lock().unwrap() = Vec::new();
-        return;
-    }
-    let state_mutex = match get_opencl_state() {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    let state_guard = state_mutex.lock().unwrap();
-    if let Some(state) = state_guard.as_ref() {
-        let bvh = baked_bvh.unwrap();
-        let geom = build_geometry_buffers(state, &baked_result, &bvh);
-        let static_lights = super::Static_light.lock().unwrap().clone();
-        let light_data = pack_lights(&static_lights);
-        let light_gpu = if light_data.is_empty() { vec![0.0f32] } else { light_data };
-        let buf_lights: Buffer<f32> = Buffer::builder()
-            .queue(state.queue.clone())
-            .flags(flags::MEM_READ_ONLY)
-            .len(light_gpu.len().max(1))
-            .copy_host_slice(&light_gpu)
-            .build()
-            .unwrap();
-        let lightmap_len = (baked_result.len() as usize)
-            * (LIGHTMAP_RES as usize)
-            * (LIGHTMAP_RES as usize)
-            * 3;
-        let mut lightmap_host = vec![0i32; lightmap_len.max(1)];
-        let lightmap_buffer: Buffer<i32> = Buffer::builder()
-            .queue(state.queue.clone())
-            .flags(flags::MEM_READ_WRITE)
-            .len(lightmap_host.len())
-            .copy_host_slice(&lightmap_host)
-            .build()
-            .unwrap();
-        let arg_num_lights = static_lights.len() as i32;
-        let cores = super::Engine_settings.lock().unwrap().cores_multiply;
-        let samples_per_light = if cores > 0 {
-            cores as i32 * 4096
-        } else {
-            4096
-        };
-        let arg_sample_weight = 512.0f32 / samples_per_light as f32;
-        let arg_seed_offset = 777;
-        let arg_lightmap_res = LIGHTMAP_RES;
-        if arg_num_lights > 0 && geom.num_tris > 0 {
-            let global_light_work = (arg_num_lights as usize) * (samples_per_light as usize);
-            let bake_kernel = Kernel::builder()
-                .program(&state.render_program)
-                .name("trace_light_to_lightmap")
-                .queue(state.queue.clone())
-                .arg(&buf_lights)
-                .arg(&arg_num_lights)
-                .arg(&arg_sample_weight)
-                .arg(&arg_seed_offset)
-                .arg(&geom.num_nodes)
-                .arg(&geom.buf_nodes_min)
-                .arg(&geom.buf_nodes_max)
-                .arg(&geom.buf_nodes_left)
-                .arg(&geom.buf_nodes_right)
-                .arg(&geom.num_tris)
-                .arg(&geom.buf_v0)
-                .arg(&geom.buf_v1)
-                .arg(&geom.buf_v2)
-                .arg(&geom.buf_norm)
-                .arg(&geom.buf_col)
-                .arg(&geom.buf_texid)
-                .arg(&geom.buf_refraction)
-                .arg(&geom.buf_indices)
-                .arg(&geom.num_tex)
-                .arg(&geom.buf_tex_info)
-                .arg(&geom.buf_tex_data)
-                .arg(&lightmap_buffer)
-                .arg(&arg_lightmap_res)
-                .global_work_size(global_light_work.max(1))
-                .build()
-                .unwrap();
-            unsafe {
-                bake_kernel.enq().unwrap();
-            }
-        }
-        lightmap_buffer.read(&mut lightmap_host).enq().unwrap();
-        *Static_lightmap.lock().unwrap() = lightmap_host;
-    }
 }
 
 pub fn Render_image_to_console() -> Result<(), String> {
     let mut queue_2d: Vec<super::Draw_components> = Vec::new();
     let mut queue_3d: Vec<super::Draw_components> = Vec::new();
-    let mut light_queue: Vec<super::Light_components> = Vec::new();
     let mut all_queue = super::Static_scene.lock().unwrap();
     for object in all_queue.iter() {
         if object.draw_type == "2d_object".to_string() {
@@ -1447,19 +1402,15 @@ pub fn Render_image_to_console() -> Result<(), String> {
     }
     drop(all_queue);
     super::Draw_queue.lock().unwrap().clear();
-    let mut all_ligts = super::Light_queue.lock().unwrap();
-    for light in all_ligts.iter() {
-        light_queue.push(light.clone());
-    }
-    drop(all_ligts);
     super::Light_queue.lock().unwrap().clear();
+    
     let need_bake = {
         let examination = super::Is_scene_changed.lock().unwrap();
         let not_baked = Baked_static_bvh.lock().unwrap().is_none();
         *examination || not_baked
     };
     if need_bake {
-        Bake_scene();
+        Build_static_scene();
         *super::Is_scene_changed.lock().unwrap() = false;
     }
     let width = super::Engine_settings.lock().unwrap().window_width as i128;
@@ -1507,100 +1458,6 @@ pub fn Render_image_to_console() -> Result<(), String> {
             triangles.push(tri);
         }
     }
-    Render_3d_to_screen(&triangles, &mut screen, &light_queue);
-    for object in queue_2d {
-        if object.draw_vertices.len() < 2 {
-            continue;
-        }
-        let mut biggest_x: f32 = 0.0;
-        let mut biggest_y: f32 = 0.0;
-        let mut smallest_x: f32 = width as f32;
-        let mut smallest_y: f32 = height as f32;
-        for i in (0..(object.draw_vertices.len() - 1)).step_by(2) {
-            biggest_x = if object.draw_vertices[i] + object.draw_x > biggest_x {
-                object.draw_vertices[i] + object.draw_x
-            } else {
-                biggest_x
-            };
-            biggest_y = if object.draw_vertices[i + 1] + object.draw_y > biggest_y {
-                object.draw_vertices[i + 1] + object.draw_y
-            } else {
-                biggest_y
-            };
-            smallest_x = if object.draw_vertices[i] + object.draw_x < smallest_x {
-                object.draw_vertices[i] + object.draw_x
-            } else {
-                smallest_x
-            };
-            smallest_y = if object.draw_vertices[i + 1] + object.draw_y < smallest_y {
-                object.draw_vertices[i + 1] + object.draw_y
-            } else {
-                smallest_y
-            };
-        }
-        let start_x = if smallest_x < 0.0 { 0 } else { smallest_x as i128 };
-        let end_x = if biggest_x > width as f32 { width } else { biggest_x as i128 };
-        let start_y = if smallest_y < 0.0 { 0 } else { smallest_y as i128 };
-        let end_y = if biggest_y > height as f32 { height } else { biggest_y as i128 };
-        let uv_range_x = if (biggest_x - smallest_x).abs() < 1e-8 {
-            1.0
-        } else {
-            biggest_x - smallest_x
-        };
-        let uv_range_y = if (biggest_y - smallest_y).abs() < 1e-8 {
-            1.0
-        } else {
-            biggest_y - smallest_y
-        };
-        let texture = if object.draw_texture_path != "none" {
-            load_texture(&object.draw_texture_path)
-        } else {
-            None
-        };
-        let base_alpha = object.draw_RGBA_color[3] as f32 / 255.0;
-        for x in start_x..end_x {
-            for y in start_y..end_y {
-                if point_in_polygon_offset(x as f32, y as f32, &object.draw_vertices, object.draw_x, object.draw_y) {
-                    let (r, g, b, alpha) = if let Some(img) = &texture {
-                        let u = (x as f32 - smallest_x) / uv_range_x;
-                        let v = 1.0 - (y as f32 - smallest_y) / uv_range_y;
-                        let tex_x = (u * (img.width() as f32 - 1.0))
-                            .round()
-                            .clamp(0.0, img.width() as f32 - 1.0) as u32;
-                        let tex_y = (v * (img.height() as f32 - 1.0))
-                            .round()
-                            .clamp(0.0, img.height() as f32 - 1.0) as u32;
-                        let pixel = img.get_pixel(tex_x, tex_y);
-                        let c = &object.draw_RGBA_color;
-                        let r = ((pixel[0] as f32 / 255.0) * (c[0] as f32 / 255.0) * 255.0).round() as u8;
-                        let g = ((pixel[1] as f32 / 255.0) * (c[1] as f32 / 255.0) * 255.0).round() as u8;
-                        let b = ((pixel[2] as f32 / 255.0) * (c[2] as f32 / 255.0) * 255.0).round() as u8;
-                        (r, g, b, (pixel[3] as f32 / 255.0) * base_alpha)
-                    } else {
-                        let c = &object.draw_RGBA_color;
-                        (c[0], c[1], c[2], base_alpha)
-                    };
-                    if alpha >= 1.0 {
-                        screen[y as usize][x as usize] = super::Pixel_structure {
-                            pixel_symbol: object.draw_symbol,
-                            pixel_RGBA_color: [r, g, b, 255],
-                        };
-                    } else if alpha > 0.0 {
-                        let bg = &screen[y as usize][x as usize].pixel_RGBA_color;
-                        let fg = [r, g, b];
-                        let mut blended = [0u8; 4];
-                        for i in 0..3 {
-                            blended[i] = ((bg[i] as f32 * (1.0 - alpha)) + (fg[i] as f32 * alpha)) as u8;
-                        }
-                        blended[3] = 255;
-                        screen[y as usize][x as usize] = super::Pixel_structure {
-                            pixel_symbol: object.draw_symbol,
-                            pixel_RGBA_color: blended,
-                        };
-                    }
-                }
-            }
-        }
-    }
+    Render_3d_to_screen(&triangles, &queue_2d, &mut screen);
     Ok(())
 }
