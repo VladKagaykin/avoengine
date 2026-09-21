@@ -27,6 +27,10 @@ pub struct Draw_components{
     pub draw_vertices: Vec<f32>,
     pub draw_RGBA_color: [u8;4],
     pub draw_texture_path: String,
+    pub draw_uv_path: String,
+    pub pitch: f32,
+    pub yaw: f32,
+    pub roll: f32,
     pub special_properties: String,
     pub draw_special_name: String
 }
@@ -86,16 +90,16 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure{camera_
                                                                          camera_z: 0.0, camera_pitch: 0.0, camera_yaw: 0.0,
                                                                          camera_roll: 0.0, max_dist: 256, ambient_light: [128,128,128]});
 
-#[derive(Clone)]
-pub struct Physics_components{
-    pub x:f32,
-    pub y:f32,
-    pub z:f32,
-    pub vertices:Vec<f32>,
-    pub soundproofing: u8,
-    pub center_mass:[f32;3], //x,y,z
-    pub special_name: String
-}
+// #[derive(Clone)]
+// pub struct Physics_components{
+//     pub x:f32,
+//     pub y:f32,
+//     pub z:f32,
+//     pub vertices:Vec<f32>,
+//     pub soundproofing: u8,
+//     pub center_mass:[f32;3], //x,y,z
+//     pub special_name: String
+// }
 
 #[derive(Clone)]
 pub struct Sound_components{

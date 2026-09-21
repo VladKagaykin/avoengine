@@ -2,7 +2,6 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::sync::Mutex;
 use std::sync::OnceLock;
-
 use crate::{
     Draw_components, Light_components, Script, Static_light, Static_scene, Map_objects, Map_scripts,
     Draw_queue, Light_queue, tick_system,
@@ -17,37 +16,44 @@ fn extract_args(s: &str) -> Vec<String> {
     let mut escape = false;
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
+
     while i < chars.len() {
         let ch = chars[i];
+
         if escape {
             current.push(ch);
             escape = false;
             i += 1;
             continue;
         }
+
         if ch == '\\' {
             escape = true;
             current.push(ch);
             i += 1;
             continue;
         }
+
         if ch == '"' && !in_string {
             in_string = true;
             current.push(ch);
             i += 1;
             continue;
         }
+
         if ch == '"' && in_string {
             in_string = false;
             current.push(ch);
             i += 1;
             continue;
         }
+
         if in_string {
             current.push(ch);
             i += 1;
             continue;
         }
+
         if ch == '(' || ch == '[' || ch == '{' {
             paren_depth += 1;
             current.push(ch);
@@ -68,10 +74,12 @@ fn extract_args(s: &str) -> Vec<String> {
             i += 1;
         }
     }
+
     let trimmed = current.trim();
     if !trimmed.is_empty() {
         args.push(trimmed.to_string());
     }
+
     args
 }
 
@@ -86,41 +94,57 @@ fn parse_f32(s: &str) -> io::Result<f32> {
 
 fn parse_char(s: &str) -> io::Result<char> {
     let s = s.trim();
+
     if s.len() >= 3 && s.starts_with('\'') && s.ends_with('\'') {
-        let inner = &s[1..s.len()-1];
-        if inner == "\\n" {
-            Ok('\n')
-        } else if inner == "\\t" {
-            Ok('\t')
-        } else if inner == "\\r" {
-            Ok('\r')
-        } else if inner == "\\\\" {
-            Ok('\\')
-        } else if inner == "\\'" {
-            Ok('\'')
-        } else {
-            let mut chars = inner.chars();
-            if let Some(ch) = chars.next() {
-                if chars.next().is_none() {
-                    Ok(ch)
-                } else {
-                    Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid char literal: more than one character"))
-                }
-            } else {
-                Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid char literal: empty"))
+        let inner = &s[1..s.len() - 1];
+        let mut chars = inner.chars();
+        let first = chars.next();
+        let second = chars.next();
+        let third = chars.next();
+
+        if third.is_none() {
+            if let (Some('\\'), Some(esc)) = (first, second) {
+                return match esc {
+                    'n' => Ok('\n'),
+                    't' => Ok('\t'),
+                    'r' => Ok('\r'),
+                    '\\' => Ok('\\'),
+                    '\'' => Ok('\''),
+                    '0' => Ok('\0'),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Invalid escaped char literal",
+                    )),
+                };
             }
         }
-    } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid char literal format"))
+
+        if second.is_none() {
+            if let Some(ch) = first {
+                return Ok(ch);
+            }
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid char literal",
+        ));
     }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Invalid char literal format",
+    ))
 }
 
 fn parse_string(s: &str) -> io::Result<String> {
     let s = s.trim();
+
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        let inner = &s[1..s.len()-1];
+        let inner = &s[1..s.len() - 1];
         let mut result = String::new();
         let mut chars = inner.chars();
+
         while let Some(ch) = chars.next() {
             if ch == '\\' {
                 if let Some(next) = chars.next() {
@@ -137,84 +161,151 @@ fn parse_string(s: &str) -> io::Result<String> {
                 result.push(ch);
             }
         }
-        Ok(result)
-    } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid string literal"))
+
+        return Ok(result);
     }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Invalid string literal",
+    ))
 }
 
 fn parse_f32_vec(s: &str) -> io::Result<Vec<f32>> {
     let s = s.trim();
+
     if s.starts_with('[') && s.ends_with(']') {
-        let inner = &s[1..s.len()-1];
+        let inner = &s[1..s.len() - 1];
         if inner.trim().is_empty() {
             return Ok(Vec::new());
         }
-        let parts: Vec<&str> = inner.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
+
+        let parts: Vec<&str> = inner
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .collect();
+
         let mut result = Vec::with_capacity(parts.len());
         for part in parts {
             result.push(parse_f32(part)?);
         }
-        Ok(result)
-    } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid array literal"))
+
+        return Ok(result);
     }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Invalid array literal",
+    ))
 }
 
 fn parse_u8_array<const N: usize>(s: &str) -> io::Result<[u8; N]> {
     let s = s.trim();
+
     if s.starts_with('[') && s.ends_with(']') {
-        let inner = &s[1..s.len()-1];
-        let parts: Vec<&str> = inner.split(',').map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
+        let inner = &s[1..s.len() - 1];
+        let parts: Vec<&str> = inner
+            .split(',')
+            .map(|x| x.trim())
+            .filter(|x| !x.is_empty())
+            .collect();
+
         if parts.len() != N {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected {} elements, got {}", N, parts.len())));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Expected {} elements, got {}", N, parts.len()),
+            ));
         }
+
         let mut result = [0u8; N];
         for (i, part) in parts.iter().enumerate() {
-            let val = part.parse::<u8>()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u8: {}", e)))?;
+            let val = part.parse::<u8>().map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u8: {}", e))
+            })?;
             result[i] = val;
         }
-        Ok(result)
-    } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid array literal"))
+
+        return Ok(result);
     }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Invalid array literal",
+    ))
 }
 
 fn parse_draw_components(line: &str) -> io::Result<Draw_components> {
     let line = line.trim();
     if !line.starts_with("Draw_components(") || !line.ends_with(')') {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Draw_components format"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid Draw_components format",
+        ));
     }
-    let args_str = &line[16..line.len()-1];
+
+    let args_str = &line[16..line.len() - 1];
     let args = extract_args(args_str);
-    if args.len() != 10 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected 10 arguments, got {}", args.len())));
+
+    match args.len() {
+        11 => Ok(Draw_components {
+            draw_type: parse_string(&args[0])?,
+            draw_x: parse_f32(&args[1])?,
+            draw_y: parse_f32(&args[2])?,
+            draw_z: parse_f32(&args[3])?,
+            draw_symbol: parse_char(&args[4])?,
+            draw_vertices: parse_f32_vec(&args[5])?,
+            draw_RGBA_color: parse_u8_array::<4>(&args[6])?,
+            draw_texture_path: parse_string(&args[7])?,
+            draw_uv_path: parse_string(&args[8])?,
+            pitch: 0.0,
+            yaw: 0.0,
+            roll: 0.0,
+            special_properties: String::new(),
+            draw_special_name: parse_string(&args[10])?,
+        }),
+        14 => Ok(Draw_components {
+            draw_type: parse_string(&args[0])?,
+            draw_x: parse_f32(&args[1])?,
+            draw_y: parse_f32(&args[2])?,
+            draw_z: parse_f32(&args[3])?,
+            draw_symbol: parse_char(&args[4])?,
+            draw_vertices: parse_f32_vec(&args[5])?,
+            draw_RGBA_color: parse_u8_array::<4>(&args[6])?,
+            draw_texture_path: parse_string(&args[7])?,
+            draw_uv_path: parse_string(&args[8])?,
+            pitch: parse_f32(&args[9])?,
+            yaw: parse_f32(&args[10])?,
+            roll: parse_f32(&args[11])?,
+            special_properties: String::new(),
+            draw_special_name: parse_string(&args[13])?,
+        }),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Expected 11 or 14 arguments, got {}", args.len()),
+        )),
     }
-    Ok(Draw_components {
-        draw_type: parse_string(&args[0])?,
-        draw_x: parse_f32(&args[1])?,
-        draw_y: parse_f32(&args[2])?,
-        draw_z: parse_f32(&args[3])?,
-        draw_symbol: parse_char(&args[4])?,
-        draw_vertices: parse_f32_vec(&args[5])?,
-        draw_RGBA_color: parse_u8_array::<4>(&args[6])?,
-        draw_texture_path: parse_string(&args[7])?,
-        special_properties: parse_string(&args[8])?,
-        draw_special_name: parse_string(&args[9])?,
-    })
 }
 
 fn parse_light_components(line: &str) -> io::Result<Light_components> {
     let line = line.trim();
     if !line.starts_with("Light_components(") || !line.ends_with(')') {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Light_components format"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid Light_components format",
+        ));
     }
-    let args_str = &line[17..line.len()-1];
+
+    let args_str = &line[17..line.len() - 1];
     let args = extract_args(args_str);
+
     if args.len() != 9 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected 9 arguments, got {}", args.len())));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Expected 9 arguments, got {}", args.len()),
+        ));
     }
+
     Ok(Light_components {
         light_x: parse_f32(&args[0])?,
         light_y: parse_f32(&args[1])?,
@@ -231,19 +322,30 @@ fn parse_light_components(line: &str) -> io::Result<Light_components> {
 fn parse_sound_components(line: &str) -> io::Result<Sound_components> {
     let line = line.trim();
     if !line.starts_with("Sound_components(") || !line.ends_with(')') {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Sound_components format"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid Sound_components format",
+        ));
     }
-    let args_str = &line[17..line.len()-1];
+
+    let args_str = &line[17..line.len() - 1];
     let args = extract_args(args_str);
+
     if args.len() != 6 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected 6 arguments, got {}", args.len())));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Expected 6 arguments, got {}", args.len()),
+        ));
     }
+
     Ok(Sound_components {
         x: parse_f32(&args[0])?,
         y: parse_f32(&args[1])?,
         z: parse_f32(&args[2])?,
         vertices: parse_f32_vec(&args[3])?,
-        soundproofing: args[4].trim().parse::<u8>().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u8: {}", e)))?,
+        soundproofing: args[4].trim().parse::<u8>().map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u8: {}", e))
+        })?,
         special_name: parse_string(&args[5])?,
     })
 }
@@ -251,13 +353,22 @@ fn parse_sound_components(line: &str) -> io::Result<Sound_components> {
 fn parse_script(line: &str) -> io::Result<Script> {
     let line = line.trim();
     if !line.starts_with("Script(") || !line.ends_with(')') {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Script format"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid Script format",
+        ));
     }
-    let args_str = &line[7..line.len()-1];
+
+    let args_str = &line[7..line.len() - 1];
     let args = extract_args(args_str);
+
     if args.len() != 2 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Expected 2 arguments, got {}", args.len())));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Expected 2 arguments, got {}", args.len()),
+        ));
     }
+
     Ok(Script {
         function: parse_string(&args[0])?,
         content: parse_string(&args[1])?,
@@ -266,16 +377,33 @@ fn parse_script(line: &str) -> io::Result<Script> {
 
 fn format_string(s: &str) -> String {
     let mut escaped = String::new();
+
     for ch in s.chars() {
         match ch {
-            '\n' => escaped.push_str("\\n"),
-            '\t' => escaped.push_str("\\t"),
-            '\r' => escaped.push_str("\\r"),
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
+            '\n' => {
+                escaped.push('\\');
+                escaped.push('n');
+            }
+            '\t' => {
+                escaped.push('\\');
+                escaped.push('t');
+            }
+            '\r' => {
+                escaped.push('\\');
+                escaped.push('r');
+            }
+            '\\' => {
+                escaped.push('\\');
+                escaped.push('\\');
+            }
+            '"' => {
+                escaped.push('\\');
+                escaped.push('"');
+            }
             _ => escaped.push(ch),
         }
     }
+
     format!("\"{}\"", escaped)
 }
 
@@ -291,11 +419,33 @@ fn format_u8_array<const N: usize>(arr: &[u8; N]) -> String {
 
 fn format_char(c: char) -> String {
     let mut s = String::new();
+    s.push('\'');
+
     match c {
-        '\'' => s.push_str("'\\''"),
-        '\\' => s.push_str("'\\\\'"),
-        _ => s = format!("'{}'", c),
+        '\n' => {
+            s.push('\\');
+            s.push('n');
+        }
+        '\t' => {
+            s.push('\\');
+            s.push('t');
+        }
+        '\r' => {
+            s.push('\\');
+            s.push('r');
+        }
+        '\\' => {
+            s.push('\\');
+            s.push('\\');
+        }
+        '\'' => {
+            s.push('\\');
+            s.push('\'');
+        }
+        _ => s.push(c),
     }
+
+    s.push('\'');
     s
 }
 
@@ -305,14 +455,14 @@ static SCRIPT_CACHE: OnceLock<Mutex<Option<Vec<AST>>>> = OnceLock::new();
 
 fn build_engine() -> Engine {
     let mut engine = Engine::new();
-
-    engine.set_max_expr_depths(128,128);
+    engine.set_max_expr_depths(128, 128);
     engine.set_max_operations(536_870_912);
     engine.set_max_call_levels(128);
 
     engine.register_fn("to_int", |s: &str| -> i64 {
         s.trim().parse::<i64>().unwrap_or(0)
     });
+
     engine.register_fn("to_float", |s: &str| -> f64 {
         s.trim().parse::<f64>().unwrap_or(0.0)
     });
@@ -320,33 +470,46 @@ fn build_engine() -> Engine {
     engine.register_fn("get_map_object", |key: &str| {
         Map_objects.lock().unwrap().get(key).cloned().unwrap_or_default()
     });
+
     engine.register_fn("set_map_object", |key: &str, value: &str| {
         let mut map = Map_objects.lock().unwrap();
         map.insert(key.to_string(), value.to_string());
     });
+
     engine.register_fn("push_draw", |comp: Draw_components| {
         Draw_queue.lock().unwrap().push(comp);
+        *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("push_light", |light: Light_components| {
         Light_queue.lock().unwrap().push(light);
     });
+
     engine.register_fn("get_tick", || tick_system::Get_tick());
 
     engine.register_fn("push_static_draw", |comp: Draw_components| {
         Static_scene.lock().unwrap().push(comp);
+        *super::Is_scene_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("push_static_light", |light: Light_components| {
         Static_light.lock().unwrap().push(light);
     });
+
     engine.register_fn("clear_dynamic_draw", || {
         Draw_queue.lock().unwrap().clear();
+        *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("clear_dynamic_light", || {
         Light_queue.lock().unwrap().clear();
     });
+
     engine.register_fn("clear_static_scene", || {
         Static_scene.lock().unwrap().clear();
+        *super::Is_scene_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("clear_static_light", || {
         Static_light.lock().unwrap().clear();
     });
@@ -354,27 +517,35 @@ fn build_engine() -> Engine {
     engine.register_fn("get_camera_fov", || {
         super::Camera.lock().unwrap().camera_fov
     });
+
     engine.register_fn("get_camera_x", || {
         super::Camera.lock().unwrap().camera_x
     });
+
     engine.register_fn("get_camera_y", || {
         super::Camera.lock().unwrap().camera_y
     });
+
     engine.register_fn("get_camera_z", || {
         super::Camera.lock().unwrap().camera_z
     });
+
     engine.register_fn("get_camera_pitch", || {
         super::Camera.lock().unwrap().camera_pitch
     });
+
     engine.register_fn("get_camera_yaw", || {
         super::Camera.lock().unwrap().camera_yaw
     });
+
     engine.register_fn("get_camera_roll", || {
         super::Camera.lock().unwrap().camera_roll
     });
+
     engine.register_fn("get_max_dist", || {
         super::Camera.lock().unwrap().max_dist
     });
+
     engine.register_fn("get_ambient_light", || {
         let ambient = super::Camera.lock().unwrap().ambient_light;
         rhai::Array::from_iter(ambient.iter().map(|&v| Dynamic::from_int(v as i64)))
@@ -389,67 +560,146 @@ fn build_engine() -> Engine {
     engine.register_type::<Light_components>();
     engine.register_type::<Sound_components>();
 
-    engine.register_fn("Draw_components", |draw_type: &str, x: f64, y: f64, z: f64, symbol: char, vertices: Array, color: Array, tex: &str, special_props: &str, name: &str| {
-        let vertices: Vec<f32> = vertices
-            .into_iter()
-            .map(|v| v.as_float().unwrap_or(0.0) as f32)
-            .collect();
+    engine.register_fn(
+        "Draw_components",
+        |draw_type: &str,
+         x: f64,
+         y: f64,
+         z: f64,
+         symbol: char,
+         vertices: Array,
+         color: Array,
+         tex: &str,
+         uv: &str,
+         _special_props: &str,
+         name: &str| {
+            let vertices: Vec<f32> = vertices
+                .into_iter()
+                .map(|v| v.as_float().unwrap_or(0.0) as f32)
+                .collect();
 
-        let color: [u8; 4] = [
-            color.get(0).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
-            color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
-            color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
-            color.get(3).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
-        ];
+            let color: [u8; 4] = [
+                color.get(0).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(3).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+            ];
 
-        Draw_components {
-            draw_type: draw_type.to_string(),
-            draw_x: x as f32,
-            draw_y: y as f32,
-            draw_z: z as f32,
-            draw_symbol: symbol,
-            draw_vertices: vertices,
-            draw_RGBA_color: color,
-            draw_texture_path: tex.to_string(),
-            special_properties: special_props.to_string(),
-            draw_special_name: name.to_string(),
-        }
-    });
+            Draw_components {
+                draw_type: draw_type.to_string(),
+                draw_x: x as f32,
+                draw_y: y as f32,
+                draw_z: z as f32,
+                draw_symbol: symbol,
+                draw_vertices: vertices,
+                draw_RGBA_color: color,
+                draw_texture_path: tex.to_string(),
+                draw_uv_path: uv.to_string(),
+                pitch: 0.0,
+                yaw: 0.0,
+                roll: 0.0,
+                special_properties: String::new(),
+                draw_special_name: name.to_string(),
+            }
+        },
+    );
 
-    engine.register_fn("Light_components", |x: f64, y: f64, z: f64, color: Array, dist: f64, cone: f64, pitch: f64, yaw: f64, name: &str| {
-        let color: [u8; 3] = [
-            color.get(0).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
-            color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
-            color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
-        ];
+    engine.register_fn(
+        "Draw_components",
+        |draw_type: &str,
+         x: f64,
+         y: f64,
+         z: f64,
+         symbol: char,
+         vertices: Array,
+         color: Array,
+         tex: &str,
+         uv: &str,
+         pitch: f64,
+         yaw: f64,
+         roll: f64,
+         _special_props: &str,
+         name: &str| {
+            let vertices: Vec<f32> = vertices
+                .into_iter()
+                .map(|v| v.as_float().unwrap_or(0.0) as f32)
+                .collect();
 
-        Light_components {
-            light_x: x as f32,
-            light_y: y as f32,
-            light_z: z as f32,
-            light_RGB_color: color,
-            light_distance: dist as f32,
-            light_cone_angle: cone as f32,
-            light_pitch: pitch as f32,
-            light_yaw: yaw as f32,
-            light_special_name: name.to_string(),
-        }
-    });
+            let color: [u8; 4] = [
+                color.get(0).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(3).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+            ];
 
-    engine.register_fn("Sound_components", |x: f64, y: f64, z: f64, vertices: Array, soundproofing: i64, name: &str| {
-        let vertices: Vec<f32> = vertices
-            .into_iter()
-            .map(|v| v.as_float().unwrap_or(0.0) as f32)
-            .collect();
-        Sound_components {
-            x: x as f32,
-            y: y as f32,
-            z: z as f32,
-            vertices,
-            soundproofing: soundproofing as u8,
-            special_name: name.to_string(),
-        }
-    });
+            Draw_components {
+                draw_type: draw_type.to_string(),
+                draw_x: x as f32,
+                draw_y: y as f32,
+                draw_z: z as f32,
+                draw_symbol: symbol,
+                draw_vertices: vertices,
+                draw_RGBA_color: color,
+                draw_texture_path: tex.to_string(),
+                draw_uv_path: uv.to_string(),
+                pitch: pitch as f32,
+                yaw: yaw as f32,
+                roll: roll as f32,
+                special_properties: String::new(),
+                draw_special_name: name.to_string(),
+            }
+        },
+    );
+
+    engine.register_fn(
+        "Light_components",
+        |x: f64,
+         y: f64,
+         z: f64,
+         color: Array,
+         dist: f64,
+         cone: f64,
+         pitch: f64,
+         yaw: f64,
+         name: &str| {
+            let color: [u8; 3] = [
+                color.get(0).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+                color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
+            ];
+
+            Light_components {
+                light_x: x as f32,
+                light_y: y as f32,
+                light_z: z as f32,
+                light_RGB_color: color,
+                light_distance: dist as f32,
+                light_cone_angle: cone as f32,
+                light_pitch: pitch as f32,
+                light_yaw: yaw as f32,
+                light_special_name: name.to_string(),
+            }
+        },
+    );
+
+    engine.register_fn(
+        "Sound_components",
+        |x: f64, y: f64, z: f64, vertices: Array, soundproofing: i64, name: &str| {
+            let vertices: Vec<f32> = vertices
+                .into_iter()
+                .map(|v| v.as_float().unwrap_or(0.0) as f32)
+                .collect();
+
+            Sound_components {
+                x: x as f32,
+                y: y as f32,
+                z: z as f32,
+                vertices,
+                soundproofing: soundproofing as u8,
+                special_name: name.to_string(),
+            }
+        },
+    );
 
     engine.register_fn("push_sound", |sound: Sound_components| {
         Sound_queue.lock().unwrap().push(sound);
@@ -490,7 +740,11 @@ fn build_engine() -> Engine {
         let mut queue = Draw_queue.lock().unwrap();
         let before = queue.len();
         queue.retain(|comp| comp.draw_special_name != name);
-        (before - queue.len()) as i64
+        let removed = (before - queue.len()) as i64;
+        if removed > 0 {
+            *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
+        }
+        removed
     });
 
     engine.register_fn("remove_light_by_name", |name: &str| -> i64 {
@@ -504,7 +758,11 @@ fn build_engine() -> Engine {
         let mut scene = Static_scene.lock().unwrap();
         let before = scene.len();
         scene.retain(|comp| comp.draw_special_name != name);
-        (before - scene.len()) as i64
+        let removed = (before - scene.len()) as i64;
+        if removed > 0 {
+            *super::Is_scene_changed.lock().unwrap() = true;
+        }
+        removed
     });
 
     engine.register_fn("remove_static_light_by_name", |name: &str| -> i64 {
@@ -514,12 +772,72 @@ fn build_engine() -> Engine {
         (before - lights.len()) as i64
     });
 
+    engine.register_fn("draw_exists_by_name", |name: &str| -> bool {
+        if Draw_queue
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|comp| comp.draw_special_name == name)
+        {
+            return true;
+        }
+
+        Static_scene
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|comp| comp.draw_special_name == name)
+    });
+
+    engine.register_fn(
+        "set_draw_rotation_by_name",
+        |name: &str, pitch: f64, yaw: f64, roll: f64| -> bool {
+            let mut found = false;
+
+            {
+                let mut queue = Draw_queue.lock().unwrap();
+                for comp in queue.iter_mut() {
+                    if comp.draw_special_name == name {
+                        comp.pitch = pitch as f32;
+                        comp.yaw = yaw as f32;
+                        comp.roll = roll as f32;
+                        found = true;
+                    }
+                }
+            }
+
+            if found {
+                *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
+                return true;
+            }
+
+            {
+                let mut scene = Static_scene.lock().unwrap();
+                for comp in scene.iter_mut() {
+                    if comp.draw_special_name == name {
+                        comp.pitch = pitch as f32;
+                        comp.yaw = yaw as f32;
+                        comp.roll = roll as f32;
+                        found = true;
+                    }
+                }
+            }
+
+            if found {
+                *super::Is_scene_changed.lock().unwrap() = true;
+            }
+
+            found
+        },
+    );
+
     engine
 }
 
 pub fn Do_all_scripts() {
     let cache = SCRIPT_CACHE.get_or_init(|| Mutex::new(None));
     let mut cache_guard = cache.lock().unwrap();
+
     let asts = if let Some(ref cached_asts) = *cache_guard {
         cached_asts.clone()
     } else {
@@ -527,9 +845,11 @@ pub fn Do_all_scripts() {
         if scripts.is_empty() {
             return;
         }
+
         let engine = build_engine();
         let mut compiled = Vec::new();
         let mut has_error = false;
+
         for script in scripts {
             match engine.compile(&script.content) {
                 Ok(ast) => compiled.push(ast),
@@ -539,9 +859,11 @@ pub fn Do_all_scripts() {
                 }
             }
         }
+
         if !has_error {
             *cache_guard = Some(compiled.clone());
         }
+
         compiled
     };
 
@@ -568,14 +890,14 @@ pub fn Save_map(path: String) -> io::Result<()> {
             writeln!(file, "{} = {}", format_string(key), format_string(value))?;
         }
     }
-    writeln!(file)?;
 
+    writeln!(file)?;
     writeln!(file, "// Static_scene")?;
     {
         let scene = Static_scene.lock().unwrap();
         for comp in scene.iter() {
             let line = format!(
-                "Draw_components({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+                "Draw_components({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
                 format_string(&comp.draw_type),
                 comp.draw_x,
                 comp.draw_y,
@@ -584,14 +906,18 @@ pub fn Save_map(path: String) -> io::Result<()> {
                 format_f32_vec(&comp.draw_vertices),
                 format_u8_array(&comp.draw_RGBA_color),
                 format_string(&comp.draw_texture_path),
-                format_string(&comp.special_properties),
+                format_string(&comp.draw_uv_path),
+                comp.pitch,
+                comp.yaw,
+                comp.roll,
+                format_string(""),
                 format_string(&comp.draw_special_name),
             );
             writeln!(file, "{}", line)?;
         }
     }
-    writeln!(file)?;
 
+    writeln!(file)?;
     writeln!(file, "// Static_light")?;
     {
         let lights = Static_light.lock().unwrap();
@@ -611,8 +937,8 @@ pub fn Save_map(path: String) -> io::Result<()> {
             writeln!(file, "{}", line)?;
         }
     }
-    writeln!(file)?;
 
+    writeln!(file)?;
     writeln!(file, "// Static_sound_scene")?;
     {
         let sounds = Static_sound_scene.lock().unwrap();
@@ -629,8 +955,8 @@ pub fn Save_map(path: String) -> io::Result<()> {
             writeln!(file, "{}", line)?;
         }
     }
-    writeln!(file)?;
 
+    writeln!(file)?;
     writeln!(file, "// Map_scripts")?;
     {
         let scripts = Map_scripts.lock().unwrap();
@@ -668,9 +994,11 @@ pub fn Load_map(path: String) -> io::Result<()> {
     let mut current_section = String::new();
     let mut error_count = 0;
     let mut i = 0;
+
     while i < lines.len() {
         let line = lines[i].clone();
         let trimmed = line.trim();
+
         if trimmed.is_empty() {
             i += 1;
             continue;
@@ -702,14 +1030,15 @@ pub fn Load_map(path: String) -> io::Result<()> {
             "objects" => {
                 if let Some(eq_pos) = trimmed.find('=') {
                     let key = trimmed[..eq_pos].trim();
-                    let value = trimmed[eq_pos+1..].trim();
+                    let value = trimmed[eq_pos + 1..].trim();
+
                     if !key.is_empty() && !value.is_empty() {
                         match (parse_string(key), parse_string(value)) {
                             (Ok(k), Ok(v)) => {
                                 Map_objects.lock().unwrap().insert(k, v);
                             }
                             (Err(e), _) | (_, Err(e)) => {
-                                eprintln!("[LoadMap] Line {}: object parse error: {}", i+1, e);
+                                eprintln!("[LoadMap] Line {}: object parse error: {}", i + 1, e);
                                 error_count += 1;
                             }
                         }
@@ -721,7 +1050,11 @@ pub fn Load_map(path: String) -> io::Result<()> {
                 match parse_draw_components(trimmed) {
                     Ok(comp) => Static_scene.lock().unwrap().push(comp),
                     Err(e) => {
-                        eprintln!("[LoadMap] Line {}: failed to parse Draw_components: {}", i+1, e);
+                        eprintln!(
+                            "[LoadMap] Line {}: failed to parse Draw_components: {}",
+                            i + 1,
+                            e
+                        );
                         error_count += 1;
                     }
                 }
@@ -731,7 +1064,11 @@ pub fn Load_map(path: String) -> io::Result<()> {
                 match parse_light_components(trimmed) {
                     Ok(light) => Static_light.lock().unwrap().push(light),
                     Err(e) => {
-                        eprintln!("[LoadMap] Line {}: failed to parse Light_components: {}", i+1, e);
+                        eprintln!(
+                            "[LoadMap] Line {}: failed to parse Light_components: {}",
+                            i + 1,
+                            e
+                        );
                         error_count += 1;
                     }
                 }
@@ -741,7 +1078,11 @@ pub fn Load_map(path: String) -> io::Result<()> {
                 match parse_sound_components(trimmed) {
                     Ok(sound) => Static_sound_scene.lock().unwrap().push(sound),
                     Err(e) => {
-                        eprintln!("[LoadMap] Line {}: failed to parse Sound_components: {}", i+1, e);
+                        eprintln!(
+                            "[LoadMap] Line {}: failed to parse Sound_components: {}",
+                            i + 1,
+                            e
+                        );
                         error_count += 1;
                     }
                 }
@@ -749,20 +1090,25 @@ pub fn Load_map(path: String) -> io::Result<()> {
             }
             "scripts" => {
                 let mut script_block = String::new();
+
                 while i < lines.len() {
                     let next_line = lines[i].clone();
                     let next_trimmed = next_line.trim();
+
                     if next_trimmed.starts_with("// Map_") {
                         break;
                     }
+
                     if next_trimmed.is_empty() {
                         i += 1;
                         continue;
                     }
+
                     script_block.push_str(&next_line);
                     script_block.push('\n');
                     i += 1;
                 }
+
                 let mut pos = 0;
                 while let Some(start) = script_block[pos..].find("Script(") {
                     let start = pos + start;
@@ -770,23 +1116,29 @@ pub fn Load_map(path: String) -> io::Result<()> {
                     let mut in_string = false;
                     let mut escape = false;
                     let mut end = start;
+
                     for (idx, ch) in script_block[start..].char_indices() {
                         let global_idx = start + idx;
+
                         if escape {
                             escape = false;
                             continue;
                         }
+
                         if ch == '\\' {
                             escape = true;
                             continue;
                         }
+
                         if ch == '"' {
                             in_string = !in_string;
                             continue;
                         }
+
                         if in_string {
                             continue;
                         }
+
                         if ch == '(' {
                             depth += 1;
                         } else if ch == ')' {
@@ -797,6 +1149,7 @@ pub fn Load_map(path: String) -> io::Result<()> {
                             }
                         }
                     }
+
                     if end > start {
                         let script_str = &script_block[start..end];
                         match parse_script(script_str) {
@@ -819,7 +1172,10 @@ pub fn Load_map(path: String) -> io::Result<()> {
     }
 
     if error_count > 0 {
-        eprintln!("[LoadMap] Loaded with {} errors. Some objects may be missing.", error_count);
+        eprintln!(
+            "[LoadMap] Loaded with {} errors. Some objects may be missing.",
+            error_count
+        );
     } else {
         println!("[LoadMap] Map loaded successfully.");
     }
@@ -831,6 +1187,8 @@ pub fn Load_map(path: String) -> io::Result<()> {
     let mut sound_examination = Is_sound_scene_changed.lock().unwrap();
     *sound_examination = true;
     drop(sound_examination);
+
+    *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
 
     Ok(())
 }
