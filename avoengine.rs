@@ -7,6 +7,7 @@ pub mod console_input;
 pub mod window_processing;
 pub mod maps;
 pub mod sound;
+pub mod obj_loader;
 
 pub struct Settings{
     pub window_width: i128,
@@ -27,7 +28,7 @@ pub struct Draw_components{
     pub draw_vertices: Vec<f32>,
     pub draw_RGBA_color: [u8;4],
     pub draw_texture_path: String,
-    pub draw_uv_path: String,
+    pub draw_uvs: Vec<f32>,
     pub pitch: f32,
     pub yaw: f32,
     pub roll: f32,
