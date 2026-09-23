@@ -1,8 +1,12 @@
 use std::fs;
+use std::path::Path;
 
-pub fn load_obj_and_texture(folder_path: &str) -> (Vec<f32>, Vec<f32>, String) {
+pub fn load_obj_and_texture(folder_path: &str) -> (Vec<f32>, Vec<f32>, String, String) {
     let mut obj_path = String::new();
     let mut tex_path = String::new();
+    
+    let properties_path = Path::new(folder_path).join("properties.txt");
+    let properties_content = fs::read_to_string(properties_path).unwrap_or_default();
 
     for entry in fs::read_dir(folder_path).unwrap() {
         let path = entry.unwrap().path();
@@ -15,13 +19,13 @@ pub fn load_obj_and_texture(folder_path: &str) -> (Vec<f32>, Vec<f32>, String) {
             }
         }
     }
-
+    
     let content = fs::read_to_string(&obj_path).unwrap();
     let mut v_pos = Vec::<[f32; 3]>::new();
     let mut v_tex = Vec::<[f32; 2]>::new();
     let mut out_vertices = Vec::new();
     let mut out_uvs = Vec::new();
-
+    
     for line in content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.is_empty() {
@@ -57,7 +61,6 @@ pub fn load_obj_and_texture(folder_path: &str) -> (Vec<f32>, Vec<f32>, String) {
                     out_vertices.extend_from_slice(&v_pos[face_v[0]]);
                     out_vertices.extend_from_slice(&v_pos[face_v[i]]);
                     out_vertices.extend_from_slice(&v_pos[face_v[i + 1]]);
-
                     out_uvs.extend_from_slice(&v_tex[face_vt[0]]);
                     out_uvs.extend_from_slice(&v_tex[face_vt[i]]);
                     out_uvs.extend_from_slice(&v_tex[face_vt[i + 1]]);
@@ -66,6 +69,6 @@ pub fn load_obj_and_texture(folder_path: &str) -> (Vec<f32>, Vec<f32>, String) {
             _ => {}
         }
     }
-
-    (out_vertices, out_uvs, tex_path)
+    
+    (out_vertices, out_uvs, tex_path, properties_content)
 }

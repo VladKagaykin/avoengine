@@ -173,341 +173,341 @@ fn init_opencl() -> Result<OpenCLState, String> {
 const RENDER_KERNEL_SRC: &str = r#"
 typedef struct { float t, u, v; int tri_idx; int hit; } RayHit;
 int intersect_aabb(float3 origin, float3 dir, float3 box_min, float3 box_max, float t_max, float* t_out) {
-float tmin = 0.0f;
-float tmax = t_max;
-if (fabs(dir.x) < 1e-8f) {
-     if (origin.x < box_min.x || origin.x > box_max.x) return 0;
- } else {
-     float inv = 1.0f / dir.x;
-     float t1 = (box_min.x - origin.x) * inv;
-     float t2 = (box_max.x - origin.x) * inv;
-     if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
-     tmin = fmax(tmin, t1);
-     tmax = fmin(tmax, t2);
-     if (tmin > tmax) return 0;
- }
- if (fabs(dir.y) < 1e-8f) {
-     if (origin.y < box_min.y || origin.y > box_max.y) return 0;
- } else {
-     float inv = 1.0f / dir.y;
-     float t1 = (box_min.y - origin.y) * inv;
-     float t2 = (box_max.y - origin.y) * inv;
-     if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
-     tmin = fmax(tmin, t1);
-     tmax = fmin(tmax, t2);
-     if (tmin > tmax) return 0;
- }
- if (fabs(dir.z) < 1e-8f) {
-     if (origin.z < box_min.z || origin.z > box_max.z) return 0;
- } else {
-     float inv = 1.0f / dir.z;
-     float t1 = (box_min.z - origin.z) * inv;
-     float t2 = (box_max.z - origin.z) * inv;
-     if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
-     tmin = fmax(tmin, t1);
-     tmax = fmin(tmax, t2);
-     if (tmin > tmax) return 0;
- }
- if (tmin <= tmax && tmin < t_max) {
-     *t_out = tmin;
-     return 1;
- }
- return 0;
+    float tmin = 0.0f;
+    float tmax = t_max;
+    if (fabs(dir.x) < 1e-8f) {
+        if (origin.x < box_min.x || origin.x > box_max.x) return 0;
+    } else {
+        float inv = 1.0f / dir.x;
+        float t1 = (box_min.x - origin.x) * inv;
+        float t2 = (box_max.x - origin.x) * inv;
+        if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+        tmin = fmax(tmin, t1);
+        tmax = fmin(tmax, t2);
+        if (tmin > tmax) return 0;
+    }
+    if (fabs(dir.y) < 1e-8f) {
+        if (origin.y < box_min.y || origin.y > box_max.y) return 0;
+    } else {
+        float inv = 1.0f / dir.y;
+        float t1 = (box_min.y - origin.y) * inv;
+        float t2 = (box_max.y - origin.y) * inv;
+        if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+        tmin = fmax(tmin, t1);
+        tmax = fmin(tmax, t2);
+        if (tmin > tmax) return 0;
+    }
+    if (fabs(dir.z) < 1e-8f) {
+        if (origin.z < box_min.z || origin.z > box_max.z) return 0;
+    } else {
+        float inv = 1.0f / dir.z;
+        float t1 = (box_min.z - origin.z) * inv;
+        float t2 = (box_max.z - origin.z) * inv;
+        if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+        tmin = fmax(tmin, t1);
+        tmax = fmin(tmax, t2);
+        if (tmin > tmax) return 0;
+    }
+    if (tmin <= tmax && tmin < t_max) {
+        *t_out = tmin;
+        return 1;
+    }
+    return 0;
 }
 int intersect_tri(float3 origin, float3 dir, float3 v0, float3 v1, float3 v2, float t_max, float* t, float* u, float* v) {
-float3 edge1 = v1 - v0;
-float3 edge2 = v2 - v0;
-float3 h = cross(dir, edge2);
-float a = dot(edge1, h);
-if (a > -1e-6f && a < 1e-6f) return 0;
-float f = 1.0f / a;
-float3 s = origin - v0;
-*u = f * dot(s, h);
-if (*u < 0.0f || *u > 1.0f) return 0;
-float3 q = cross(s, edge1);
-*v = f * dot(dir, q);
-if (*v < 0.0f || *u + *v > 1.0f) return 0;
-*t = f * dot(edge2, q);
-return (*t > 1e-6f && *t < t_max);
+    float3 edge1 = v1 - v0;
+    float3 edge2 = v2 - v0;
+    float3 h = cross(dir, edge2);
+    float a = dot(edge1, h);
+    if (a > -1e-6f && a < 1e-6f) return 0;
+    float f = 1.0f / a;
+    float3 s = origin - v0;
+    *u = f * dot(s, h);
+    if (*u < 0.0f || *u > 1.0f) return 0;
+    float3 q = cross(s, edge1);
+    *v = f * dot(dir, q);
+    if (*v < 0.0f || *u + *v > 1.0f) return 0;
+    *t = f * dot(edge2, q);
+    return (*t > 1e-6f && *t < t_max);
 }
 float4 sample_uv_texture(
-__global const uchar* tex_data,
-__global const int* tex_info,
-int tex_id,
-float u,
-float v
+    __global const uchar* tex_data,
+    __global const int* tex_info,
+    int tex_id,
+    float u,
+    float v
 ) {
-if (tex_id < 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
-int info_base = tex_id * 4;
- int tex_w = tex_info[info_base];
- int tex_h = tex_info[info_base + 1];
- int offset = tex_info[info_base + 2];
- if (tex_w <= 0 || tex_h <= 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
- int x = (int)round(u * (float)(tex_w - 1));
- int y = (int)round(v * (float)(tex_h - 1));
- x = clamp(x, 0, tex_w - 1);
- y = clamp(y, 0, tex_h - 1);
- int idx = (offset + y * tex_w + x) * 4;
- return (float4)(
-     tex_data[idx] / 255.0f,
-     tex_data[idx + 1] / 255.0f,
-     tex_data[idx + 2] / 255.0f,
-     tex_data[idx + 3] / 255.0f
- );
+    if (tex_id < 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    int info_base = tex_id * 4;
+    int tex_w = tex_info[info_base];
+    int tex_h = tex_info[info_base + 1];
+    int offset = tex_info[info_base + 2];
+    if (tex_w <= 0 || tex_h <= 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    int x = (int)round(u * (float)(tex_w - 1));
+    int y = (int)round(v * (float)(tex_h - 1));
+    x = clamp(x, 0, tex_w - 1);
+    y = clamp(y, 0, tex_h - 1);
+    int idx = (offset + y * tex_w + x) * 4;
+    return (float4)(
+        tex_data[idx] / 255.0f,
+        tex_data[idx + 1] / 255.0f,
+        tex_data[idx + 2] / 255.0f,
+        tex_data[idx + 3] / 255.0f
+    );
 }
 RayHit trace_ray(
-float3 origin, float3 dir, float max_dist,
-__global const float* nodes_min, __global const float* nodes_max,
-__global const int* nodes_left, __global const int* nodes_right,
-__global const int* tri_indices,
-__global const float* tris_v0, __global const float* tris_v1, __global const float* tris_v2,
-int num_tris
+    float3 origin, float3 dir, float max_dist,
+    __global const float* nodes_min, __global const float* nodes_max,
+    __global const int* nodes_left, __global const int* nodes_right,
+    __global const int* tri_indices,
+    __global const float* tris_v0, __global const float* tris_v1, __global const float* tris_v2,
+    int num_tris
 ) {
-RayHit best_hit;
-best_hit.hit = 0;
-best_hit.t = max_dist;
-int stack[64];
- int stack_ptr = 0;
- stack[stack_ptr++] = 0;
- while (stack_ptr > 0) {
-     int node_idx = stack[--stack_ptr];
-     float3 nmin = (float3)(nodes_min[node_idx * 3], nodes_min[node_idx * 3 + 1], nodes_min[node_idx * 3 + 2]);
-     float3 nmax = (float3)(nodes_max[node_idx * 3], nodes_max[node_idx * 3 + 1], nodes_max[node_idx * 3 + 2]);
-     float dummy_t;
-     if (!intersect_aabb(origin, dir, nmin, nmax, best_hit.t, &dummy_t)) continue;
-     int left = nodes_left[node_idx];
-     int right = nodes_right[node_idx];
-     if (left < 0) {
-         int start = -left - 1;
-         int count = right;
-         for (int j = 0; j < count; j++) {
-             int t_idx = tri_indices[start + j];
-             float3 tv0 = (float3)(tris_v0[t_idx * 3], tris_v0[t_idx * 3 + 1], tris_v0[t_idx * 3 + 2]);
-             float3 tv1 = (float3)(tris_v1[t_idx * 3], tris_v1[t_idx * 3 + 1], tris_v1[t_idx * 3 + 2]);
-             float3 tv2 = (float3)(tris_v2[t_idx * 3], tris_v2[t_idx * 3 + 1], tris_v2[t_idx * 3 + 2]);
-             float t_hit, u_hit, v_hit;
-             if (intersect_tri(origin, dir, tv0, tv1, tv2, best_hit.t, &t_hit, &u_hit, &v_hit)) {
-                 best_hit.t = t_hit;
-                 best_hit.u = u_hit;
-                 best_hit.v = v_hit;
-                 best_hit.tri_idx = t_idx;
-                 best_hit.hit = 1;
-             }
-         }
-     } else {
-         stack[stack_ptr++] = left;
-         stack[stack_ptr++] = right;
-     }
- }
- return best_hit;
+    RayHit best_hit;
+    best_hit.hit = 0;
+    best_hit.t = max_dist;
+    int stack[64];
+    int stack_ptr = 0;
+    stack[stack_ptr++] = 0;
+    while (stack_ptr > 0) {
+        int node_idx = stack[--stack_ptr];
+        float3 nmin = (float3)(nodes_min[node_idx * 3], nodes_min[node_idx * 3 + 1], nodes_min[node_idx * 3 + 2]);
+        float3 nmax = (float3)(nodes_max[node_idx * 3], nodes_max[node_idx * 3 + 1], nodes_max[node_idx * 3 + 2]);
+        float dummy_t;
+        if (!intersect_aabb(origin, dir, nmin, nmax, best_hit.t, &dummy_t)) continue;
+        int left = nodes_left[node_idx];
+        int right = nodes_right[node_idx];
+        if (left < 0) {
+            int start = -left - 1;
+            int count = right;
+            for (int j = 0; j < count; j++) {
+                int t_idx = tri_indices[start + j];
+                float3 tv0 = (float3)(tris_v0[t_idx * 3], tris_v0[t_idx * 3 + 1], tris_v0[t_idx * 3 + 2]);
+                float3 tv1 = (float3)(tris_v1[t_idx * 3], tris_v1[t_idx * 3 + 1], tris_v1[t_idx * 3 + 2]);
+                float3 tv2 = (float3)(tris_v2[t_idx * 3], tris_v2[t_idx * 3 + 1], tris_v2[t_idx * 3 + 2]);
+                float t_hit, u_hit, v_hit;
+                if (intersect_tri(origin, dir, tv0, tv1, tv2, best_hit.t, &t_hit, &u_hit, &v_hit)) {
+                    best_hit.t = t_hit;
+                    best_hit.u = u_hit;
+                    best_hit.v = v_hit;
+                    best_hit.tri_idx = t_idx;
+                    best_hit.hit = 1;
+                }
+            }
+        } else {
+            stack[stack_ptr++] = left;
+            stack[stack_ptr++] = right;
+        }
+    }
+    return best_hit;
 }
 __kernel void render_scene(
-__global uchar* output,
-int width, int height,
-float3 cam_origin, float3 cam_fwd, float3 cam_right, float3 cam_up,
-float half_tan, float aspect, float max_dist, float3 ambient,
-int num_nodes,
-__global const float* nodes_min,
-__global const float* nodes_max,
-__global const int* nodes_left,
-__global const int* nodes_right,
-int num_tris,
-__global const float* tris_v0,
-__global const float* tris_v1,
-__global const float* tris_v2,
-__global const float* tris_color,
-__global const float* tris_uv,
-__global const int* tris_tex_id,
-__global const int* tri_indices,
-int num_tex,
-__global const int* tex_info,
-__global const uchar* tex_data
+    __global uchar* output,
+    int width, int height,
+    float3 cam_origin, float3 cam_fwd, float3 cam_right, float3 cam_up,
+    float half_tan, float aspect, float max_dist, float3 ambient,
+    int num_nodes,
+    __global const float* nodes_min,
+    __global const float* nodes_max,
+    __global const int* nodes_left,
+    __global const int* nodes_right,
+    int num_tris,
+    __global const float* tris_v0,
+    __global const float* tris_v1,
+    __global const float* tris_v2,
+    __global const float* tris_color,
+    __global const float* tris_uv,
+    __global const int* tris_tex_id,
+    __global const int* tri_indices,
+    int num_tex,
+    __global const int* tex_info,
+    __global const uchar* tex_data
 ) {
-int gid = get_global_id(0);
-if (gid >= width * height) return;
-int x = gid % width;
- int y = gid / width;
- float nx = (2.0f * (x + 0.5f) / width) - 1.0f;
- float ny = 1.0f - (2.0f * (y + 0.5f) / height);
- float px = nx * half_tan * aspect;
- float py = ny * half_tan;
- float3 dir = normalize(cam_fwd + cam_right * px + cam_up * py);
- float3 origin = cam_origin;
- float3 throughput = (float3)(1.0f, 1.0f, 1.0f);
- float3 final_color = (float3)(0.0f, 0.0f, 0.0f);
- float remaining_dist = max_dist;
- for (int depth = 0; depth < 64; depth++) {
-     RayHit hit = trace_ray(
-         origin, dir, remaining_dist,
-         nodes_min, nodes_max, nodes_left, nodes_right,
-         tri_indices, tris_v0, tris_v1, tris_v2, num_tris
-     );
-     if (!hit.hit) break;
-     int t_idx = hit.tri_idx;
-     float3 base_rgb = (float3)(tris_color[t_idx * 4], tris_color[t_idx * 4 + 1], tris_color[t_idx * 4 + 2]);
-     float alpha = tris_color[t_idx * 4 + 3];
-     int tex_id = tris_tex_id[t_idx];
-     if (tex_id >= 0) {
-         float uv_w = 1.0f - hit.u - hit.v;
-         float u0 = tris_uv[t_idx * 6 + 0];
-         float v0 = tris_uv[t_idx * 6 + 1];
-         float u1 = tris_uv[t_idx * 6 + 2];
-         float v1 = tris_uv[t_idx * 6 + 3];
-         float u2 = tris_uv[t_idx * 6 + 4];
-         float v2 = tris_uv[t_idx * 6 + 5];
-         float tex_u = uv_w * u0 + hit.u * u1 + hit.v * u2;
-         float tex_v = uv_w * v0 + hit.u * v1 + hit.v * v2;
-         float4 tex_col = sample_uv_texture(tex_data, tex_info, tex_id, tex_u, tex_v);
-         base_rgb.x = tex_col.x * base_rgb.x;
-         base_rgb.y = tex_col.y * base_rgb.y;
-         base_rgb.z = tex_col.z * base_rgb.z;
-         alpha = tex_col.w * alpha;
-     }
-     float3 light_factor = ambient;
-     if (light_factor.x <= 0.0f && light_factor.y <= 0.0f && light_factor.z <= 0.0f) {
-         light_factor = (float3)(1.0f, 1.0f, 1.0f);
-     }
-     float3 lit_color = base_rgb * light_factor;
-     if (alpha >= 1.0f) {
-         final_color += throughput * lit_color;
-         break;
-     }
-     final_color += throughput * lit_color * alpha;
-     throughput *= mix((float3)(1.0f, 1.0f, 1.0f), base_rgb, alpha);
-     if (throughput.x < 0.01f && throughput.y < 0.01f && throughput.z < 0.01f) break;
-     if (depth == 63) break;
-     float3 hit_point = origin + dir * hit.t;
-     origin = hit_point + dir * 1e-3f;
-     remaining_dist -= hit.t;
-     if (remaining_dist <= 1e-3f) break;
- }
- int out_idx = gid * 4;
- output[out_idx + 0] = (uchar)round(fmin(fmax(final_color.x, 0.0f), 1.0f) * 255.0f);
- output[out_idx + 1] = (uchar)round(fmin(fmax(final_color.y, 0.0f), 1.0f) * 255.0f);
- output[out_idx + 2] = (uchar)round(fmin(fmax(final_color.z, 0.0f), 1.0f) * 255.0f);
- output[out_idx + 3] = (uchar)255;
+    int gid = get_global_id(0); 
+    if (gid >= width * height) return;
+    int x = gid % width;
+    int y = gid / width;
+    float nx = (2.0f * (x + 0.5f) / width) - 1.0f;
+    float ny = 1.0f - (2.0f * (y + 0.5f) / height);
+    float px = nx * half_tan * aspect;
+    float py = ny * half_tan;
+    float3 dir = normalize(cam_fwd + cam_right * px + cam_up * py);
+    float3 origin = cam_origin;
+    float3 throughput = (float3)(1.0f, 1.0f, 1.0f);
+    float3 final_color = (float3)(0.0f, 0.0f, 0.0f);
+    float remaining_dist = max_dist;
+    for (int depth = 0; depth < 64; depth++) {
+        RayHit hit = trace_ray(
+            origin, dir, remaining_dist,
+            nodes_min, nodes_max, nodes_left, nodes_right,
+            tri_indices, tris_v0, tris_v1, tris_v2, num_tris
+        );
+        if (!hit.hit) break;
+        int t_idx = hit.tri_idx;
+        float3 base_rgb = (float3)(tris_color[t_idx * 4], tris_color[t_idx * 4 + 1], tris_color[t_idx * 4 + 2]);
+        float alpha = tris_color[t_idx * 4 + 3]; 
+        int tex_id = tris_tex_id[t_idx];
+        if (tex_id >= 0) {
+            float uv_w = 1.0f - hit.u - hit.v;
+            float u0 = tris_uv[t_idx * 6 + 0];
+            float v0 = tris_uv[t_idx * 6 + 1];
+            float u1 = tris_uv[t_idx * 6 + 2];
+            float v1 = tris_uv[t_idx * 6 + 3];
+            float u2 = tris_uv[t_idx * 6 + 4];
+            float v2 = tris_uv[t_idx * 6 + 5];
+            float tex_u = uv_w * u0 + hit.u * u1 + hit.v * u2;
+            float tex_v = uv_w * v0 + hit.u * v1 + hit.v * v2;
+            float4 tex_col = sample_uv_texture(tex_data, tex_info, tex_id, tex_u, tex_v);
+            base_rgb.x = tex_col.x * base_rgb.x;
+            base_rgb.y = tex_col.y * base_rgb.y;
+            base_rgb.z = tex_col.z * base_rgb.z;
+            alpha = tex_col.w * alpha;
+        }
+        float3 light_factor = ambient;
+        if (light_factor.x <= 0.0f && light_factor.y <= 0.0f && light_factor.z <= 0.0f) {
+            light_factor = (float3)(1.0f, 1.0f, 1.0f);
+        }
+        float3 lit_color = base_rgb * light_factor;
+        if (alpha >= 1.0f) {
+            final_color += throughput * lit_color;
+            break;
+        }
+        final_color += throughput * lit_color * alpha;
+        throughput = mix((float3)(1.0f, 1.0f, 1.0f), base_rgb, alpha);
+        if (throughput.x < 0.01f && throughput.y < 0.01f && throughput.z < 0.01f) break;
+        if (depth == 63) break;
+        float3 hit_point = origin + dir * hit.t;
+        origin = hit_point + dir * 1e-3f;
+        remaining_dist -= hit.t;
+        if (remaining_dist <= 1e-3f) break;
+    }
+    int out_idx = gid * 4;
+    output[out_idx + 0] = (uchar)round(fmin(fmax(final_color.x, 0.0f), 1.0f) * 255.0f);
+    output[out_idx + 1] = (uchar)round(fmin(fmax(final_color.y, 0.0f), 1.0f) * 255.0f);
+    output[out_idx + 2] = (uchar)round(fmin(fmax(final_color.z, 0.0f), 1.0f) * 255.0f);
+    output[out_idx + 3] = (uchar)255;
 }
 typedef struct {
-int vertex_offset;
-int vertex_count;
-float offset_x;
-float offset_y;
-float min_x;
-float max_x;
-float min_y;
-float max_y;
-float color_r;
-float color_g;
-float color_b;
-float color_a;
-int tex_id;
-int symbol;
+    int vertex_offset;
+    int vertex_count;
+    float offset_x;
+    float offset_y;
+    float min_x;
+    float max_x;
+    float min_y;
+    float max_y;
+    float color_r;
+    float color_g;
+    float color_b;
+    float color_a;
+    int tex_id;
+    int symbol;
 } Gpu2dObject;
 int point_in_polygon(float px, float py, __global const float* vertices, int vertex_offset, int vertex_count, float offset_x, float offset_y) {
-int inside = 0;
-int n = vertex_count / 2;
-for (int i = 0; i < n; i++) {
-    int j = (i + 1) % n;
-    float xi = vertices[(vertex_offset + 2 * i)] + offset_x;
-    float yi = vertices[(vertex_offset + 2 * i + 1)] + offset_y;
-    float xj = vertices[(vertex_offset + 2 * j)] + offset_x;
-    float yj = vertices[(vertex_offset + 2 * j + 1)] + offset_y;
-    int cond1 = ((yi > py) != (yj > py)) ? 1 : 0;
-    float intersect_x = (xj - xi) * (py - yi) / (yj - yi) + xi;
-    int cond2 = (px < intersect_x) ? 1 : 0;
-    if (cond1 && cond2) {
-        inside = !inside;
+    int inside = 0;
+    int n = vertex_count / 2;
+    for (int i = 0; i < n; i++) {
+        int j = (i + 1) % n;
+        float xi = vertices[(vertex_offset + 2 * i)] + offset_x;
+        float yi = vertices[(vertex_offset + 2 * i + 1)] + offset_y;
+        float xj = vertices[(vertex_offset + 2 * j)] + offset_x;
+        float yj = vertices[(vertex_offset + 2 * j + 1)] + offset_y;
+        int cond1 = ((yi > py) != (yj > py)) ? 1 : 0;
+        float intersect_x = (xj - xi) * (py - yi) / (yj - yi) + xi;
+        int cond2 = (px < intersect_x) ? 1 : 0;
+        if (cond1 && cond2) {
+            inside = !inside;
+        }
     }
-}
-return inside;
+    return inside;
 }
 float4 sample_2d_texture(
-__global const uchar* tex_data,
-__global const int* tex_info,
-int tex_id,
-float u, float v
+    __global const uchar* tex_data,
+    __global const int* tex_info,
+    int tex_id,
+    float u, float v
 ) {
-if (tex_id < 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
-int info_base = tex_id * 4;
- int tex_w = tex_info[info_base];
- int tex_h = tex_info[info_base + 1];
- int offset = tex_info[info_base + 2];
- if (tex_w <= 0 || tex_h <= 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
- int x = (int)round(u * (float)(tex_w - 1));
- int y = (int)round(v * (float)(tex_h - 1));
- x = clamp(x, 0, tex_w - 1);
- y = clamp(y, 0, tex_h - 1);
- int idx = (offset + y * tex_w + x) * 4;
- return (float4)(
-     tex_data[idx] / 255.0f,
-     tex_data[idx + 1] / 255.0f,
-     tex_data[idx + 2] / 255.0f,
-     tex_data[idx + 3] / 255.0f
- );
+    if (tex_id < 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    int info_base = tex_id * 4;
+    int tex_w = tex_info[info_base];
+    int tex_h = tex_info[info_base + 1];
+    int offset = tex_info[info_base + 2];
+    if (tex_w <= 0 || tex_h <= 0) return (float4)(1.0f, 1.0f, 1.0f, 1.0f);
+    int x = (int)round(u * (float)(tex_w - 1));
+    int y = (int)round(v * (float)(tex_h - 1));
+    x = clamp(x, 0, tex_w - 1);
+    y = clamp(y, 0, tex_h - 1);
+    int idx = (offset + y * tex_w + x) * 4;
+    return (float4)(
+        tex_data[idx] / 255.0f,
+        tex_data[idx + 1] / 255.0f,
+        tex_data[idx + 2] / 255.0f,
+        tex_data[idx + 3] / 255.0f
+    );
 }
 __kernel void render_2d(
-__global uchar* io_color,
-__global int* io_symbol,
-int width, int height,
-int num_2d_objects,
-__global const Gpu2dObject* objects_2d,
-__global const float* vertices_2d,
-int num_tex,
-__global const int* tex_info,
-__global const uchar* tex_data
+    __global uchar* io_color,
+    __global int* io_symbol,
+    int width, int height,
+    int num_2d_objects,
+    __global const Gpu2dObject* objects_2d,
+    __global const float* vertices_2d,
+    int num_tex,
+    __global const int* tex_info,
+    __global const uchar* tex_data
 ) {
-int gid = get_global_id(0);
-if (gid >= width * height) return;
-int x = gid % width;
- int y = gid / width;
- float px = (float)x;
- float py = (float)y;
- float bg_r = io_color[gid * 4] / 255.0f;
- float bg_g = io_color[gid * 4 + 1] / 255.0f;
- float bg_b = io_color[gid * 4 + 2] / 255.0f;
- float out_r = bg_r;
- float out_g = bg_g;
- float out_b = bg_b;
- int out_symbol = io_symbol[gid];
- for (int i = 0; i < num_2d_objects; i++) {
-     Gpu2dObject obj = objects_2d[i];
-     if (point_in_polygon(px, py, vertices_2d, obj.vertex_offset, obj.vertex_count, obj.offset_x, obj.offset_y)) {
-         float r = obj.color_r;
-         float g = obj.color_g;
-         float b = obj.color_b;
-         float alpha = obj.color_a;
-         if (obj.tex_id >= 0) {
-             float uv_range_x = fmax(obj.max_x - obj.min_x, 1e-8f);
-             float uv_range_y = fmax(obj.max_y - obj.min_y, 1e-8f);
-             float u = (px - obj.min_x) / uv_range_x;
-             float v = 1.0f - (py - obj.min_y) / uv_range_y;
-             float4 tex_col = sample_2d_texture(tex_data, tex_info, obj.tex_id, u, v);
-             r = tex_col.x * r;
-             g = tex_col.y * g;
-             b = tex_col.z * b;
-             alpha = tex_col.w * alpha;
-         }
-         if (alpha >= 1.0f) {
-             out_r = r;
-             out_g = g;
-             out_b = b;
-             out_symbol = obj.symbol;
-         } else if (alpha > 0.0f) {
-             out_r = bg_r * (1.0f - alpha) + r * alpha;
-             out_g = bg_g * (1.0f - alpha) + g * alpha;
-             out_b = bg_b * (1.0f - alpha) + b * alpha;
-             out_symbol = obj.symbol;
-         }
-         bg_r = out_r;
-         bg_g = out_g;
-         bg_b = out_b;
-     }
- }
- io_color[gid * 4] = (uchar)round(fmin(fmax(out_r, 0.0f), 1.0f) * 255.0f);
- io_color[gid * 4 + 1] = (uchar)round(fmin(fmax(out_g, 0.0f), 1.0f) * 255.0f);
- io_color[gid * 4 + 2] = (uchar)round(fmin(fmax(out_b, 0.0f), 1.0f) * 255.0f);
- io_color[gid * 4 + 3] = (uchar)255;
- io_symbol[gid] = out_symbol;
+    int gid = get_global_id(0);
+    if (gid >= width * height) return;
+    int x = gid % width;
+    int y = gid / width;
+    float px = (float)x;
+    float py = (float)y;
+    float bg_r = io_color[gid * 4] / 255.0f;
+    float bg_g = io_color[gid * 4 + 1] / 255.0f;
+    float bg_b = io_color[gid * 4 + 2] / 255.0f;
+    float out_r = bg_r;
+    float out_g = bg_g;
+    float out_b = bg_b;
+    int out_symbol = io_symbol[gid];
+    for (int i = 0; i < num_2d_objects; i++) {
+        Gpu2dObject obj = objects_2d[i];
+        if (point_in_polygon(px, py, vertices_2d, obj.vertex_offset, obj.vertex_count, obj.offset_x, obj.offset_y)) {
+            float r = obj.color_r;
+            float g = obj.color_g;
+            float b = obj.color_b;
+            float alpha = obj.color_a;
+            if (obj.tex_id >= 0) {
+                float uv_range_x = fmax(obj.max_x - obj.min_x, 1e-8f);
+                float uv_range_y = fmax(obj.max_y - obj.min_y, 1e-8f);
+                float u = (px - obj.min_x) / uv_range_x;
+                float v = 1.0f - (py - obj.min_y) / uv_range_y;
+                float4 tex_col = sample_2d_texture(tex_data, tex_info, obj.tex_id, u, v);
+                r = tex_col.x * r;
+                g = tex_col.y * g;
+                b = tex_col.z * b;
+                alpha = tex_col.w * alpha;
+            }
+            if (alpha >= 1.0f) {
+                out_r = r;
+                out_g = g;
+                out_b = b;
+                out_symbol = obj.symbol;
+            } else if (alpha > 0.0f) {
+                out_r = bg_r * (1.0f - alpha) + r * alpha;
+                out_g = bg_g * (1.0f - alpha) + g * alpha;
+                out_b = bg_b * (1.0f - alpha) + b * alpha;
+                out_symbol = obj.symbol;
+            }
+            bg_r = out_r;
+            bg_g = out_g;
+            bg_b = out_b;
+        }
+    }
+    io_color[gid * 4] = (uchar)round(fmin(fmax(out_r, 0.0f), 1.0f) * 255.0f);
+    io_color[gid * 4 + 1] = (uchar)round(fmin(fmax(out_g, 0.0f), 1.0f) * 255.0f);
+    io_color[gid * 4 + 2] = (uchar)round(fmin(fmax(out_b, 0.0f), 1.0f) * 255.0f);
+    io_color[gid * 4 + 3] = (uchar)255;
+    io_symbol[gid] = out_symbol;
 }
 "#;
 
@@ -852,11 +852,67 @@ fn split_3d_object_into_triangles(object: &super::Draw_components) -> Vec<super:
             pitch: object.pitch,
             yaw: object.yaw,
             roll: object.roll,
-            special_properties: String::new(),
+            special_properties: object.special_properties.clone(),
             draw_special_name: object.draw_special_name.clone(),
         });
     }
     out
+}
+
+fn parse_special_properties(s: &str) -> (Option<[f32; 3]>, Option<f32>) {
+    let mut rotate_center = None;
+    let mut size = None;
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c == ',' || c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        let mut key = String::new();
+        while let Some(&c) = chars.peek() {
+            if c == '[' {
+                break;
+            }
+            key.push(c);
+            chars.next();
+        }
+        let key = key.trim().to_lowercase();
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            let mut val_str = String::new();
+            let mut bracket_depth = 1;
+            while let Some(&c) = chars.peek() {
+                if c == '[' {
+                    bracket_depth += 1;
+                } else if c == ']' {
+                    bracket_depth -= 1;
+                    if bracket_depth == 0 {
+                        chars.next();
+                        break;
+                    }
+                }
+                val_str.push(c);
+                chars.next();
+            }
+            if key == "rotate_center" {
+                let parts: Vec<&str> = val_str.split(',').collect();
+                if parts.len() == 3 {
+                    if let (Ok(x), Ok(y), Ok(z)) = (
+                        parts[0].trim().parse::<f32>(),
+                        parts[1].trim().parse::<f32>(),
+                        parts[2].trim().parse::<f32>(),
+                    ) {
+                        rotate_center = Some([x, y, z]);
+                    }
+                }
+            } else if key == "size" {
+                if let Ok(v) = val_str.trim().parse::<f32>() {
+                    size = Some(v);
+                }
+            }
+        }
+    }
+    (rotate_center, size)
 }
 
 fn prepare_triangles(inputs: &[super::Draw_components]) -> Vec<PreparedTriangle> {
@@ -866,15 +922,28 @@ fn prepare_triangles(inputs: &[super::Draw_components]) -> Vec<PreparedTriangle>
         if verts.len() < 9 {
             continue;
         }
-        let lv0 = [verts[0], verts[1], verts[2]];
-        let lv1 = [verts[3], verts[4], verts[5]];
-        let lv2 = [verts[6], verts[7], verts[8]];
+        let (rot_center_opt, size_opt) = parse_special_properties(&tri.special_properties);
+        let size_mult = size_opt.unwrap_or(1.0);
+        let rc = rot_center_opt.unwrap_or([0.0, 0.0, 0.0]);
+        
+        let lv0 = [(verts[0] - rc[0]) * size_mult + rc[0], 
+                   (verts[1] - rc[1]) * size_mult + rc[1], 
+                   (verts[2] - rc[2]) * size_mult + rc[2]];
+        let lv1 = [(verts[3] - rc[0]) * size_mult + rc[0], 
+                   (verts[4] - rc[1]) * size_mult + rc[1], 
+                   (verts[5] - rc[2]) * size_mult + rc[2]];
+        let lv2 = [(verts[6] - rc[0]) * size_mult + rc[0], 
+                   (verts[7] - rc[1]) * size_mult + rc[1], 
+                   (verts[8] - rc[2]) * size_mult + rc[2]];
+        
         let rv0 = rotate_vertex_by_orientation(lv0, tri.pitch, tri.yaw, tri.roll);
         let rv1 = rotate_vertex_by_orientation(lv1, tri.pitch, tri.yaw, tri.roll);
         let rv2 = rotate_vertex_by_orientation(lv2, tri.pitch, tri.yaw, tri.roll);
+        
         let v0 = [rv0[0] + tri.draw_x, rv0[1] + tri.draw_y, rv0[2] + tri.draw_z];
         let v1 = [rv1[0] + tri.draw_x, rv1[1] + tri.draw_y, rv1[2] + tri.draw_z];
         let v2 = [rv2[0] + tri.draw_x, rv2[1] + tri.draw_y, rv2[2] + tri.draw_z];
+        
         let color = [
             tri.draw_RGBA_color[0] as f32 / 255.0,
             tri.draw_RGBA_color[1] as f32 / 255.0,
@@ -1272,7 +1341,7 @@ fn build_geometry_buffers(
                 }
             }
         }
-        tri_tex_id.push(tex_id);
+        tri_tex_id.push(tex_id); 
         tri_uv.extend_from_slice(&uv_out);
     }
     let nodes_min_data: Vec<f32> = if flat_nodes.is_empty() {
@@ -1406,7 +1475,7 @@ fn build_geometry_buffers(
         buf_v2,
         buf_col,
         buf_uv,
-        buf_texid,
+        buf_texid, 
         buf_tex_info,
         buf_tex_data,
         num_nodes: flat_nodes.len().max(1) as i32,
@@ -1460,7 +1529,7 @@ fn Build_static_scene() {
 }
 
 pub fn Render_3d_to_screen(
-    _dynamic_triangles: &[super::Draw_components],
+    dynamic_triangles: &[super::Draw_components],
     queue_2d: &[super::Draw_components],
     screen: &mut Vec<Vec<super::Pixel_structure>>,
 ) {
@@ -1641,7 +1710,7 @@ pub fn Render_3d_to_screen(
                             tex_infos.push(img.width() as i32);
                             tex_infos.push(img.height() as i32);
                             tex_infos.push(offset);
-                            tex_infos.push(0);
+                            tex_infos.push(0); 
                             for pixel in img.pixels() {
                                 global_tex_data.extend_from_slice(&[pixel[0], pixel[1], pixel[2], pixel[3]]);
                             }
