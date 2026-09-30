@@ -323,7 +323,7 @@ __kernel void render_scene(
     __global const int* tex_info,
     __global const uchar* tex_data
 ) {
-    int gid = get_global_id(0); 
+    int gid = get_global_id(0);
     if (gid >= width * height) return;
     int x = gid % width;
     int y = gid / width;
@@ -345,7 +345,7 @@ __kernel void render_scene(
         if (!hit.hit) break;
         int t_idx = hit.tri_idx;
         float3 base_rgb = (float3)(tris_color[t_idx * 4], tris_color[t_idx * 4 + 1], tris_color[t_idx * 4 + 2]);
-        float alpha = tris_color[t_idx * 4 + 3]; 
+        float alpha = tris_color[t_idx * 4 + 3];
         int tex_id = tris_tex_id[t_idx];
         if (tex_id >= 0) {
             float uv_w = 1.0f - hit.u - hit.v;
@@ -849,10 +849,7 @@ fn split_3d_object_into_triangles(object: &super::Draw_components) -> Vec<super:
             draw_RGBA_color: object.draw_RGBA_color,
             draw_texture_path: object.draw_texture_path.clone(),
             draw_uvs: tri_uvs,
-            pitch: object.pitch,
-            yaw: object.yaw,
-            roll: object.roll,
-            special_properties: object.special_properties.clone(),
+            properties: object.properties.clone(),
             draw_special_name: object.draw_special_name.clone(),
         });
     }
@@ -922,28 +919,34 @@ fn prepare_triangles(inputs: &[super::Draw_components]) -> Vec<PreparedTriangle>
         if verts.len() < 9 {
             continue;
         }
-        let (rot_center_opt, size_opt) = parse_special_properties(&tri.special_properties);
+        let special_props = tri.properties.get("special_properties").cloned().unwrap_or_default();
+        let (rot_center_opt, size_opt) = parse_special_properties(&special_props);
         let size_mult = size_opt.unwrap_or(1.0);
         let rc = rot_center_opt.unwrap_or([0.0, 0.0, 0.0]);
-        
-        let lv0 = [(verts[0] - rc[0]) * size_mult + rc[0], 
-                   (verts[1] - rc[1]) * size_mult + rc[1], 
-                   (verts[2] - rc[2]) * size_mult + rc[2]];
-        let lv1 = [(verts[3] - rc[0]) * size_mult + rc[0], 
-                   (verts[4] - rc[1]) * size_mult + rc[1], 
-                   (verts[5] - rc[2]) * size_mult + rc[2]];
-        let lv2 = [(verts[6] - rc[0]) * size_mult + rc[0], 
-                   (verts[7] - rc[1]) * size_mult + rc[1], 
-                   (verts[8] - rc[2]) * size_mult + rc[2]];
-        
-        let rv0 = rotate_vertex_by_orientation(lv0, tri.pitch, tri.yaw, tri.roll);
-        let rv1 = rotate_vertex_by_orientation(lv1, tri.pitch, tri.yaw, tri.roll);
-        let rv2 = rotate_vertex_by_orientation(lv2, tri.pitch, tri.yaw, tri.roll);
-        
+        let pitch = tri.properties.get("pitch").and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+        let yaw = tri.properties.get("yaw").and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+        let roll = tri.properties.get("roll").and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+        let lv0 = [
+            (verts[0] - rc[0]) * size_mult + rc[0],
+            (verts[1] - rc[1]) * size_mult + rc[1],
+            (verts[2] - rc[2]) * size_mult + rc[2],
+        ];
+        let lv1 = [
+            (verts[3] - rc[0]) * size_mult + rc[0],
+            (verts[4] - rc[1]) * size_mult + rc[1],
+            (verts[5] - rc[2]) * size_mult + rc[2],
+        ];
+        let lv2 = [
+            (verts[6] - rc[0]) * size_mult + rc[0],
+            (verts[7] - rc[1]) * size_mult + rc[1],
+            (verts[8] - rc[2]) * size_mult + rc[2],
+        ];
+        let rv0 = rotate_vertex_by_orientation(lv0, pitch, yaw, roll);
+        let rv1 = rotate_vertex_by_orientation(lv1, pitch, yaw, roll);
+        let rv2 = rotate_vertex_by_orientation(lv2, pitch, yaw, roll);
         let v0 = [rv0[0] + tri.draw_x, rv0[1] + tri.draw_y, rv0[2] + tri.draw_z];
         let v1 = [rv1[0] + tri.draw_x, rv1[1] + tri.draw_y, rv1[2] + tri.draw_z];
         let v2 = [rv2[0] + tri.draw_x, rv2[1] + tri.draw_y, rv2[2] + tri.draw_z];
-        
         let color = [
             tri.draw_RGBA_color[0] as f32 / 255.0,
             tri.draw_RGBA_color[1] as f32 / 255.0,
@@ -969,6 +972,9 @@ fn prepare_triangles(inputs: &[super::Draw_components]) -> Vec<PreparedTriangle>
     }
     let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, p) in prepared.iter().enumerate() {
+        let pitch_str = p.draw.properties.get("pitch").map(|s| s.as_str()).unwrap_or("0.0");
+        let yaw_str = p.draw.properties.get("yaw").map(|s| s.as_str()).unwrap_or("0.0");
+        let roll_str = p.draw.properties.get("roll").map(|s| s.as_str()).unwrap_or("0.0");
         let ident = if p.draw.draw_special_name.trim().is_empty() {
             format!(
                 "{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -977,9 +983,9 @@ fn prepare_triangles(inputs: &[super::Draw_components]) -> Vec<PreparedTriangle>
                 p.draw.draw_x,
                 p.draw.draw_y,
                 p.draw.draw_z,
-                p.draw.pitch,
-                p.draw.yaw,
-                p.draw.roll,
+                pitch_str,
+                yaw_str,
+                roll_str,
                 p.tex_key
             )
         } else {
@@ -1341,7 +1347,7 @@ fn build_geometry_buffers(
                 }
             }
         }
-        tri_tex_id.push(tex_id); 
+        tri_tex_id.push(tex_id);
         tri_uv.extend_from_slice(&uv_out);
     }
     let nodes_min_data: Vec<f32> = if flat_nodes.is_empty() {
@@ -1475,7 +1481,7 @@ fn build_geometry_buffers(
         buf_v2,
         buf_col,
         buf_uv,
-        buf_texid, 
+        buf_texid,
         buf_tex_info,
         buf_tex_data,
         num_nodes: flat_nodes.len().max(1) as i32,
@@ -1656,6 +1662,9 @@ pub fn Render_3d_to_screen(
                     continue;
                 }
                 let mut local_vertices: Vec<f32> = Vec::with_capacity(object.draw_vertices.len());
+                let pitch = object.properties.get("pitch").and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+                let yaw = object.properties.get("yaw").and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+                let roll = object.properties.get("roll").and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
                 for i in (0..object.draw_vertices.len()).step_by(2) {
                     if i + 1 >= object.draw_vertices.len() {
                         break;
@@ -1666,9 +1675,9 @@ pub fn Render_3d_to_screen(
                             object.draw_vertices[i + 1],
                             0.0,
                         ],
-                        object.pitch,
-                        object.yaw,
-                        object.roll,
+                        pitch,
+                        yaw,
+                        roll,
                     );
                     local_vertices.push(rv[0]);
                     local_vertices.push(rv[1]);
@@ -1710,7 +1719,7 @@ pub fn Render_3d_to_screen(
                             tex_infos.push(img.width() as i32);
                             tex_infos.push(img.height() as i32);
                             tex_infos.push(offset);
-                            tex_infos.push(0); 
+                            tex_infos.push(0);
                             for pixel in img.pixels() {
                                 global_tex_data.extend_from_slice(&[pixel[0], pixel[1], pixel[2], pixel[3]]);
                             }
@@ -1847,7 +1856,7 @@ pub fn Render_image_to_console() -> Result<(), String> {
         for object in all_queue.iter() {
             if object.draw_type == "2d_object".to_string() {
                 let mut obj = object.clone();
-                obj.special_properties = String::new();
+                obj.properties.insert("special_properties".to_string(), String::new());
                 queue_2d.push(obj);
             }
         }
@@ -1857,7 +1866,7 @@ pub fn Render_image_to_console() -> Result<(), String> {
         for object in all_queue.iter() {
             if object.draw_type == "2d_object".to_string() {
                 let mut obj = object.clone();
-                obj.special_properties = String::new();
+                obj.properties.insert("special_properties".to_string(), String::new());
                 queue_2d.push(obj);
             }
         }
