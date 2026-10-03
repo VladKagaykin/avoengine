@@ -107,6 +107,19 @@ fn get_opencl_state() -> Result<&'static Mutex<Option<OpenCLState>>, String> {
     OPENCL_STATE.get().ok_or_else(|| "OpenCL not initialized".to_string())
 }
 
+pub fn get_shared_opencl() -> Option<(Context, Queue)> {
+    let state_mutex = match get_opencl_state() {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    let state_guard = state_mutex.lock().unwrap();
+    if let Some(state) = state_guard.as_ref() {
+        Some((state.context.clone(), state.queue.clone()))
+    } else {
+        None
+    }
+}
+
 fn init_opencl() -> Result<OpenCLState, String> {
     let platforms = Platform::list();
     if platforms.is_empty() {

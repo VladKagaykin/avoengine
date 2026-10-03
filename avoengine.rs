@@ -8,6 +8,7 @@ pub mod window_processing;
 pub mod maps;
 pub mod sound;
 pub mod obj_loader;
+pub mod physics;
 
 pub struct Settings {
     pub window_width: i128,
@@ -106,6 +107,15 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
     camera_roll: 0.0,
     max_dist: 256,
     ambient_light: [128, 128, 128],
+});
+
+#[derive(Clone)]
+pub struct Physics_properties {
+    pub g: f32
+}
+
+pub static Earth: Mutex<Physics_properties> = Mutex::new(Physics_properties {
+    g: 9.8
 });
 
 // #[derive(Clone)]
