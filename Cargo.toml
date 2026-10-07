@@ -14,3 +14,4 @@ rhai = { version = "1.25.1", features = ["sync"] }
 cpal = "0.18.2"
 ocl = "0.19.7"
 rapier3d = "0.21"
+rusttype = "0.9"

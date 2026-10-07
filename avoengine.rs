@@ -9,6 +9,8 @@ pub mod maps;
 pub mod sound;
 pub mod obj_loader;
 pub mod physics;
+pub mod text;
+pub mod gui;
 
 pub struct Settings {
     pub window_width: i128,
