@@ -224,7 +224,8 @@ fn parse_draw_components(line: &str) -> io::Result<Draw_components> {
             props.insert("pitch".to_string(), "0.0".to_string());
             props.insert("yaw".to_string(), "0.0".to_string());
             props.insert("roll".to_string(), "0.0".to_string());
-            props.insert("special_properties".to_string(), String::new());
+            let special_props = parse_string(&args[9])?;
+            props.insert("special_properties".to_string(), special_props);
             Ok(Draw_components {
                 draw_type: parse_string(&args[0])?,
                 draw_x: parse_f32(&args[1])?,
