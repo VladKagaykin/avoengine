@@ -43,7 +43,12 @@ pub fn Init_sound() -> Result<(), Box<dyn Error>> {
         host.default_output_device()
             .expect("No default output device available")
     });
-    let device_name = device.description().map(|d| d.to_string()).unwrap_or_else(|_| "Unknown".to_string());
+
+    let device_name = device
+        .description()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|_| "Unknown".to_string());
+
     println!("Audio device: {}", device_name);
     Ok(())
 }
@@ -60,16 +65,24 @@ pub fn Play_sound(file_path: &str, volume: f32) -> Result<(), Box<dyn Error>> {
     play_stereo_sound_fixed(file_path, volume, volume)
 }
 
-pub fn play_stereo_sound_fixed(file_path: &str, left_vol: f32, right_vol: f32) -> Result<(), Box<dyn Error>> {
+pub fn play_stereo_sound_fixed(
+    file_path: &str,
+    left_vol: f32,
+    right_vol: f32,
+) -> Result<(), Box<dyn Error>> {
     let device = DEVICE.get().ok_or("Sound not initialized.")?;
     let cache = get_cache();
+
     let (sample_rate, file_channels, samples) = {
         let map = cache.lock().unwrap();
         map.get(file_path).ok_or("Sound not loaded")?.clone()
     };
 
     let output_channels = 2usize;
-    let mut output_samples = Vec::with_capacity((samples.len() / file_channels as usize) * output_channels);
+
+    let mut output_samples =
+        Vec::with_capacity((samples.len() / file_channels as usize) * output_channels);
+
     if file_channels == 1 {
         for &s in &samples {
             output_samples.push(s * left_vol);
@@ -105,11 +118,13 @@ pub fn play_stereo_sound_fixed(file_path: &str, left_vol: f32, right_vol: f32) -
             let mut idx = index_arc.lock().unwrap();
             let samples = samples_arc.lock().unwrap();
             let mut write_pos = 0;
+
             while write_pos < data.len() && *idx < samples.len() {
                 data[write_pos] = samples[*idx];
                 *idx += 1;
                 write_pos += 1;
             }
+
             while write_pos < data.len() {
                 data[write_pos] = 0.0;
                 write_pos += 1;
@@ -122,7 +137,9 @@ pub fn play_stereo_sound_fixed(file_path: &str, left_vol: f32, right_vol: f32) -
     stream.play()?;
 
     let handle = thread::spawn(move || {
-        while *index_arc2.lock().unwrap() < total_samples && !stop_flag_for_thread.load(Ordering::Relaxed) {
+        while *index_arc2.lock().unwrap() < total_samples
+            && !stop_flag_for_thread.load(Ordering::Relaxed)
+        {
             thread::sleep(Duration::from_millis(50));
         }
         drop(stream);
@@ -139,35 +156,45 @@ pub fn play_stereo_sound_fixed(file_path: &str, left_vol: f32, right_vol: f32) -
 
 pub fn Stop_all_sounds() -> Result<(), Box<dyn Error>> {
     let mut list = PLAYBACKS.lock().unwrap();
+
     for (flag, _) in list.iter() {
         flag.store(true, Ordering::Relaxed);
     }
+
     for (_, handle) in list.drain(..) {
         let _ = handle.join();
     }
+
     let mut list3d = PLAYBACKS_3D.lock().unwrap();
+
     for (flag, _, _) in list3d.iter() {
         flag.store(true, Ordering::Relaxed);
     }
+
     for (_, handle, _) in list3d.drain(..) {
         let _ = handle.join();
     }
+
     Ok(())
 }
 
 fn read_wav(path: &str) -> Result<(u32, u16, Vec<f32>), Box<dyn Error>> {
     let mut file = File::open(path)?;
+
     let mut riff = [0u8; 4];
     file.read_exact(&mut riff)?;
     if &riff != b"RIFF" {
         return Err("Not a RIFF file".into());
     }
+
     file.seek(SeekFrom::Current(4))?;
+
     let mut wave = [0u8; 4];
     file.read_exact(&mut wave)?;
     if &wave != b"WAVE" {
         return Err("Not a WAVE format".into());
     }
+
     let mut sample_rate = 0u32;
     let mut channels = 0u16;
     let mut data_start: u64 = 0;
@@ -178,6 +205,7 @@ fn read_wav(path: &str) -> Result<(u32, u16, Vec<f32>), Box<dyn Error>> {
         if file.read_exact(&mut chunk_id).is_err() {
             break;
         }
+
         let mut chunk_size = [0u8; 4];
         file.read_exact(&mut chunk_size)?;
         let size = u32::from_le_bytes(chunk_size);
@@ -186,20 +214,24 @@ fn read_wav(path: &str) -> Result<(u32, u16, Vec<f32>), Box<dyn Error>> {
             b"fmt " => {
                 let mut fmt_data = vec![0u8; size as usize];
                 file.read_exact(&mut fmt_data)?;
+
                 if fmt_data.len() < 16 {
                     return Err("fmt chunk too short".into());
                 }
+
                 let audio_format = u16::from_le_bytes([fmt_data[0], fmt_data[1]]);
                 if audio_format != 1 {
                     return Err("Only PCM (format 1) supported".into());
                 }
+
                 channels = u16::from_le_bytes([fmt_data[2], fmt_data[3]]);
                 sample_rate = u32::from_le_bytes([
                     fmt_data[4], fmt_data[5], fmt_data[6], fmt_data[7],
                 ]);
+
                 let bits_per_sample = u16::from_le_bytes([fmt_data[14], fmt_data[15]]);
                 if bits_per_sample != 16 {
-                    return Err("Only 16‑bit PCM supported".into());
+                    return Err("Only 16-bit PCM supported".into());
                 }
             }
             b"data" => {
@@ -218,9 +250,11 @@ fn read_wav(path: &str) -> Result<(u32, u16, Vec<f32>), Box<dyn Error>> {
     }
 
     file.seek(SeekFrom::Start(data_start))?;
+
     let sample_count = data_len as usize / 2;
     let mut buffer = vec![0u8; data_len as usize];
     file.read_exact(&mut buffer)?;
+
     let mut raw_samples = vec![0i16; sample_count];
     for i in 0..sample_count {
         let offset = i * 2;
@@ -257,6 +291,7 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 fn camera_basis(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
     use std::f32::consts::PI;
+
     let p = pitch_deg * PI / 180.0;
     let y = yaw_deg * PI / 180.0;
     let r = roll_deg * PI / 180.0;
@@ -266,12 +301,15 @@ fn camera_basis(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> ([f32; 3], [f32;
     let (cr, sr) = (r.cos(), r.sin());
 
     let mut mat = [[0.0; 3]; 3];
+
     mat[0][0] = cy * cr + sy * sp * sr;
     mat[0][1] = -cy * sr + sy * sp * cr;
     mat[0][2] = sy * cp;
+
     mat[1][0] = cp * sr;
     mat[1][1] = cp * cr;
     mat[1][2] = -sp;
+
     mat[2][0] = -sy * cr + cy * sp * sr;
     mat[2][1] = sy * sr + cy * sp * cr;
     mat[2][2] = cy * cp;
@@ -291,25 +329,34 @@ fn ray_triangle_intersect(
     v2: &[f32; 3],
 ) -> Option<(f32, f32, f32)> {
     let eps = 1e-6;
+
     let edge1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
     let edge2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+
     let h = cross(dir, &edge2);
     let a = dot(&edge1, &h);
+
     if a.abs() < eps {
         return None;
     }
+
     let f = 1.0 / a;
     let s = [origin[0] - v0[0], origin[1] - v0[1], origin[2] - v0[2]];
     let u = f * dot(&s, &h);
+
     if u < 0.0 || u > 1.0 {
         return None;
     }
+
     let q = cross(&s, &edge1);
     let v = f * dot(dir, &q);
+
     if v < 0.0 || u + v > 1.0 {
         return None;
     }
+
     let t = f * dot(&edge2, &q);
+
     if t > eps {
         Some((t, u, v))
     } else {
@@ -320,12 +367,18 @@ fn ray_triangle_intersect(
 fn compute_triangle_aabb(tri: &SoundTriangle) -> ([f32; 3], [f32; 3]) {
     let mut min = [tri.v0[0], tri.v0[1], tri.v0[2]];
     let mut max = [tri.v0[0], tri.v0[1], tri.v0[2]];
+
     for v in [tri.v1, tri.v2] {
         for i in 0..3 {
-            if v[i] < min[i] { min[i] = v[i]; }
-            if v[i] > max[i] { max[i] = v[i]; }
+            if v[i] < min[i] {
+                min[i] = v[i];
+            }
+            if v[i] > max[i] {
+                max[i] = v[i];
+            }
         }
     }
+
     (min, max)
 }
 
@@ -338,6 +391,7 @@ fn ray_intersect_aabb(
 ) -> bool {
     let mut tmin: f32 = 0.0;
     let mut tmax = max_t;
+
     for i in 0..3 {
         if dir[i].abs() < 1e-8 {
             if origin[i] < aabb_min[i] || origin[i] > aabb_max[i] {
@@ -347,14 +401,18 @@ fn ray_intersect_aabb(
             let inv = 1.0 / dir[i];
             let t1 = (aabb_min[i] - origin[i]) * inv;
             let t2 = (aabb_max[i] - origin[i]) * inv;
+
             let (t_near, t_far) = if t1 < t2 { (t1, t2) } else { (t2, t1) };
+
             tmin = tmin.max(t_near);
             tmax = tmax.min(t_far);
+
             if tmin > tmax {
                 return false;
             }
         }
     }
+
     true
 }
 
@@ -365,13 +423,19 @@ fn build_sound_bvh_recursive(
 ) -> SoundBvhNode {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
+
     for &i in indices.iter() {
         let (aabb_min, aabb_max) = compute_triangle_aabb(&triangles[i]);
         for k in 0..3 {
-            if aabb_min[k] < min[k] { min[k] = aabb_min[k]; }
-            if aabb_max[k] > max[k] { max[k] = aabb_max[k]; }
+            if aabb_min[k] < min[k] {
+                min[k] = aabb_min[k];
+            }
+            if aabb_max[k] > max[k] {
+                max[k] = aabb_max[k];
+            }
         }
     }
+
     if indices.len() <= 8 || depth > 20 {
         return SoundBvhNode {
             aabb_min: min,
@@ -381,7 +445,9 @@ fn build_sound_bvh_recursive(
             triangles: indices.to_vec(),
         };
     }
+
     let extent = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+
     let axis = if extent[0] >= extent[1] && extent[0] >= extent[2] {
         0
     } else if extent[1] >= extent[2] {
@@ -389,15 +455,23 @@ fn build_sound_bvh_recursive(
     } else {
         2
     };
+
     indices.sort_by(|&a, &b| {
-        let ca = (compute_triangle_aabb(&triangles[a]).0[axis] + compute_triangle_aabb(&triangles[a]).1[axis]) * 0.5;
-        let cb = (compute_triangle_aabb(&triangles[b]).0[axis] + compute_triangle_aabb(&triangles[b]).1[axis]) * 0.5;
+        let ca = (compute_triangle_aabb(&triangles[a]).0[axis]
+            + compute_triangle_aabb(&triangles[a]).1[axis])
+            * 0.5;
+        let cb = (compute_triangle_aabb(&triangles[b]).0[axis]
+            + compute_triangle_aabb(&triangles[b]).1[axis])
+            * 0.5;
         ca.partial_cmp(&cb).unwrap()
     });
+
     let mid = indices.len() / 2;
     let (left_indices, right_indices) = indices.split_at_mut(mid);
+
     let left = build_sound_bvh_recursive(left_indices, triangles, depth + 1);
     let right = build_sound_bvh_recursive(right_indices, triangles, depth + 1);
+
     SoundBvhNode {
         aabb_min: min,
         aabb_max: max,
@@ -423,6 +497,7 @@ fn collect_sound_candidates(
     if !ray_intersect_aabb(origin, dir, &node.aabb_min, &node.aabb_max, max_t) {
         return;
     }
+
     if node.triangles.is_empty() {
         if let Some(left) = &node.left {
             collect_sound_candidates(origin, dir, max_t, left, triangles, out);
@@ -437,23 +512,61 @@ fn collect_sound_candidates(
     }
 }
 
+fn get_soundproofing(properties: &HashMap<String, String>) -> f32 {
+    if let Some(value) = properties.get("soundproofing") {
+        if let Ok(v) = value.trim().parse::<f32>() {
+            return v;
+        }
+    }
+
+    if let Some(special) = properties.get("special_properties") {
+        for pair in special.split(',') {
+            let pair = pair.trim();
+            if let Some(colon_pos) = pair.find(':') {
+                let key = pair[..colon_pos].trim();
+                let value = pair[colon_pos + 1..].trim();
+
+                if key == "soundproofing" {
+                    if let Ok(v) = value.parse::<f32>() {
+                        return v;
+                    }
+                }
+            }
+        }
+    }
+
+    0.0
+}
+
 fn bake_sound_scene() {
     let scene = super::Static_sound_scene.lock().unwrap();
     let mut triangles = Vec::new();
+
     for obj in scene.iter() {
         let verts = &obj.vertices;
+
         for i in (0..verts.len()).step_by(9) {
             if i + 8 >= verts.len() {
                 break;
             }
-            let v0 = [verts[i] + obj.x, verts[i+1] + obj.y, verts[i+2] + obj.z];
-            let v1 = [verts[i+3] + obj.x, verts[i+4] + obj.y, verts[i+5] + obj.z];
-            let v2 = [verts[i+6] + obj.x, verts[i+7] + obj.y, verts[i+8] + obj.z];
-            let sp = obj.soundproofing as f32 / 255.0;
-            triangles.push(SoundTriangle { v0, v1, v2, soundproofing: sp });
+
+            let v0 = [verts[i] + obj.x, verts[i + 1] + obj.y, verts[i + 2] + obj.z];
+            let v1 = [verts[i + 3] + obj.x, verts[i + 4] + obj.y, verts[i + 5] + obj.z];
+            let v2 = [verts[i + 6] + obj.x, verts[i + 7] + obj.y, verts[i + 8] + obj.z];
+
+            let sp = (get_soundproofing(&obj.properties) / 255.0).clamp(0.0, 1.0);
+
+            triangles.push(SoundTriangle {
+                v0,
+                v1,
+                v2,
+                soundproofing: sp,
+            });
         }
     }
+
     let bvh = build_sound_bvh(&triangles);
+
     *BAKED_SOUND_TRIANGLES.lock().unwrap() = triangles;
     *BAKED_SOUND_BVH.lock().unwrap() = Some(bvh);
     SOUND_BVH_BAKED.store(true, Ordering::Relaxed);
@@ -465,7 +578,13 @@ pub fn ensure_sound_bvh_baked() {
     }
 }
 
-pub fn Play_sound_3d(x: f32, y: f32, z: f32, file_path: &str, volume: f32) -> Result<(), Box<dyn Error>> {
+pub fn Play_sound_3d(
+    x: f32,
+    y: f32,
+    z: f32,
+    file_path: &str,
+    volume: f32,
+) -> Result<(), Box<dyn Error>> {
     ensure_sound_bvh_baked();
 
     let gain_control = Arc::new(Mutex::new((0.0, 0.0)));
@@ -476,37 +595,69 @@ pub fn Play_sound_3d(x: f32, y: f32, z: f32, file_path: &str, volume: f32) -> Re
     let source_pos = Arc::new(Mutex::new([x, y, z]));
     let gain_update = gain_control.clone();
     let stop_update = stop_flag.clone();
+
     let update_handle = thread::spawn(move || {
         while !stop_update.load(Ordering::Relaxed) {
             let (origin, right) = {
                 let cam = super::Camera.lock().unwrap();
-                let (_, right_vec, _) = camera_basis(cam.camera_pitch, cam.camera_yaw, cam.camera_roll);
+                let (_, right_vec, _) =
+                    camera_basis(cam.camera_pitch, cam.camera_yaw, cam.camera_roll);
                 ([cam.camera_x, cam.camera_y, cam.camera_z], right_vec)
             };
+
             let source = *source_pos.lock().unwrap();
 
-            let to_source = [source[0] - origin[0], source[1] - origin[1], source[2] - origin[2]];
-            let dist = (to_source[0]*to_source[0] + to_source[1]*to_source[1] + to_source[2]*to_source[2]).sqrt();
+            let to_source = [
+                source[0] - origin[0],
+                source[1] - origin[1],
+                source[2] - origin[2],
+            ];
 
-            let distance_attenuation = if dist < 1e-6 { 1.0 } else { 1.0 / (1.0 + dist * dist * 0.01) };
+            let dist = (to_source[0] * to_source[0]
+                + to_source[1] * to_source[1]
+                + to_source[2] * to_source[2])
+                .sqrt();
+
+            let distance_attenuation = if dist < 1e-6 {
+                1.0
+            } else {
+                1.0 / (1.0 + dist * dist * 0.01)
+            };
 
             let dir_to_source = normalize(to_source);
             let pan = dot(&dir_to_source, &right).max(-1.0).min(1.0);
+
             let left_gain = (1.0 - pan) * 0.5;
             let right_gain = (1.0 + pan) * 0.5;
 
             let mut occlusion_attenuation = 1.0;
+
             let bvh_opt = BAKED_SOUND_BVH.lock().unwrap();
             if let Some(bvh) = bvh_opt.as_ref() {
                 let triangles = BAKED_SOUND_TRIANGLES.lock().unwrap();
                 let mut candidates = Vec::new();
-                let dir_to_cam = normalize([origin[0] - source[0], origin[1] - source[1], origin[2] - source[2]]);
+
+                let dir_to_cam = normalize([
+                    origin[0] - source[0],
+                    origin[1] - source[1],
+                    origin[2] - source[2],
+                ]);
+
                 collect_sound_candidates(&source, &dir_to_cam, dist, bvh, &triangles, &mut candidates);
+
                 for &idx in &candidates {
                     let tri = &triangles[idx];
-                    if let Some((t, _, _)) = ray_triangle_intersect(&source, &dir_to_cam, &tri.v0, &tri.v1, &tri.v2) {
+
+                    if let Some((t, _, _)) = ray_triangle_intersect(
+                        &source,
+                        &dir_to_cam,
+                        &tri.v0,
+                        &tri.v1,
+                        &tri.v2,
+                    ) {
                         if t > 1e-3 && t < dist {
                             occlusion_attenuation *= 1.0 - tri.soundproofing;
+
                             if occlusion_attenuation < 0.01 {
                                 occlusion_attenuation = 0.0;
                                 break;
@@ -540,13 +691,17 @@ fn play_stereo_sound_dynamic(
 ) -> Result<Arc<cpal::Stream>, Box<dyn Error>> {
     let device = DEVICE.get().ok_or("Sound not initialized.")?;
     let cache = get_cache();
+
     let (sample_rate, file_channels, samples) = {
         let map = cache.lock().unwrap();
         map.get(file_path).ok_or("Sound not loaded")?.clone()
     };
 
     let output_channels = 2usize;
-    let mut output_samples = Vec::with_capacity((samples.len() / file_channels as usize) * output_channels);
+
+    let mut output_samples =
+        Vec::with_capacity((samples.len() / file_channels as usize) * output_channels);
+
     if file_channels == 1 {
         for &s in &samples {
             output_samples.push(s);
@@ -572,27 +727,34 @@ fn play_stereo_sound_dynamic(
     };
 
     let device_clone = device.clone();
+
     let stream = device_clone.build_output_stream(
         config,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
             let mut idx = index_arc2.lock().unwrap();
             let samples = samples_arc.lock().unwrap();
             let (left_gain, right_gain) = *gain_control_clone.lock().unwrap();
+
             let mut write_pos = 0;
+
             while write_pos < data.len() && *idx < samples.len() {
                 let sample = samples[*idx];
+
                 if write_pos % 2 == 0 {
                     data[write_pos] = sample * left_gain;
                 } else {
                     data[write_pos] = sample * right_gain;
                 }
+
                 *idx += 1;
                 write_pos += 1;
             }
+
             while write_pos < data.len() {
                 data[write_pos] = 0.0;
                 write_pos += 1;
             }
+
             if *idx >= total_samples {
                 stop_flag_clone.store(true, Ordering::Relaxed);
             }
@@ -602,5 +764,6 @@ fn play_stereo_sound_dynamic(
     )?;
 
     stream.play()?;
+
     Ok(Arc::new(stream))
 }

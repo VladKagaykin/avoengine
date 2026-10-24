@@ -15,39 +15,47 @@ fn extract_args(s: &str) -> Vec<String> {
     let mut paren_depth = 0;
     let mut in_string = false;
     let mut escape = false;
+
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
+
     while i < chars.len() {
         let ch = chars[i];
+
         if escape {
             current.push(ch);
             escape = false;
             i += 1;
             continue;
         }
+
         if ch == '\\' {
             escape = true;
             current.push(ch);
             i += 1;
             continue;
         }
+
         if ch == '"' && !in_string {
             in_string = true;
             current.push(ch);
             i += 1;
             continue;
         }
+
         if ch == '"' && in_string {
             in_string = false;
             current.push(ch);
             i += 1;
             continue;
         }
+
         if in_string {
             current.push(ch);
             i += 1;
             continue;
         }
+
         if ch == '(' || ch == '[' || ch == '{' {
             paren_depth += 1;
             current.push(ch);
@@ -68,10 +76,12 @@ fn extract_args(s: &str) -> Vec<String> {
             i += 1;
         }
     }
+
     let trimmed = current.trim();
     if !trimmed.is_empty() {
         args.push(trimmed.to_string());
     }
+
     args
 }
 
@@ -80,18 +90,22 @@ fn parse_f32(s: &str) -> io::Result<f32> {
     if s.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty f32"));
     }
+
     s.parse::<f32>()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Invalid f32: {}", e)))
 }
 
 fn parse_char(s: &str) -> io::Result<char> {
     let s = s.trim();
+
     if s.len() >= 3 && s.starts_with('\'') && s.ends_with('\'') {
         let inner = &s[1..s.len() - 1];
         let mut chars = inner.chars();
+
         let first = chars.next();
         let second = chars.next();
         let third = chars.next();
+
         if third.is_none() {
             if let (Some('\\'), Some(esc)) = (first, second) {
                 return match esc {
@@ -108,16 +122,19 @@ fn parse_char(s: &str) -> io::Result<char> {
                 };
             }
         }
+
         if second.is_none() {
             if let Some(ch) = first {
                 return Ok(ch);
             }
         }
+
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Invalid char literal",
         ));
     }
+
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "Invalid char literal format",
@@ -126,10 +143,12 @@ fn parse_char(s: &str) -> io::Result<char> {
 
 fn parse_string(s: &str) -> io::Result<String> {
     let s = s.trim();
+
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         let inner = &s[1..s.len() - 1];
         let mut result = String::new();
         let mut chars = inner.chars();
+
         while let Some(ch) = chars.next() {
             if ch == '\\' {
                 if let Some(next) = chars.next() {
@@ -146,8 +165,10 @@ fn parse_string(s: &str) -> io::Result<String> {
                 result.push(ch);
             }
         }
+
         return Ok(result);
     }
+
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "Invalid string literal",
@@ -156,22 +177,29 @@ fn parse_string(s: &str) -> io::Result<String> {
 
 fn parse_f32_vec(s: &str) -> io::Result<Vec<f32>> {
     let s = s.trim();
+
     if s.starts_with('[') && s.ends_with(']') {
         let inner = &s[1..s.len() - 1];
+
         if inner.trim().is_empty() {
             return Ok(Vec::new());
         }
+
         let parts: Vec<&str> = inner
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
             .collect();
+
         let mut result = Vec::with_capacity(parts.len());
+
         for part in parts {
             result.push(parse_f32(part)?);
         }
+
         return Ok(result);
     }
+
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "Invalid array literal",
@@ -180,52 +208,86 @@ fn parse_f32_vec(s: &str) -> io::Result<Vec<f32>> {
 
 fn parse_u8_array<const N: usize>(s: &str) -> io::Result<[u8; N]> {
     let s = s.trim();
+
     if s.starts_with('[') && s.ends_with(']') {
         let inner = &s[1..s.len() - 1];
+
         let parts: Vec<&str> = inner
             .split(',')
             .map(|x| x.trim())
             .filter(|x| !x.is_empty())
             .collect();
+
         if parts.len() != N {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Expected {} elements, got {}", N, parts.len()),
             ));
         }
+
         let mut result = [0u8; N];
+
         for (i, part) in parts.iter().enumerate() {
             let val = part.parse::<u8>().map_err(|e| {
                 io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u8: {}", e))
             })?;
             result[i] = val;
         }
+
         return Ok(result);
     }
+
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         "Invalid array literal",
     ))
 }
 
+fn parse_property_pairs(s: &str) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+
+    for pair in s.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+
+        if let Some(colon_pos) = pair.find(':') {
+            let key = pair[..colon_pos].trim();
+            let value = pair[colon_pos + 1..].trim();
+
+            if !key.is_empty() {
+                result.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+
+    result
+}
+
 fn parse_draw_components(line: &str) -> io::Result<Draw_components> {
     let line = line.trim();
+
     if !line.starts_with("Draw_components(") || !line.ends_with(')') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Invalid Draw_components format",
         ));
     }
+
     let args_str = &line[16..line.len() - 1];
     let args = extract_args(args_str);
+
     match args.len() {
         11 => {
             let mut props = HashMap::new();
             props.insert("pitch".to_string(), "0.0".to_string());
             props.insert("yaw".to_string(), "0.0".to_string());
             props.insert("roll".to_string(), "0.0".to_string());
+
             let special_props = parse_string(&args[9])?;
             props.insert("special_properties".to_string(), special_props);
+
             Ok(Draw_components {
                 draw_type: parse_string(&args[0])?,
                 draw_x: parse_f32(&args[1])?,
@@ -245,8 +307,10 @@ fn parse_draw_components(line: &str) -> io::Result<Draw_components> {
             props.insert("pitch".to_string(), args[9].to_string());
             props.insert("yaw".to_string(), args[10].to_string());
             props.insert("roll".to_string(), args[11].to_string());
+
             let special_props = parse_string(&args[12])?;
             props.insert("special_properties".to_string(), special_props);
+
             Ok(Draw_components {
                 draw_type: parse_string(&args[0])?,
                 draw_x: parse_f32(&args[1])?,
@@ -270,20 +334,24 @@ fn parse_draw_components(line: &str) -> io::Result<Draw_components> {
 
 fn parse_light_components(line: &str) -> io::Result<Light_components> {
     let line = line.trim();
+
     if !line.starts_with("Light_components(") || !line.ends_with(')') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Invalid Light_components format",
         ));
     }
+
     let args_str = &line[17..line.len() - 1];
     let args = extract_args(args_str);
+
     if args.len() != 9 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Expected 9 arguments, got {}", args.len()),
         ));
     }
+
     Ok(Light_components {
         light_x: parse_f32(&args[0])?,
         light_y: parse_f32(&args[1])?,
@@ -299,48 +367,63 @@ fn parse_light_components(line: &str) -> io::Result<Light_components> {
 
 fn parse_sound_components(line: &str) -> io::Result<Sound_components> {
     let line = line.trim();
+
     if !line.starts_with("Sound_components(") || !line.ends_with(')') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Invalid Sound_components format",
         ));
     }
+
     let args_str = &line[17..line.len() - 1];
     let args = extract_args(args_str);
+
     if args.len() != 6 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Expected 6 arguments, got {}", args.len()),
         ));
     }
+
+    let special_props = if args[4].trim().starts_with('"') {
+        parse_string(&args[4])?
+    } else {
+        format!("soundproofing:{}", args[4].trim())
+    };
+
+    let mut properties = parse_property_pairs(&special_props);
+    properties.insert("special_properties".to_string(), special_props);
+
     Ok(Sound_components {
         x: parse_f32(&args[0])?,
         y: parse_f32(&args[1])?,
         z: parse_f32(&args[2])?,
         vertices: parse_f32_vec(&args[3])?,
-        soundproofing: args[4].trim().parse::<u8>().map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Invalid u8: {}", e))
-        })?,
+        properties,
         special_name: parse_string(&args[5])?,
     })
 }
 
 fn parse_script(line: &str) -> io::Result<Script> {
     let line = line.trim();
+
     if !line.starts_with("Script(") || !line.ends_with(')') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "Invalid Script format",
         ));
     }
+
     let args_str = &line[7..line.len() - 1];
     let args = extract_args(args_str);
+
     if args.len() != 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Expected 2 arguments, got {}", args.len()),
         ));
     }
+
     Ok(Script {
         function: parse_string(&args[0])?,
         content: parse_string(&args[1])?,
@@ -349,6 +432,7 @@ fn parse_script(line: &str) -> io::Result<Script> {
 
 fn format_string(s: &str) -> String {
     let mut escaped = String::new();
+
     for ch in s.chars() {
         match ch {
             '\n' => {
@@ -374,6 +458,7 @@ fn format_string(s: &str) -> String {
             _ => escaped.push(ch),
         }
     }
+
     format!("\"{}\"", escaped)
 }
 
@@ -390,6 +475,7 @@ fn format_u8_array<const N: usize>(arr: &[u8; N]) -> String {
 fn format_char(c: char) -> String {
     let mut s = String::new();
     s.push('\'');
+
     match c {
         '\n' => {
             s.push('\\');
@@ -413,8 +499,26 @@ fn format_char(c: char) -> String {
         }
         _ => s.push(c),
     }
+
     s.push('\'');
     s
+}
+
+fn format_sound_special_properties(properties: &HashMap<String, String>) -> String {
+    if let Some(value) = properties.get("special_properties") {
+        if !value.is_empty() {
+            return value.clone();
+        }
+    }
+
+    let mut pairs: Vec<String> = properties
+        .iter()
+        .filter(|(k, _)| k.as_str() != "special_properties")
+        .map(|(k, v)| format!("{}:{}", k, v))
+        .collect();
+
+    pairs.sort();
+    pairs.join(",")
 }
 
 use rhai::*;
@@ -423,86 +527,112 @@ static SCRIPT_CACHE: OnceLock<Mutex<Option<Vec<AST>>>> = OnceLock::new();
 
 fn build_engine() -> Engine {
     let mut engine = Engine::new();
+
     engine.set_max_expr_depths(128, 128);
     engine.set_max_operations(536_870_912);
     engine.set_max_call_levels(128);
+
     engine.register_fn("to_int", |s: &str| -> i64 {
         s.trim().parse::<i64>().unwrap_or(0)
     });
+
     engine.register_fn("to_float", |s: &str| -> f64 {
         s.trim().parse::<f64>().unwrap_or(0.0)
     });
+
     engine.register_fn("get_map_object", |key: &str| {
         Map_objects.lock().unwrap().get(key).cloned().unwrap_or_default()
     });
+
     engine.register_fn("set_map_object", |key: &str, value: &str| {
         let mut map = Map_objects.lock().unwrap();
         map.insert(key.to_string(), value.to_string());
     });
+
     engine.register_fn("push_draw", |comp: Draw_components| {
         Draw_queue.lock().unwrap().push(comp);
         *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("push_light", |light: Light_components| {
         Light_queue.lock().unwrap().push(light);
     });
+
     engine.register_fn("get_tick", || tick_system::Get_tick());
+
     engine.register_fn("push_static_draw", |comp: Draw_components| {
         Static_scene.lock().unwrap().push(comp);
         *super::Is_scene_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("push_static_light", |light: Light_components| {
         Static_light.lock().unwrap().push(light);
     });
+
     engine.register_fn("clear_dynamic_draw", || {
         Draw_queue.lock().unwrap().clear();
         *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("clear_dynamic_light", || {
         Light_queue.lock().unwrap().clear();
     });
+
     engine.register_fn("clear_static_scene", || {
         Static_scene.lock().unwrap().clear();
         *super::Is_scene_changed.lock().unwrap() = true;
     });
+
     engine.register_fn("clear_static_light", || {
         Static_light.lock().unwrap().clear();
     });
+
     engine.register_fn("get_camera_fov", || {
         super::Camera.lock().unwrap().camera_fov
     });
+
     engine.register_fn("get_camera_x", || {
         super::Camera.lock().unwrap().camera_x
     });
+
     engine.register_fn("get_camera_y", || {
         super::Camera.lock().unwrap().camera_y
     });
+
     engine.register_fn("get_camera_z", || {
         super::Camera.lock().unwrap().camera_z
     });
+
     engine.register_fn("get_camera_pitch", || {
         super::Camera.lock().unwrap().camera_pitch
     });
+
     engine.register_fn("get_camera_yaw", || {
         super::Camera.lock().unwrap().camera_yaw
     });
+
     engine.register_fn("get_camera_roll", || {
         super::Camera.lock().unwrap().camera_roll
     });
+
     engine.register_fn("get_max_dist", || {
         super::Camera.lock().unwrap().max_dist
     });
+
     engine.register_fn("get_ambient_light", || {
         let ambient = super::Camera.lock().unwrap().ambient_light;
         rhai::Array::from_iter(ambient.iter().map(|&v| Dynamic::from_int(v as i64)))
     });
+
     engine.register_fn("set_scene_changed", |val: bool| {
         let mut flag = super::Is_scene_changed.lock().unwrap();
         *flag = val;
     });
+
     engine.register_type::<Draw_components>();
     engine.register_type::<Light_components>();
     engine.register_type::<Sound_components>();
+
     engine.register_fn(
         "Draw_components",
         |draw_type: &str,
@@ -520,21 +650,25 @@ fn build_engine() -> Engine {
                 .into_iter()
                 .map(|v| v.as_float().unwrap_or(0.0) as f32)
                 .collect();
+
             let uvs: Vec<f32> = uv
                 .into_iter()
                 .map(|v| v.as_float().unwrap_or(0.0) as f32)
                 .collect();
+
             let color: [u8; 4] = [
                 color.get(0).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
                 color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
                 color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
                 color.get(3).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
             ];
+
             let mut props = HashMap::new();
             props.insert("pitch".to_string(), "0.0".to_string());
             props.insert("yaw".to_string(), "0.0".to_string());
             props.insert("roll".to_string(), "0.0".to_string());
             props.insert("special_properties".to_string(), _special_props.to_string());
+
             Draw_components {
                 draw_type: draw_type.to_string(),
                 draw_x: x as f32,
@@ -550,6 +684,7 @@ fn build_engine() -> Engine {
             }
         },
     );
+
     engine.register_fn(
         "Draw_components",
         |draw_type: &str,
@@ -570,21 +705,25 @@ fn build_engine() -> Engine {
                 .into_iter()
                 .map(|v| v.as_float().unwrap_or(0.0) as f32)
                 .collect();
+
             let uvs: Vec<f32> = uv
                 .into_iter()
                 .map(|v| v.as_float().unwrap_or(0.0) as f32)
                 .collect();
+
             let color: [u8; 4] = [
                 color.get(0).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
                 color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
                 color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
                 color.get(3).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
             ];
+
             let mut props = HashMap::new();
             props.insert("pitch".to_string(), pitch.to_string());
             props.insert("yaw".to_string(), yaw.to_string());
             props.insert("roll".to_string(), roll.to_string());
             props.insert("special_properties".to_string(), special_props.to_string());
+
             Draw_components {
                 draw_type: draw_type.to_string(),
                 draw_x: x as f32,
@@ -600,6 +739,7 @@ fn build_engine() -> Engine {
             }
         },
     );
+
     engine.register_fn(
         "Light_components",
         |x: f64,
@@ -616,6 +756,7 @@ fn build_engine() -> Engine {
                 color.get(1).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
                 color.get(2).and_then(|v| v.as_int().ok()).unwrap_or(0) as u8,
             ];
+
             Light_components {
                 light_x: x as f32,
                 light_y: y as f32,
@@ -629,6 +770,29 @@ fn build_engine() -> Engine {
             }
         },
     );
+
+    engine.register_fn(
+        "Sound_components",
+        |x: f64, y: f64, z: f64, vertices: Array, special_props: &str, name: &str| {
+            let vertices: Vec<f32> = vertices
+                .into_iter()
+                .map(|v| v.as_float().unwrap_or(0.0) as f32)
+                .collect();
+
+            let mut properties = parse_property_pairs(special_props);
+            properties.insert("special_properties".to_string(), special_props.to_string());
+
+            Sound_components {
+                x: x as f32,
+                y: y as f32,
+                z: z as f32,
+                vertices,
+                properties,
+                special_name: name.to_string(),
+            }
+        },
+    );
+
     engine.register_fn(
         "Sound_components",
         |x: f64, y: f64, z: f64, vertices: Array, soundproofing: i64, name: &str| {
@@ -636,76 +800,99 @@ fn build_engine() -> Engine {
                 .into_iter()
                 .map(|v| v.as_float().unwrap_or(0.0) as f32)
                 .collect();
+
+            let mut properties = HashMap::new();
+            properties.insert("soundproofing".to_string(), soundproofing.to_string());
+
+            let special = format!("soundproofing:{}", soundproofing);
+            properties.insert("special_properties".to_string(), special);
+
             Sound_components {
                 x: x as f32,
                 y: y as f32,
                 z: z as f32,
                 vertices,
-                soundproofing: soundproofing as u8,
+                properties,
                 special_name: name.to_string(),
             }
         },
     );
+
     engine.register_fn("push_sound", |sound: Sound_components| {
         Sound_queue.lock().unwrap().push(sound);
     });
+
     engine.register_fn("push_static_sound", |sound: Sound_components| {
         Static_sound_scene.lock().unwrap().push(sound);
     });
+
     engine.register_fn("clear_dynamic_sound", || {
         Sound_queue.lock().unwrap().clear();
     });
+
     engine.register_fn("clear_static_sound", || {
         Static_sound_scene.lock().unwrap().clear();
     });
+
     engine.register_fn("remove_sound_by_name", |name: &str| -> i64 {
         let mut queue = Sound_queue.lock().unwrap();
         let before = queue.len();
         queue.retain(|s| s.special_name != name);
         (before - queue.len()) as i64
     });
+
     engine.register_fn("remove_static_sound_by_name", |name: &str| -> i64 {
         let mut scene = Static_sound_scene.lock().unwrap();
         let before = scene.len();
         scene.retain(|s| s.special_name != name);
         (before - scene.len()) as i64
     });
+
     engine.register_fn("set_sound_scene_changed", |val: bool| {
         let mut flag = Is_sound_scene_changed.lock().unwrap();
         *flag = val;
     });
+
     engine.register_fn("remove_draw_by_name", |name: &str| -> i64 {
         let mut queue = Draw_queue.lock().unwrap();
         let before = queue.len();
         queue.retain(|comp| comp.draw_special_name != name);
         let removed = (before - queue.len()) as i64;
+
         if removed > 0 {
             *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
         }
+
         removed
     });
+
     engine.register_fn("remove_light_by_name", |name: &str| -> i64 {
         let mut queue = Light_queue.lock().unwrap();
         let before = queue.len();
         queue.retain(|light| light.light_special_name != name);
         (before - queue.len()) as i64
     });
+
     engine.register_fn("remove_static_draw_by_name", |name: &str| -> i64 {
         let mut scene = Static_scene.lock().unwrap();
         let before = scene.len();
         scene.retain(|comp| comp.draw_special_name != name);
         let removed = (before - scene.len()) as i64;
+
         if removed > 0 {
             *super::Is_scene_changed.lock().unwrap() = true;
         }
+
         removed
     });
+
     engine.register_fn("remove_static_light_by_name", |name: &str| -> i64 {
         let mut lights = Static_light.lock().unwrap();
         let before = lights.len();
         lights.retain(|light| light.light_special_name != name);
         (before - lights.len()) as i64
     });
+
     engine.register_fn("draw_exists_by_name", |name: &str| -> bool {
         if Draw_queue
             .lock()
@@ -715,18 +902,22 @@ fn build_engine() -> Engine {
         {
             return true;
         }
+
         Static_scene
             .lock()
             .unwrap()
             .iter()
             .any(|comp| comp.draw_special_name == name)
     });
+
     engine.register_fn(
         "set_draw_rotation_by_name",
         |name: &str, pitch: f64, yaw: f64, roll: f64| -> bool {
             let mut found = false;
+
             {
                 let mut queue = Draw_queue.lock().unwrap();
+
                 for comp in queue.iter_mut() {
                     if comp.draw_special_name == name {
                         comp.properties.insert("pitch".to_string(), pitch.to_string());
@@ -736,12 +927,15 @@ fn build_engine() -> Engine {
                     }
                 }
             }
+
             if found {
                 *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
                 return true;
             }
+
             {
                 let mut scene = Static_scene.lock().unwrap();
+
                 for comp in scene.iter_mut() {
                     if comp.draw_special_name == name {
                         comp.properties.insert("pitch".to_string(), pitch.to_string());
@@ -751,28 +945,35 @@ fn build_engine() -> Engine {
                     }
                 }
             }
+
             if found {
                 *super::Is_scene_changed.lock().unwrap() = true;
             }
+
             found
         },
     );
+
     engine
 }
 
 pub fn Do_all_scripts() {
     let cache = SCRIPT_CACHE.get_or_init(|| Mutex::new(None));
     let mut cache_guard = cache.lock().unwrap();
+
     let asts = if let Some(ref cached_asts) = *cache_guard {
         cached_asts.clone()
     } else {
         let scripts = Map_scripts.lock().unwrap().clone();
+
         if scripts.is_empty() {
             return;
         }
+
         let engine = build_engine();
         let mut compiled = Vec::new();
         let mut has_error = false;
+
         for script in scripts {
             match engine.compile(&script.content) {
                 Ok(ast) => compiled.push(ast),
@@ -782,17 +983,23 @@ pub fn Do_all_scripts() {
                 }
             }
         }
+
         if !has_error {
             *cache_guard = Some(compiled.clone());
         }
+
         compiled
     };
+
     if asts.is_empty() {
         return;
     }
+
     let engine = build_engine();
+
     for ast in asts {
         let mut scope = Scope::new();
+
         if let Err(e) = engine.run_ast_with_scope(&mut scope, &ast) {
             eprintln!("[Script] Execution error: {}", e);
         }
@@ -801,22 +1008,31 @@ pub fn Do_all_scripts() {
 
 pub fn Save_map(path: String) -> io::Result<()> {
     let mut file = File::create(&path)?;
+
     writeln!(file, "// Map_objects")?;
     {
         let objects = Map_objects.lock().unwrap();
+
         for (key, value) in objects.iter() {
             writeln!(file, "{} = {}", format_string(key), format_string(value))?;
         }
     }
+
     writeln!(file)?;
     writeln!(file, "// Static_scene")?;
     {
         let scene = Static_scene.lock().unwrap();
+
         for comp in scene.iter() {
             let pitch = comp.properties.get("pitch").map(|s| s.as_str()).unwrap_or("0.0");
             let yaw = comp.properties.get("yaw").map(|s| s.as_str()).unwrap_or("0.0");
             let roll = comp.properties.get("roll").map(|s| s.as_str()).unwrap_or("0.0");
-            let special_props = comp.properties.get("special_properties").map(|s| s.as_str()).unwrap_or("");
+            let special_props = comp
+                .properties
+                .get("special_properties")
+                .map(|s| s.as_str())
+                .unwrap_or("");
+
             let line = format!(
                 "Draw_components({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
                 format_string(&comp.draw_type),
@@ -834,13 +1050,16 @@ pub fn Save_map(path: String) -> io::Result<()> {
                 format_string(special_props),
                 format_string(&comp.draw_special_name),
             );
+
             writeln!(file, "{}", line)?;
         }
     }
+
     writeln!(file)?;
     writeln!(file, "// Static_light")?;
     {
         let lights = Static_light.lock().unwrap();
+
         for light in lights.iter() {
             let line = format!(
                 "Light_components({}, {}, {}, {}, {}, {}, {}, {}, {})",
@@ -854,39 +1073,49 @@ pub fn Save_map(path: String) -> io::Result<()> {
                 light.light_yaw,
                 format_string(&light.light_special_name),
             );
+
             writeln!(file, "{}", line)?;
         }
     }
+
     writeln!(file)?;
     writeln!(file, "// Static_sound_scene")?;
     {
         let sounds = Static_sound_scene.lock().unwrap();
+
         for sound in sounds.iter() {
+            let special_props = format_sound_special_properties(&sound.properties);
+
             let line = format!(
                 "Sound_components({}, {}, {}, {}, {}, {})",
                 sound.x,
                 sound.y,
                 sound.z,
                 format_f32_vec(&sound.vertices),
-                sound.soundproofing,
+                format_string(&special_props),
                 format_string(&sound.special_name),
             );
+
             writeln!(file, "{}", line)?;
         }
     }
+
     writeln!(file)?;
     writeln!(file, "// Map_scripts")?;
     {
         let scripts = Map_scripts.lock().unwrap();
+
         for script in scripts.iter() {
             let line = format!(
                 "Script({}, {})",
                 format_string(&script.function),
                 format_string(&script.content),
             );
+
             writeln!(file, "{}", line)?;
         }
     }
+
     println!("Successfully saved map to {}", path);
     Ok(())
 }
@@ -894,7 +1123,9 @@ pub fn Save_map(path: String) -> io::Result<()> {
 pub fn Load_map(path: String) -> io::Result<()> {
     let file = File::open(&path)?;
     let reader = BufReader::new(file);
+
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+
     {
         Map_scripts.lock().unwrap().clear();
         Map_objects.lock().unwrap().clear();
@@ -902,19 +1133,24 @@ pub fn Load_map(path: String) -> io::Result<()> {
         Static_scene.lock().unwrap().clear();
         Static_sound_scene.lock().unwrap().clear();
     }
+
     if let Some(cache) = SCRIPT_CACHE.get() {
         *cache.lock().unwrap() = None;
     }
+
     let mut current_section = String::new();
     let mut error_count = 0;
     let mut i = 0;
+
     while i < lines.len() {
         let line = lines[i].clone();
         let trimmed = line.trim();
+
         if trimmed.is_empty() {
             i += 1;
             continue;
         }
+
         if trimmed.starts_with("// Map_objects") {
             current_section = "objects".to_string();
             i += 1;
@@ -936,11 +1172,13 @@ pub fn Load_map(path: String) -> io::Result<()> {
             i += 1;
             continue;
         }
+
         match current_section.as_str() {
             "objects" => {
                 if let Some(eq_pos) = trimmed.find('=') {
                     let key = trimmed[..eq_pos].trim();
                     let value = trimmed[eq_pos + 1..].trim();
+
                     if !key.is_empty() && !value.is_empty() {
                         match (parse_string(key), parse_string(value)) {
                             (Ok(k), Ok(v)) => {
@@ -953,6 +1191,7 @@ pub fn Load_map(path: String) -> io::Result<()> {
                         }
                     }
                 }
+
                 i += 1;
             }
             "scene" => {
@@ -967,6 +1206,7 @@ pub fn Load_map(path: String) -> io::Result<()> {
                         error_count += 1;
                     }
                 }
+
                 i += 1;
             }
             "lights" => {
@@ -981,6 +1221,7 @@ pub fn Load_map(path: String) -> io::Result<()> {
                         error_count += 1;
                     }
                 }
+
                 i += 1;
             }
             "sound_scene" => {
@@ -995,60 +1236,76 @@ pub fn Load_map(path: String) -> io::Result<()> {
                         error_count += 1;
                     }
                 }
+
                 i += 1;
             }
             "scripts" => {
                 let mut script_block = String::new();
+
                 while i < lines.len() {
                     let next_line = lines[i].clone();
                     let next_trimmed = next_line.trim();
-                    if next_trimmed.starts_with("// Map") {
+
+                    if next_trimmed.starts_with("// Map_") {
                         break;
                     }
+
                     if next_trimmed.is_empty() {
                         i += 1;
                         continue;
                     }
+
                     script_block.push_str(&next_line);
                     script_block.push('\n');
                     i += 1;
                 }
+
                 let mut pos = 0;
+
                 while let Some(start) = script_block[pos..].find("Script(") {
                     let start = pos + start;
                     let mut depth = 0;
                     let mut in_string = false;
                     let mut escape = false;
                     let mut end = start;
+
                     for (idx, ch) in script_block[start..].char_indices() {
                         let global_idx = start + idx;
+
                         if escape {
                             escape = false;
                             continue;
                         }
+
                         if ch == '\\' {
                             escape = true;
                             continue;
                         }
+
                         if ch == '"' {
                             in_string = !in_string;
                             continue;
                         }
+
                         if in_string {
                             continue;
                         }
+
                         if ch == '(' {
                             depth += 1;
                         } else if ch == ')' {
                             depth -= 1;
+
                             if depth == 0 {
                                 end = global_idx + 1;
                                 break;
                             }
                         }
                     }
+
                     if end > start {
                         let script_str = &script_block[start..end];
+
                         match parse_script(script_str) {
                             Ok(script) => Map_scripts.lock().unwrap().push(script),
                             Err(e) => {
@@ -1056,6 +1313,7 @@ pub fn Load_map(path: String) -> io::Result<()> {
                                 error_count += 1;
                             }
                         }
+
                         pos = end;
                     } else {
                         break;
@@ -1067,6 +1325,7 @@ pub fn Load_map(path: String) -> io::Result<()> {
             }
         }
     }
+
     if error_count > 0 {
         eprintln!(
             "[LoadMap] Loaded with {} errors. Some objects may be missing.",
@@ -1075,12 +1334,16 @@ pub fn Load_map(path: String) -> io::Result<()> {
     } else {
         println!("[LoadMap] Map loaded successfully.");
     }
+
     let mut examination = super::Is_scene_changed.lock().unwrap();
     *examination = true;
     drop(examination);
+
     let mut sound_examination = Is_sound_scene_changed.lock().unwrap();
     *sound_examination = true;
     drop(sound_examination);
+
     *crate::console_rc_render::Dynamic_changed.lock().unwrap() = true;
+
     Ok(())
 }

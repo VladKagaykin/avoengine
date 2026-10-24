@@ -2,7 +2,7 @@ use rapier3d::prelude::*;
 use rapier3d::na::UnitQuaternion;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use crate::{Draw_components, Draw_queue, Static_scene, Engine_settings};
+use crate::{Draw_queue, Static_sound_scene, Engine_settings};
 
 struct PhysicsWorld {
     gravity: Vector<Real>,
@@ -27,12 +27,15 @@ pub static Physics_initialized: Mutex<bool> = Mutex::new(false);
 
 fn parse_physics_props(props: &HashMap<String, String>) -> (bool, bool, f32, f32, f32, Vec<[f32; 7]>) {
     let mut merged: HashMap<String, String> = props.clone();
+
     if let Some(sp) = props.get("special_properties") {
         for pair in sp.split(',') {
             let pair = pair.trim();
+
             if let Some(colon_pos) = pair.find(':') {
                 let key = pair[..colon_pos].trim().to_string();
                 let val = pair[colon_pos + 1..].trim().to_string();
+
                 if !key.is_empty() {
                     merged.insert(key, val);
                 }
@@ -64,16 +67,21 @@ fn parse_physics_props(props: &HashMap<String, String>) -> (bool, bool, f32, f32
 
     let mut forces: Vec<[f32; 7]> = Vec::new();
     let mut idx = 0;
+
     loop {
         let key = if idx == 0 { "force".to_string() } else { format!("force{}", idx) };
+
         if let Some(val) = merged.get(&key) {
             let parts: Vec<&str> = val.split(',').collect();
+
             if parts.len() == 7 {
                 let f: Vec<f32> = parts.iter().filter_map(|p| p.trim().parse().ok()).collect();
+
                 if f.len() == 7 {
                     forces.push([f[0], f[1], f[2], f[3], f[4], f[5], f[6]]);
                 }
             }
+
             idx += 1;
         } else {
             break;
@@ -84,7 +92,8 @@ fn parse_physics_props(props: &HashMap<String, String>) -> (bool, bool, f32, f32
 }
 
 fn vertices_to_points(vertices: &[f32]) -> Vec<Point<Real>> {
-    vertices.chunks(3)
+    vertices
+        .chunks(3)
         .filter(|c| c.len() == 3)
         .map(|c| point![c[0], c[1], c[2]])
         .collect()
@@ -92,6 +101,7 @@ fn vertices_to_points(vertices: &[f32]) -> Vec<Point<Real>> {
 
 fn build_collider(vertices: &[f32], is_static: bool) -> Option<ColliderBuilder> {
     let points = vertices_to_points(vertices);
+
     if points.is_empty() {
         return None;
     }
@@ -100,6 +110,7 @@ fn build_collider(vertices: &[f32], is_static: bool) -> Option<ColliderBuilder> 
         let indices: Vec<[u32; 3]> = (0..points.len() as u32 / 3)
             .map(|i| [i * 3, i * 3 + 1, i * 3 + 2])
             .collect();
+
         Some(ColliderBuilder::trimesh(points, indices))
     } else {
         ColliderBuilder::convex_hull(&points)
@@ -111,55 +122,63 @@ fn create_static_bodies(world: &mut PhysicsWorld) {
     if world.static_baked {
         return;
     }
+
     world.static_baked = true;
 
-    let static_scene = Static_scene.lock().unwrap();
-    for (i, obj) in static_scene.iter().enumerate() {
-        if obj.draw_type != "3d_object" {
-            continue;
-        }
+    let static_sound_scene = Static_sound_scene.lock().unwrap();
 
+    for (i, obj) in static_sound_scene.iter().enumerate() {
         let (_, _impact, friction, bounce, _mass, _) = parse_physics_props(&obj.properties);
-        
-        let explicit_no_impact = obj.properties.get("special_properties")
+
+        let explicit_no_impact = obj
+            .properties
+            .get("special_properties")
             .map(|s| s.contains("impact:0"))
-            .unwrap_or(false);
-            
+            .unwrap_or(false)
+            || obj
+                .properties
+                .get("impact")
+                .map(|s| s == "0")
+                .unwrap_or(false);
+
         if explicit_no_impact {
             continue;
         }
 
-        let name = if obj.draw_special_name.is_empty() {
-            format!("static_{}", i)
+        let name = if obj.special_name.is_empty() {
+            format!("static_sound_{}", i)
         } else {
-            obj.draw_special_name.clone()
+            obj.special_name.clone()
         };
 
         if world.static_handles.contains_key(&name) {
             continue;
         }
 
-        let body = RigidBodyBuilder::fixed()
-            .translation(vector![obj.draw_x, obj.draw_y, obj.draw_z])
-            .build();
-        let handle = world.bodies.insert(body);
+        if let Some(collider_builder) = build_collider(&obj.vertices, true) {
+            let body = RigidBodyBuilder::fixed()
+                .translation(vector![obj.x, obj.y, obj.z])
+                .build();
 
-        if let Some(collider_builder) = build_collider(&obj.draw_vertices, true) {
+            let handle = world.bodies.insert(body);
+
             let collider = collider_builder
                 .friction(friction)
                 .restitution(bounce)
                 .build();
-            world.colliders.insert_with_parent(collider, handle, &mut world.bodies);
-        }
 
-        world.static_handles.insert(name, handle);
+            world.colliders.insert_with_parent(collider, handle, &mut world.bodies);
+            world.static_handles.insert(name, handle);
+        }
     }
 }
 
 fn sync_dynamic_bodies(world: &mut PhysicsWorld) {
     let draw_queue = Draw_queue.lock().unwrap();
+
     for (i, obj) in draw_queue.iter().enumerate() {
         let (has_gravity, impact, friction, bounce, mass, forces) = parse_physics_props(&obj.properties);
+
         if !impact {
             continue;
         }
@@ -195,6 +214,7 @@ fn sync_dynamic_bodies(world: &mut PhysicsWorld) {
             .gravity_scale(gravity_scale)
             .ccd_enabled(true)
             .build();
+
         let handle = world.bodies.insert(body);
 
         if let Some(collider_builder) = build_collider(&obj.draw_vertices, false) {
@@ -203,6 +223,7 @@ fn sync_dynamic_bodies(world: &mut PhysicsWorld) {
                 .restitution(bounce)
                 .mass(mass)
                 .build();
+
             world.colliders.insert_with_parent(collider, handle, &mut world.bodies);
         }
 
@@ -224,14 +245,16 @@ fn apply_forces(world: &mut PhysicsWorld) {
 
             for force in forces {
                 let point_local = vector![force[0], force[1], force[2]];
+
                 let angle_x = force[3].to_radians();
                 let angle_y = force[4].to_radians();
                 let angle_z = force[5].to_radians();
+
                 let strength = force[6];
 
                 let rotation = Rotation::from_euler_angles(angle_x, angle_y, angle_z);
                 let impulse = rotation * vector![strength, 0.0, 0.0];
-                
+
                 let world_point = point![
                     body_pos.x + point_local.x,
                     body_pos.y + point_local.y,
@@ -246,9 +269,10 @@ fn apply_forces(world: &mut PhysicsWorld) {
 
 fn read_positions_back(world: &PhysicsWorld) {
     let mut draw_queue = Draw_queue.lock().unwrap();
-    for obj in draw_queue.iter_mut() {
+
+    for (i, obj) in draw_queue.iter_mut().enumerate() {
         let name = if obj.draw_special_name.is_empty() {
-            String::new()
+            format!("body_{}", i)
         } else {
             obj.draw_special_name.clone()
         };
@@ -256,11 +280,13 @@ fn read_positions_back(world: &PhysicsWorld) {
         if let Some(&handle) = world.dynamic_handles.get(&name) {
             let body = &world.bodies[handle];
             let pos = body.translation();
+
             obj.draw_x = pos.x;
             obj.draw_y = pos.y;
             obj.draw_z = pos.z;
 
             let (roll, pitch, yaw) = body.rotation().euler_angles();
+
             obj.properties.insert("pitch".to_string(), pitch.to_degrees().to_string());
             obj.properties.insert("yaw".to_string(), yaw.to_degrees().to_string());
             obj.properties.insert("roll".to_string(), roll.to_degrees().to_string());
@@ -270,6 +296,7 @@ fn read_positions_back(world: &PhysicsWorld) {
 
 pub fn init_physics() {
     let mut initialized = Physics_initialized.lock().unwrap();
+
     if *initialized {
         return;
     }
@@ -301,12 +328,14 @@ pub fn init_physics() {
 
     *Physics_world.lock().unwrap() = Some(world);
     *initialized = true;
+
     println!("[Physics] Rapier physics engine initialized.");
 }
 
 pub fn physics_step() {
     {
         let initialized = Physics_initialized.lock().unwrap();
+
         if !*initialized {
             drop(initialized);
             init_physics();
@@ -314,6 +343,7 @@ pub fn physics_step() {
     }
 
     let mut world_lock = Physics_world.lock().unwrap();
+
     let world = match world_lock.as_mut() {
         Some(w) => w,
         None => return,
@@ -384,36 +414,57 @@ pub fn set_body_angular_velocity(id: &str, wx: f32, wy: f32, wz: f32) {
 
 pub fn get_body_position(id: &str) -> Option<(f32, f32, f32)> {
     let w = Physics_world.lock().unwrap();
+
     if let Some(world) = w.as_ref() {
         let handle = world.dynamic_handles.get(id)
             .or_else(|| world.static_handles.get(id));
+
         if let Some(&h) = handle {
             let pos = world.bodies[h].translation();
             return Some((pos.x, pos.y, pos.z));
         }
     }
+
     None
 }
 
 pub fn get_body_rotation(id: &str) -> Option<(f32, f32, f32)> {
     let w = Physics_world.lock().unwrap();
+
     if let Some(world) = w.as_ref() {
         if let Some(&handle) = world.dynamic_handles.get(id) {
             let (roll, pitch, yaw) = world.bodies[handle].rotation().euler_angles();
             return Some((pitch.to_degrees(), yaw.to_degrees(), roll.to_degrees()));
         }
     }
+
     None
 }
 
 pub fn remove_body(id: &str) {
     if let Some(w) = Physics_world.lock().unwrap().as_mut() {
         if let Some(handle) = w.dynamic_handles.remove(id) {
-            w.bodies.remove(handle, &mut w.island_manager, &mut w.colliders, &mut w.impulse_joints, &mut w.multibody_joints, true);
+            w.bodies.remove(
+                handle,
+                &mut w.island_manager,
+                &mut w.colliders,
+                &mut w.impulse_joints,
+                &mut w.multibody_joints,
+                true,
+            );
         }
+
         if let Some(handle) = w.static_handles.remove(id) {
-            w.bodies.remove(handle, &mut w.island_manager, &mut w.colliders, &mut w.impulse_joints, &mut w.multibody_joints, true);
+            w.bodies.remove(
+                handle,
+                &mut w.island_manager,
+                &mut w.colliders,
+                &mut w.impulse_joints,
+                &mut w.multibody_joints,
+                true,
+            );
         }
+
         w.dynamic_forces.remove(id);
     }
 }

@@ -120,24 +120,14 @@ pub static Earth: Mutex<Physics_properties> = Mutex::new(Physics_properties {
     g: 9.8
 });
 
-// #[derive(Clone)]
-// pub struct Physics_components{
-//     pub x:f32,
-//     pub y:f32,
-//     pub z:f32,
-//     pub vertices:Vec<f32>,
-//     pub soundproofing: u8,
-//     pub center_mass:[f32;3], //x,y,z
-//     pub special_name: String
-// }
-
 #[derive(Clone)]
 pub struct Sound_components {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub vertices: Vec<f32>,
-    pub soundproofing: u8,
+    // pub soundproofing: u8,
+    pub properties: HashMap<String, String>,
     pub special_name: String,
 }
 
