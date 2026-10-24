@@ -1,17 +1,6 @@
 use std::sync::{Mutex, LazyLock};
 use std::collections::HashMap;
 
-pub mod console_rc_render;
-pub mod tick_system;
-pub mod console_input;
-pub mod window_processing;
-pub mod maps;
-pub mod sound;
-pub mod obj_loader;
-pub mod physics;
-pub mod text;
-pub mod gui;
-
 pub struct Settings {
     pub window_width: i128,
     pub window_height: i128,
