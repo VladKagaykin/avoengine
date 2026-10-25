@@ -1,20 +1,26 @@
 use std::sync::{Mutex, LazyLock};
 use std::collections::HashMap;
 
+pub mod window;
+
 // структура настроек движка
 pub struct Settings {
     pub window_width: i128,
     pub window_height: i128,
     pub tick_speed: i128, // милисекунды
-    pub cores_multiply: u8 // потом как-нибудь автоматизировать данный ужас
+    pub cores_multiply: u8, // потом как-нибудь автоматизировать данный ужас
+    pub window_name: String
 }
 
-// настройки движка по умолчанию
-pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings {
-    window_width: 640,
-    window_height: 480,
-    tick_speed: 50,
-    cores_multiply: 2,
+// настройки движка по умолчанию(lazylock для функции to_string)
+pub static Engine_settings: LazyLock<Mutex<Settings>> = LazyLock::new(|| {
+    Mutex::new(Settings {
+        window_width: 640,
+        window_height: 480,
+        tick_speed: 50,
+        cores_multiply: 2,
+        window_name: "avoengine".to_string(),
+    })
 });
 
 // структура 3д компонентов, всё жизненно необходимое в структуре, остальное в свойствах
@@ -58,7 +64,7 @@ pub struct Pixel_structure {
 }
 //пустой пиксель, которым заполняется экран
 pub static Empty_pixel: Mutex<Pixel_structure> = Mutex::new(Pixel_structure {
-    color: [0, 0, 0],
+    color: [0, 0, 255] // синий для проверки
 });
 // матрица того, что видно на экране
 pub static Screen: Mutex<Vec<Vec<Pixel_structure>>> = Mutex::new(Vec::new());
@@ -123,7 +129,7 @@ pub fn Setup_window_screen(width: &i128, height: &i128) {
     //присвоение основному экрану временного
     let mut screen = Screen.lock().unwrap();
     *screen = new_screen;
-    println!("[Engine]Created window {} x {} pixels", *width as usize, *height as usize);
+    println!("[Engine]Created screen {} x {} pixels", *width as usize, *height as usize);
 }
 //функция основной настройки движка
 pub fn Engine_setup() {
@@ -131,7 +137,7 @@ pub fn Engine_setup() {
     let temp_settings = Engine_settings.lock().unwrap();
 
     Setup_window_screen(&temp_settings.window_width, &temp_settings.window_height);
-    
     drop(temp_settings);
+    window::Create_window();
     println!("[Engine]Engine setup is complete");
 }

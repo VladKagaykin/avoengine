@@ -7,4 +7,4 @@ edition = "2024"
 path = "avoengine.rs"
 
 [dependencies]
-winit = "0.30.13"
+minifb = "0.27"
