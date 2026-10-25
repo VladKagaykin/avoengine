@@ -2,6 +2,7 @@ use std::sync::{Mutex, LazyLock};
 use std::collections::HashMap;
 
 pub mod window;
+pub mod render;
 
 // структура настроек движка
 pub struct Settings {
@@ -64,7 +65,7 @@ pub struct Pixel_structure {
 }
 //пустой пиксель, которым заполняется экран
 pub static Empty_pixel: Mutex<Pixel_structure> = Mutex::new(Pixel_structure {
-    color: [0, 0, 255] // синий для проверки
+    color: [0, 0, 128] // синий для проверки
 });
 // матрица того, что видно на экране
 pub static Screen: Mutex<Vec<Vec<Pixel_structure>>> = Mutex::new(Vec::new());
@@ -83,7 +84,7 @@ pub struct Camera_structure {
 }
 // стандартные настройки камеры
 pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
-    camera_fov: 58,
+    camera_fov: 90,
     camera_x: 0.0,
     camera_y: 1.0,
     camera_z: 0.0,
@@ -134,10 +135,14 @@ pub fn Setup_window_screen(width: &i128, height: &i128) {
 //функция основной настройки движка
 pub fn Engine_setup() {
     println!("[Engine]Start engine setup");
-    let temp_settings = Engine_settings.lock().unwrap();
-
-    Setup_window_screen(&temp_settings.window_width, &temp_settings.window_height);
-    drop(temp_settings);
+    let (w, h, cm) = {
+        let s = Engine_settings.lock().unwrap();
+        (s.window_width, s.window_height, s.cores_multiply)
+    };
+    Setup_window_screen(&w, &h);
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let num_threads = cores.saturating_mul(cm as usize).saturating_sub(1).max(1);
+    render::init_render(w as usize, h as usize, num_threads);
     window::Create_window();
     println!("[Engine]Engine setup is complete");
 }

@@ -21,7 +21,7 @@ pub fn Create_window() {
     .expect("failed to create window");
     drop(s);
     WIN.with(|w| *w.borrow_mut() = Some(win));
-    println!("[Window]Wndow created")
+    println!("[Window]Window created")
 }
 
 pub fn Convert_frame() -> (Vec<u32>, usize, usize) {
@@ -29,30 +29,34 @@ pub fn Convert_frame() -> (Vec<u32>, usize, usize) {
     let h = screen.len();
     let w = screen.first().map_or(0, |r| r.len());
     let mut buf = vec![0u32; w * h];
-    for (y, row) in screen.iter().enumerate() {
-        for (x, px) in row.iter().enumerate() {
-            let [r, g, b] = px.color;
-            buf[y * w + x] = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+
+    let num_threads = super::render::RENDER_THREADS.load(std::sync::atomic::Ordering::Relaxed).min(h).max(1);
+    let chunk_size = (h + num_threads - 1) / num_threads;
+    let buf_slice: &mut [u32] = &mut buf[..];
+
+    std::thread::scope(|s| {
+        let mut row_start = 0usize;
+        for (src, dst) in screen.chunks(chunk_size).zip(buf_slice.chunks_mut(chunk_size * w)) {
+            let cur_start = row_start;
+            row_start += src.len();
+            let w_loc = w;
+            s.spawn(move || {
+                for (y_rel, row) in src.iter().enumerate() {
+                    let base = y_rel * w_loc;
+                    for (x, px) in row.iter().enumerate() {
+                        let [r, g, b] = px.color;
+                        dst[base + x] = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+                    }
+                }
+                let _ = cur_start;
+            });
         }
-    }
+    });
+
     (buf, w, h)
 }
 
 pub fn Update_frame() {
-    let tick_ms = {
-        let s = Engine_settings.lock().unwrap();
-        s.tick_speed as u64
-    };
-    LAST_FRAME.with(|lf| {
-        let mut last = lf.borrow_mut();
-        let elapsed = last.elapsed();
-        let target = Duration::from_millis(tick_ms);
-        if elapsed < target {
-            std::thread::sleep(target - elapsed);
-        }
-        *last = Instant::now();
-    });
-
     let (buf, w, h) = Convert_frame();
 
     WIN.with(|w_| {
