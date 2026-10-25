@@ -1,13 +1,15 @@
 use std::sync::{Mutex, LazyLock};
 use std::collections::HashMap;
 
+// структура настроек движка
 pub struct Settings {
     pub window_width: i128,
     pub window_height: i128,
     pub tick_speed: i128, // милисекунды
-    pub cores_multiply: u8,
+    pub cores_multiply: u8 // потом как-нибудь автоматизировать данный ужас
 }
 
+// настройки движка по умолчанию
 pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings {
     window_width: 640,
     window_height: 480,
@@ -15,66 +17,52 @@ pub static Engine_settings: Mutex<Settings> = Mutex::new(Settings {
     cores_multiply: 2,
 });
 
+// структура 3д компонентов, всё жизненно необходимое в структуре, остальное в свойствах
 #[derive(Clone)]
 pub struct Draw_components {
-    pub draw_type: String,
-    pub draw_x: f32,
-    pub draw_y: f32,
-    pub draw_z: f32,
-    pub draw_symbol: char,
-    pub draw_vertices: Vec<f32>,
-    pub draw_RGBA_color: [u8; 4],
-    pub draw_texture_path: String,
-    pub draw_uvs: Vec<f32>,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub vertices: Vec<f32>,
+    pub RGBA_color: [u8; 4],
     pub properties: HashMap<String, String>,
-    pub draw_special_name: String,
+    pub special_name: String,
 }
 
-pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
+// пока что не буу делать динамическую очередь, сначала надо, чтобы со статикой всё работало нормально
+// pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
+// незапечённая сцена(без флага, запекать будет пользователь)
 pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
-pub static Is_scene_changed: Mutex<bool> = Mutex::new(false);
 
-#[derive(Clone)]
-pub struct Light_components {
-    pub light_x: f32,
-    pub light_y: f32,
-    pub light_z: f32,
-    pub light_RGB_color: [u8; 3],
-    pub light_distance: f32,
-    pub light_cone_angle: f32,
-    pub light_pitch: f32,
-    pub light_yaw: f32,
-    pub light_special_name: String,
-}
+// сначала разобраться с статикой, потом динамику(в том числе и физику), потом свет 
+// #[derive(Clone)]
+// pub struct Light_components {
+//     pub light_x: f32,
+//     pub light_y: f32,
+//     pub light_z: f32,
+//     pub light_RGB_color: [u8; 3],
+//     pub light_distance: f32,
+//     pub light_cone_angle: f32,
+//     pub light_pitch: f32,
+//     pub light_yaw: f32,
+//     pub light_special_name: String,
+// }
 
-pub static Light_queue: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
-pub static Static_light: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
+// pub static Light_queue: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
+// pub static Static_light: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
 
-#[derive(Clone)]
-pub struct Script {
-    pub function: String,
-    pub content: String,
-}
-
-pub static Map_scripts: Mutex<Vec<Script>> = Mutex::new(Vec::new());
-
-pub static Map_objects: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| {
-    Mutex::new(HashMap::new())
-});
-
+//структура пискеля, выводимого на экран
 #[derive(Clone)]
 pub struct Pixel_structure {
-    pub pixel_symbol: char,
-    pub pixel_RGBA_color: [u8; 4],
+    pub color: [u8; 3],
 }
-
+//пустой пиксель, которым заполняется экран
 pub static Empty_pixel: Mutex<Pixel_structure> = Mutex::new(Pixel_structure {
-    pixel_symbol: ' ',
-    pixel_RGBA_color: [0, 0, 0, 0],
+    color: [0, 0, 0],
 });
-
+// матрица того, что видно на экране
 pub static Screen: Mutex<Vec<Vec<Pixel_structure>>> = Mutex::new(Vec::new());
-
+// структура камеры: здесь только жизненно необходимые вещи, остальное уже проблема пользователя(по крайней мере я так думаю на момент написания комментария)
 #[derive(Clone)]
 pub struct Camera_structure {
     pub camera_fov: u8,
@@ -87,7 +75,7 @@ pub struct Camera_structure {
     pub max_dist: u128,
     pub ambient_light: [u8; 3],
 }
-
+// стандартные настройки камеры
 pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
     camera_fov: 58,
     camera_x: 0.0,
@@ -99,42 +87,51 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
     max_dist: 256,
     ambient_light: [128, 128, 128],
 });
-
+// параметры физики(в том числе и визуальной)
 #[derive(Clone)]
 pub struct Physics_properties {
-    pub g: f32
+    pub g: f32,
+    pub atmosphere_density: f32,
+    pub atmosphere_color: [u8;3]
 }
-
+//стандартная физика
 pub static Earth: Mutex<Physics_properties> = Mutex::new(Physics_properties {
-    g: 9.8
+    g: 9.8,
+    atmosphere_density: 0.1,
+    atmosphere_color: [255,255,255]
 });
-
+// структура физической карты(хитбоксы) то же самое, что и у графических элементов, но без графики
 #[derive(Clone)]
-pub struct Sound_components {
+pub struct Physics_components {
     pub x: f32,
     pub y: f32,
     pub z: f32,
     pub vertices: Vec<f32>,
-    // pub soundproofing: u8,
     pub properties: HashMap<String, String>,
     pub special_name: String,
 }
-
-pub static Sound_queue: Mutex<Vec<Sound_components>> = Mutex::new(Vec::new());
-pub static Static_sound_scene: Mutex<Vec<Sound_components>> = Mutex::new(Vec::new());
-pub static Is_sound_scene_changed: Mutex<bool> = Mutex::new(false);
-
-pub fn Setup_window(width: &i128, height: &i128) {
+//по прежнему как и с графикой
+// pub static Sound_queue: Mutex<Vec<Sound_components>> = Mutex::new(Vec::new());
+pub static Physics_scene: Mutex<Vec<Physics_components>> = Mutex::new(Vec::new());
+//создание пустого экрана
+pub fn Setup_window_screen(width: &i128, height: &i128) {
+    //создание времменного экрана нужного размера и сразу заполнение пустыми пикселями
     let new_screen = vec![
         vec![Empty_pixel.lock().unwrap().clone(); *width as usize];
         *height as usize
     ];
+    //присвоение основному экрану временного
     let mut screen = Screen.lock().unwrap();
     *screen = new_screen;
-    println!("Created window {} x {} pixels", *width as usize, *height as usize);
+    println!("[Engine]Created window {} x {} pixels", *width as usize, *height as usize);
 }
-
+//функция основной настройки движка
 pub fn Engine_setup() {
-    //also put codE here in near future
-    println!("Engine setup is complete");
+    println!("[Engine]Start engine setup");
+    let temp_settings = Engine_settings.lock().unwrap();
+
+    Setup_window_screen(&temp_settings.window_width, &temp_settings.window_height);
+    
+    drop(temp_settings);
+    println!("[Engine]Engine setup is complete");
 }
