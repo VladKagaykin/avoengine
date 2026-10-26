@@ -9,32 +9,84 @@ pub static RENDER_THREADS: AtomicUsize = AtomicUsize::new(1);
 
 pub static BSP_ROOT: Mutex<Option<Box<BspNode>>> = Mutex::new(None);
 
+use std::sync::LazyLock;
+
+pub struct Texture {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: Vec<[u8; 4]>
+}
+
+pub static TEXTURE_CACHE: LazyLock<Mutex<HashMap<String, Arc<Texture>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn load_texture(path: &str) -> Option<Arc<Texture>> {
+    let mut cache = TEXTURE_CACHE.lock().unwrap();
+    if let Some(t) = cache.get(path) { return Some(Arc::clone(t)); }
+
+    let img = image::open(path).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    let tex = Arc::new(Texture {
+        width: w as usize,
+        height: h as usize,
+        pixels: img.pixels().map(|p| p.0).collect(),
+    });
+    cache.insert(path.to_string(), Arc::clone(&tex));
+    Some(tex)
+}
+
 #[derive(Clone)]
 pub struct render_triangle {
     pub vertices: [f32; 9],
+    pub uvs:      [f32; 6],
+    pub texture:  Option<Arc<Texture>>,
     pub RGBA_color: [u8; 4],
+    pub alpha_test: u8,
     pub properties: Arc<HashMap<String, String>>
 }
 
-pub fn triangulation(objects: Vec<Draw_components>) -> Vec<render_triangle>{
-    let mut triangles: Vec<render_triangle> = Vec::new();
-    for object in 0..objects.len(){
-        let shared_properties = Arc::new(objects[object].properties.clone());
-        for vertex in (0..(objects[object].vertices.len())).step_by(9){
-            triangles.push(render_triangle{vertices: [objects[object].vertices[vertex]+objects[object].x,
-                                                          objects[object].vertices[vertex+1]+objects[object].y,
-                                                          objects[object].vertices[vertex+2]+objects[object].z,
-                                                          objects[object].vertices[vertex+3]+objects[object].x,
-                                                          objects[object].vertices[vertex+4]+objects[object].y,
-                                                          objects[object].vertices[vertex+5]+objects[object].z,
-                                                          objects[object].vertices[vertex+6]+objects[object].x,
-                                                          objects[object].vertices[vertex+7]+objects[object].y,
-                                                          objects[object].vertices[vertex+8]+objects[object].z,],
-                                           RGBA_color: objects[object].RGBA_color,
-                                           properties: Arc::clone(&shared_properties)});
+fn parse_floats(s: &str) -> Vec<f32> {
+    s.split(|c: char| c == ',' || c.is_whitespace())
+        .filter_map(|x| x.parse().ok())
+        .collect()
+}
+
+pub fn triangulation(objects: Vec<Draw_components>) -> Vec<render_triangle> {
+    let mut triangles = Vec::new();
+    for obj in &objects {
+        let props = Arc::new(obj.properties.clone());
+        let uvs = props.get("uv").map(|s| parse_floats(s)).unwrap_or_default();
+        let tex = props.get("texture")
+            .and_then(|p| load_texture(p));
+        let alpha_test = props.get("alpha_test")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0u8);
+
+        for (tri_i, vertex) in (0..obj.vertices.len()).step_by(9).enumerate() {
+            let uv_off = tri_i * 6;
+            let tri_uvs = if uvs.len() >= uv_off + 6 {
+                [uvs[uv_off],   uvs[uv_off+1],
+                 uvs[uv_off+2], uvs[uv_off+3],
+                 uvs[uv_off+4], uvs[uv_off+5]]
+            } else {
+                [0.0; 6]
+            };
+
+            triangles.push(render_triangle {
+                vertices: [
+                    obj.vertices[vertex]   + obj.x, obj.vertices[vertex+1] + obj.y, obj.vertices[vertex+2] + obj.z,
+                    obj.vertices[vertex+3] + obj.x, obj.vertices[vertex+4] + obj.y, obj.vertices[vertex+5] + obj.z,
+                    obj.vertices[vertex+6] + obj.x, obj.vertices[vertex+7] + obj.y, obj.vertices[vertex+8] + obj.z,
+                ],
+                uvs: tri_uvs,
+                texture: tex.clone(),
+                RGBA_color: obj.RGBA_color,
+                alpha_test,
+                properties: Arc::clone(&props),
+            });
         }
     }
-    return triangles;
+    triangles
 }
 
 #[derive(Clone, Copy)]
@@ -260,6 +312,144 @@ const NEAR_PLANE: f32 = 0.001;
 
 const CULL_BACKFACES: bool = false;
 
+const SPRAY_PIXELS_PER_UNIT: f32 = 512.0;
+const SPRAY_OFFSET: f32 = 0.01;
+
+#[derive(Clone)]
+pub struct spray {
+    pub surface: [render_triangle; 2]
+}
+
+pub static SPRAYS: Mutex<Vec<spray>> = Mutex::new(Vec::new());
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len < 1e-12 { return [0.0, 0.0, 0.0]; }
+    [v[0] / len, v[1] / len, v[2] / len]
+}
+
+fn point_tri_dist_sq(p: [f32; 3], tri: &render_triangle) -> f32 {
+    let mut best = f32::INFINITY;
+    for i in [0, 3, 6] {
+        let dx = tri.vertices[i]     - p[0];
+        let dy = tri.vertices[i + 1] - p[1];
+        let dz = tri.vertices[i + 2] - p[2];
+        let d = dx * dx + dy * dy + dz * dz;
+        if d < best { best = d; }
+    }
+    best
+}
+
+fn find_nearest_recursive<'a>(
+    node: &'a BspNode,
+    pos: [f32; 3],
+    best: &mut Option<(&'a render_triangle, f32)>,
+) {
+    match node {
+        BspNode::Leaf { triangles } => {
+            for t in triangles {
+                let d = point_tri_dist_sq(pos, t);
+                if best.map_or(true, |(_, bd)| d < bd) {
+                    *best = Some((t, d));
+                }
+            }
+        }
+        BspNode::Internal { plane, coplanar, front, back } => {
+            for t in coplanar {
+                let d = point_tri_dist_sq(pos, t);
+                if best.map_or(true, |(_, bd)| d < bd) {
+                    *best = Some((t, d));
+                }
+            }
+            let d_to_plane = signed_distance(pos, plane);
+            let (first, second) = if d_to_plane > 0.0 {
+                (back.as_ref(), front.as_ref())
+            } else {
+                (front.as_ref(), back.as_ref())
+            };
+            find_nearest_recursive(first, pos, best);
+            let curr_best = best.map_or(f32::INFINITY, |(_, d)| d);
+            if d_to_plane * d_to_plane < curr_best {
+                find_nearest_recursive(second, pos, best);
+            }
+        }
+    }
+}
+
+pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
+    let tex = match load_texture(&path) {
+        Some(t) => t,
+        None => {
+            println!("[Render] Spray texture not found: {}", path);
+            return;
+        }
+    };
+
+    let plane_opt = {
+        let bsp_guard = BSP_ROOT.lock().unwrap();
+        let root = match bsp_guard.as_ref() {
+            Some(r) => r.as_ref(),
+            None => return,
+        };
+        let mut best: Option<(&render_triangle, f32)> = None;
+        find_nearest_recursive(root, center_position, &mut best);
+        best.and_then(|(tri, _)| plane_from_triangle(tri))
+    };
+
+    let plane = match plane_opt {
+        Some(p) => p,
+        None => return,
+    };
+
+    let n = plane.normal;
+    let up_ref = if n[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [0.0, 0.0, 1.0] };
+    let right = normalize(cross(up_ref, n));
+    let up = normalize(cross(n, right));
+
+    let cx = center_position[0] + n[0] * SPRAY_OFFSET;
+    let cy = center_position[1] + n[1] * SPRAY_OFFSET;
+    let cz = center_position[2] + n[2] * SPRAY_OFFSET;
+
+    let half_w = (tex.width as f32 / SPRAY_PIXELS_PER_UNIT) * 0.5;
+    let half_h = (tex.height as f32 / SPRAY_PIXELS_PER_UNIT) * 0.5;
+
+    let tl = [cx - right[0]*half_w + up[0]*half_h, cy - right[1]*half_w + up[1]*half_h, cz - right[2]*half_w + up[2]*half_h];
+    let tr = [cx + right[0]*half_w + up[0]*half_h, cy + right[1]*half_w + up[1]*half_h, cz + right[2]*half_w + up[2]*half_h];
+    let br = [cx + right[0]*half_w - up[0]*half_h, cy + right[1]*half_w - up[1]*half_h, cz + right[2]*half_w - up[2]*half_h];
+    let bl = [cx - right[0]*half_w - up[0]*half_h, cy - right[1]*half_w - up[1]*half_h, cz - right[2]*half_w - up[2]*half_h];
+
+    let empty_props = Arc::new(HashMap::new());
+
+    let tri1 = render_triangle {
+        vertices: [
+            tl[0], tl[1], tl[2],
+            tr[0], tr[1], tr[2],
+            br[0], br[1], br[2],
+        ],
+        uvs: [0.0, 0.0, 1.0, 0.0, 1.0, 1.0],
+        texture: Some(Arc::clone(&tex)),
+        RGBA_color,
+        alpha_test: 0,
+        properties: Arc::clone(&empty_props),
+    };
+
+    let tri2 = render_triangle {
+        vertices: [
+            tl[0], tl[1], tl[2],
+            br[0], br[1], br[2],
+            bl[0], bl[1], bl[2],
+        ],
+        uvs: [0.0, 0.0, 1.0, 1.0, 0.0, 1.0],
+        texture: Some(Arc::clone(&tex)),
+        RGBA_color,
+        alpha_test: 0,
+        properties: Arc::clone(&empty_props),
+    };
+
+    let mut sprays = SPRAYS.lock().unwrap();
+    sprays.push(spray { surface: [tri1, tri2] });
+}
+
 struct CameraBasis {
     right: [f32; 3],
     up: [f32; 3],
@@ -311,25 +501,35 @@ fn to_view_space(p: [f32; 3], basis: &CameraBasis) -> [f32; 3] {
     [dot(v, basis.right), dot(v, basis.up), dot(v, basis.forward)]
 }
 
-fn intersect_near(a: [f32; 3], b: [f32; 3], near: f32) -> [f32; 3] {
+fn intersect_near(
+    a: [f32; 3], b: [f32; 3],
+    uva: [f32; 2], uvb: [f32; 2],
+    near: f32,
+) -> ([f32; 3], [f32; 2]) {
     let t = (near - a[2]) / (b[2] - a[2]);
-    [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), near]
+    (
+        [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), near],
+        [uva[0] + t * (uvb[0] - uva[0]), uva[1] + t * (uvb[1] - uva[1])],
+    )
 }
 
-fn clip_near(tri: &[[f32; 3]; 3], near: f32) -> Vec<[f32; 3]> {
+fn clip_near(
+    tri: &[([f32; 3], [f32; 2]); 3],
+    near: f32,
+) -> Vec<([f32; 3], [f32; 2])> {
     let mut out = Vec::with_capacity(4);
     for i in 0..3 {
-        let a = tri[i];
-        let b = tri[(i + 1) % 3];
+        let (a, uva) = tri[i];
+        let (b, uvb) = tri[(i + 1) % 3];
         let a_in = a[2] > near;
         let b_in = b[2] > near;
         if b_in {
             if !a_in {
-                out.push(intersect_near(a, b, near));
+                out.push(intersect_near(a, b, uva, uvb, near));
             }
-            out.push(b);
+            out.push((b, uvb));
         } else if a_in {
-            out.push(intersect_near(a, b, near));
+            out.push(intersect_near(a, b, uva, uvb, near));
         }
     }
     out
@@ -349,11 +549,14 @@ fn project(v: [f32; 3], focal: f32, width: f32, height: f32) -> ([f32; 2], f32) 
 #[allow(clippy::too_many_arguments)]
 fn rasterize_triangle(
     v0: [f32; 3], v1: [f32; 3], v2: [f32; 3],
+    uv0: [f32; 2], uv1: [f32; 2], uv2: [f32; 2],
+    texture: Option<&Texture>,
     focal: f32, width: usize, height: usize,
     row_offset: usize,
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
-    color: [u8; 3],
+    rgba: [u8; 4],
+    alpha_test: u8,
 ) {
     let (s0, iz0) = project(v0, focal, width as f32, height as f32);
     let (s1, iz1) = project(v1, focal, width as f32, height as f32);
@@ -383,6 +586,13 @@ fn rasterize_triangle(
     let inv_area2 = 1.0 / area2;
     let d_inv_z_dx = (de12_dx * iz0 + de20_dx * iz1 + de01_dx * iz2) * inv_area2;
 
+    let u0z = uv0[0] * iz0; let v0z = uv0[1] * iz0;
+    let u1z = uv1[0] * iz1; let v1z = uv1[1] * iz1;
+    let u2z = uv2[0] * iz2; let v2z = uv2[1] * iz2;
+
+    let d_uz_dx = (de12_dx * u0z + de20_dx * u1z + de01_dx * u2z) * inv_area2;
+    let d_vz_dx = (de12_dx * v0z + de20_dx * v1z + de01_dx * v2z) * inv_area2;
+
     let px_start = min_x as f32 + 0.5;
     let want_positive = area2 > 0.0;
 
@@ -394,6 +604,8 @@ fn rasterize_triangle(
         let mut e20 = a20 * (fy - s2[1]) - b20 * (px_start - s2[0]);
         let mut e01 = a01 * (fy - s0[1]) - b01 * (px_start - s0[0]);
         let mut inv_z = (e12 * iz0 + e20 * iz1 + e01 * iz2) * inv_area2;
+        let mut uz = (e12 * u0z + e20 * u1z + e01 * u2z) * inv_area2;
+        let mut vz = (e12 * v0z + e20 * v1z + e01 * v2z) * inv_area2;
 
         let row_screen = &mut screen_chunk[py_local];
         let row_zbuf = &mut zbuf_chunk[py_local];
@@ -407,14 +619,49 @@ fn rasterize_triangle(
             if inside {
                 let ux = px as usize;
                 if inv_z > row_zbuf[ux] {
-                    row_zbuf[ux] = inv_z;
-                    row_screen[ux].color = color;
+                    let (src_rgb, src_a) = if let Some(tex) = texture {
+                        let u = uz / inv_z;
+                        let v = vz / inv_z;
+                        let tw = tex.width as i32;
+                        let th = tex.height as i32;
+                        let tx = ((u * tw as f32).floor() as i32).rem_euclid(tw) as usize;
+                        let ty = ((v * th as f32).floor() as i32).rem_euclid(th) as usize;
+                        let t = tex.pixels[ty * tex.width + tx];
+                        let a = (t[3] as u16 * rgba[3] as u16 / 255) as u8;
+                        let r = (t[0] as u32 * rgba[0] as u32 / 255) as u8;
+                        let g = (t[1] as u32 * rgba[1] as u32 / 255) as u8;
+                        let b = (t[2] as u32 * rgba[2] as u32 / 255) as u8;
+                        ([r, g, b], a)
+                    } else {
+                        ([rgba[0], rgba[1], rgba[2]], rgba[3])
+                    };
+
+                    if alpha_test > 0 {
+                        if src_a >= alpha_test {
+                            row_zbuf[ux] = inv_z;
+                            row_screen[ux].color = src_rgb;
+                        }
+                    } else if src_a == 255 {
+                        row_zbuf[ux] = inv_z;
+                        row_screen[ux].color = src_rgb;
+                    } else if src_a > 0 {
+                        let a = src_a as u32;
+                        let ia = 255 - a;
+                        let dst = row_screen[ux].color;
+                        row_screen[ux].color = [
+                            ((src_rgb[0] as u32 * a + dst[0] as u32 * ia) / 255) as u8,
+                            ((src_rgb[1] as u32 * a + dst[1] as u32 * ia) / 255) as u8,
+                            ((src_rgb[2] as u32 * a + dst[2] as u32 * ia) / 255) as u8,
+                        ];
+                    }
                 }
             }
             e12 += de12_dx;
             e20 += de20_dx;
             e01 += de01_dx;
             inv_z += d_inv_z_dx;
+            uz += d_uz_dx;
+            vz += d_vz_dx;
         }
     }
 }
@@ -433,20 +680,29 @@ fn draw_render_triangle(
         [tri.vertices[3], tri.vertices[4], tri.vertices[5]],
         [tri.vertices[6], tri.vertices[7], tri.vertices[8]],
     ];
-    let color = [tri.RGBA_color[0], tri.RGBA_color[1], tri.RGBA_color[2]];
+    let uvs = [
+        [tri.uvs[0], tri.uvs[1]],
+        [tri.uvs[2], tri.uvs[3]],
+        [tri.uvs[4], tri.uvs[5]],
+    ];
+    let rgba = tri.RGBA_color;
 
     let v0 = to_view_space(verts[0], basis);
     let v1 = to_view_space(verts[1], basis);
     let v2 = to_view_space(verts[2], basis);
 
-    let clipped = clip_near(&[v0, v1, v2], NEAR_PLANE);
+    let clipped = clip_near(&[(v0, uvs[0]), (v1, uvs[1]), (v2, uvs[2])], NEAR_PLANE);
     if clipped.len() < 3 { return; }
+
+    let tex = tri.texture.as_deref();
 
     for i in 1..clipped.len() - 1 {
         rasterize_triangle(
-            clipped[0], clipped[i], clipped[i + 1],
+            clipped[0].0, clipped[i].0, clipped[i + 1].0,
+            clipped[0].1, clipped[i].1, clipped[i + 1].1,
+            tex,
             focal, width, height, row_offset,
-            screen_chunk, zbuf_chunk, color,
+            screen_chunk, zbuf_chunk, rgba, tri.alpha_test,
         );
     }
 }
@@ -529,6 +785,9 @@ pub fn Render_frame() {
         None => return,
     };
 
+    let sprays_guard = SPRAYS.lock().unwrap();
+    let sprays_slice: &[spray] = &sprays_guard[..];
+
     let num_threads = RENDER_THREADS.load(Ordering::Relaxed).min(height).max(1);
     let chunk_size = (height + num_threads - 1) / num_threads;
 
@@ -542,8 +801,14 @@ pub fn Render_frame() {
             row_start += scr.len();
             let root_ref = root;
             let basis_ref = &basis;
+            let sprays_ref = sprays_slice;
             s.spawn(move || {
                 render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb);
+                for sp in sprays_ref {
+                    for t in &sp.surface {
+                        draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb);
+                    }
+                }
             });
         }
     });
