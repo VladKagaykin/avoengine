@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 pub mod window;
 pub mod render;
+pub mod gui;
 
 // структура настроек движка
 pub struct Settings {
@@ -144,5 +145,8 @@ pub fn Engine_setup() {
     let num_threads = cores.saturating_mul(cm as usize).saturating_sub(1).max(1);
     render::init_render(w as usize, h as usize, num_threads);
     window::Create_window();
+    window::With_canvas_and_pump(|canvas, _| {
+        gui::Init_gui(canvas);
+    });
     println!("[Engine]Engine setup is complete");
 }
