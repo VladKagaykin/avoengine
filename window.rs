@@ -1,27 +1,69 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
-use minifb::{Key, Window, WindowOptions};
+use sdl2::event::{Event, WindowEvent};
+use sdl2::keyboard::Keycode;
+use sdl2::pixels::PixelFormatEnum;
+use sdl2::render::{Canvas, Texture, TextureCreator};
+use sdl2::video::{Window, WindowContext};
 
 use super::{Engine_settings, Screen};
-//КОД ИЗ ИНЕТА
+
+//КОД ИЗ ИНТЕРНЕТА
+struct SdlState {
+    sdl: sdl2::Sdl,         
+    _video: sdl2::VideoSubsystem,
+    event_pump: sdl2::EventPump,
+    canvas: Canvas<Window>,
+    texture: Texture<'static>,
+}
+
 thread_local! {
-    static WIN: RefCell<Option<Window>> = RefCell::new(None);
+    static SDL: RefCell<Option<SdlState>> = RefCell::new(None);
     static LAST_FRAME: RefCell<Instant> = RefCell::new(Instant::now());
 }
 
 pub fn Create_window() {
     let s = Engine_settings.lock().unwrap();
-    let win = Window::new(
-        &s.window_name,
-        s.window_width as usize,
-        s.window_height as usize,
-        WindowOptions::default(),
-    )
-    .expect("failed to create window");
+    let name = s.window_name.clone();
+    let width = s.window_width as u32;
+    let height = s.window_height as u32;
     drop(s);
-    WIN.with(|w| *w.borrow_mut() = Some(win));
-    println!("[Window]Window created")
+
+    let sdl = sdl2::init().expect("SDL init failed");
+    let video = sdl.video().expect("SDL video subsystem init failed");
+
+    let window = video
+        .window(&name, width, height)
+        .position_centered()
+        .build()
+        .expect("failed to create window");
+
+    let canvas = window
+        .into_canvas()
+        // .present_vsync()
+        .build()
+        .expect("failed to create canvas");
+
+    let texture_creator: &'static TextureCreator<WindowContext> =
+        Box::leak(Box::new(canvas.texture_creator()));
+
+    let texture = texture_creator
+        .create_texture_streaming(PixelFormatEnum::RGB888, width, height)
+        .expect("failed to create texture");
+
+    let event_pump = sdl.event_pump().expect("failed to create event pump");
+
+    SDL.with(|c| {
+        *c.borrow_mut() = Some(SdlState {
+            sdl,                     
+            _video: video,
+            event_pump,
+            canvas,
+            texture,
+        });
+    });
+    println!("[Window]Window created");
 }
 
 pub fn Convert_frame() -> (Vec<u32>, usize, usize) {
@@ -30,13 +72,19 @@ pub fn Convert_frame() -> (Vec<u32>, usize, usize) {
     let w = screen.first().map_or(0, |r| r.len());
     let mut buf = vec![0u32; w * h];
 
-    let num_threads = super::render::RENDER_THREADS.load(std::sync::atomic::Ordering::Relaxed).min(h).max(1);
+    let num_threads = super::render::RENDER_THREADS
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .min(h)
+        .max(1);
     let chunk_size = (h + num_threads - 1) / num_threads;
     let buf_slice: &mut [u32] = &mut buf[..];
 
     std::thread::scope(|s| {
         let mut row_start = 0usize;
-        for (src, dst) in screen.chunks(chunk_size).zip(buf_slice.chunks_mut(chunk_size * w)) {
+        for (src, dst) in screen
+            .chunks(chunk_size)
+            .zip(buf_slice.chunks_mut(chunk_size * w))
+        {
             let cur_start = row_start;
             row_start += src.len();
             let w_loc = w;
@@ -59,13 +107,62 @@ pub fn Convert_frame() -> (Vec<u32>, usize, usize) {
 pub fn Update_frame() {
     let (buf, w, h) = Convert_frame();
 
-    WIN.with(|w_| {
-        let mut guard = w_.borrow_mut();
-        let win = guard.as_mut().expect("window not created");
-        if !win.is_open() || win.is_key_down(Key::Escape) {
-            std::process::exit(0);
+    SDL.with(|c| {
+        let mut guard = c.borrow_mut();
+        let state = guard.as_mut().expect("window not created");
+
+        for event in state.event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. } => std::process::exit(0),
+                Event::Window {
+                    win_event: WindowEvent::Close,
+                    ..
+                } => std::process::exit(0),
+                Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => std::process::exit(0),
+                _ => {}
+            }
         }
-        win.update_with_buffer(&buf, w, h)
-            .expect("update_with_buffer failed");
+
+        let buf_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf.len() * 4)
+        };
+
+        state
+            .texture
+            .update(None, buf_bytes, w * 4)
+            .expect("texture update failed");
+
+        state.canvas.clear();
+        state
+            .canvas
+            .copy(&state.texture, None, None)
+            .expect("canvas copy failed");
+        state.canvas.present();
     });
+}
+
+pub fn Get_pressed_keys() -> Vec<i32> {
+    SDL.with(|c| {
+        let mut guard = c.borrow_mut();
+        let state = guard.as_mut().expect("window not created");
+
+        for event in state.event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. } => std::process::exit(0),
+                Event::Window { win_event: WindowEvent::Close, .. } => std::process::exit(0),
+                Event::KeyDown { keycode: Some(Keycode::Escape), .. } => std::process::exit(0),
+                _ => {}
+            }
+        }
+
+        state.event_pump
+            .keyboard_state()
+            .scancodes()
+            .filter(|&(_sc, pressed)| pressed)
+            .map(|(sc, _)| sc as i32)   // Scancode уже i32
+            .collect()
+    })
 }
