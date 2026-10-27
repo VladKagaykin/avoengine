@@ -328,16 +328,35 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
     [v[0] / len, v[1] / len, v[2] / len]
 }
 
-fn point_tri_dist_sq(p: [f32; 3], tri: &render_triangle) -> f32 {
-    let mut best = f32::INFINITY;
-    for i in [0, 3, 6] {
-        let dx = tri.vertices[i]     - p[0];
-        let dy = tri.vertices[i + 1] - p[1];
-        let dz = tri.vertices[i + 2] - p[2];
-        let d = dx * dx + dy * dy + dz * dz;
-        if d < best { best = d; }
-    }
-    best
+fn point_in_triangle(p: [f32; 3], tri: &render_triangle, eps: f32) -> bool {
+    let a = [tri.vertices[0], tri.vertices[1], tri.vertices[2]];
+    let b = [tri.vertices[3], tri.vertices[4], tri.vertices[5]];
+    let c = [tri.vertices[6], tri.vertices[7], tri.vertices[8]];
+
+    let v0 = sub(c, a);
+    let v1 = sub(b, a);
+    let v2 = sub(p, a);
+
+    let d00 = dot(v0, v0);
+    let d01 = dot(v0, v1);
+    let d02 = dot(v0, v2);
+    let d11 = dot(v1, v1);
+    let d12 = dot(v1, v2);
+
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-12 { return false; }
+    let inv = 1.0 / denom;
+
+    let u = (d11 * d02 - d01 * d12) * inv;
+    let v = (d00 * d12 - d01 * d02) * inv;
+
+    u >= -eps && v >= -eps && u + v <= 1.0 + eps
+}
+
+fn tri_plane_dist_sq(p: [f32; 3], tri: &render_triangle) -> Option<f32> {
+    let plane = plane_from_triangle(tri)?;
+    let d = signed_distance(p, &plane);
+    Some(d * d)
 }
 
 fn find_nearest_recursive<'a>(
@@ -348,17 +367,23 @@ fn find_nearest_recursive<'a>(
     match node {
         BspNode::Leaf { triangles } => {
             for t in triangles {
-                let d = point_tri_dist_sq(pos, t);
-                if best.map_or(true, |(_, bd)| d < bd) {
-                    *best = Some((t, d));
+                if point_in_triangle(pos, t, 1e-3) {
+                    if let Some(d_sq) = tri_plane_dist_sq(pos, t) {
+                        if best.map_or(true, |(_, bd)| d_sq < bd) {
+                            *best = Some((t, d_sq));
+                        }
+                    }
                 }
             }
         }
         BspNode::Internal { plane, coplanar, front, back } => {
             for t in coplanar {
-                let d = point_tri_dist_sq(pos, t);
-                if best.map_or(true, |(_, bd)| d < bd) {
-                    *best = Some((t, d));
+                if point_in_triangle(pos, t, 1e-3) {
+                    if let Some(d_sq) = tri_plane_dist_sq(pos, t) {
+                        if best.map_or(true, |(_, bd)| d_sq < bd) {
+                            *best = Some((t, d_sq));
+                        }
+                    }
                 }
             }
             let d_to_plane = signed_distance(pos, plane);
@@ -385,7 +410,36 @@ pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
         }
     };
 
-    let plane_opt = {
+    let (cam_pos, view_up) = {
+        let cam = super::Camera.lock().unwrap();
+        let pos = [cam.camera_x, cam.camera_y, cam.camera_z];
+        let yaw = cam.camera_yaw.to_radians();
+        let pitch = cam.camera_pitch.to_radians();
+        let roll = cam.camera_roll.to_radians();
+
+        let forward = [
+            pitch.cos() * yaw.sin(),
+            pitch.sin(),
+            pitch.cos() * yaw.cos(),
+        ];
+        let right_base = [yaw.cos(), 0.0, -yaw.sin()];
+        let up_base = cross(forward, right_base);
+
+        let vu = if roll.abs() > 1e-6 {
+            let cr = roll.cos();
+            let sr = roll.sin();
+            [
+                up_base[0] * cr - right_base[0] * sr,
+                up_base[1] * cr - right_base[1] * sr,
+                up_base[2] * cr - right_base[2] * sr,
+            ]
+        } else {
+            up_base
+        };
+        (pos, vu)
+    };
+
+    let mut n = {
         let bsp_guard = BSP_ROOT.lock().unwrap();
         let root = match bsp_guard.as_ref() {
             Some(r) => r.as_ref(),
@@ -393,16 +447,33 @@ pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
         };
         let mut best: Option<(&render_triangle, f32)> = None;
         find_nearest_recursive(root, center_position, &mut best);
-        best.and_then(|(tri, _)| plane_from_triangle(tri))
+        match best.and_then(|(tri, _)| plane_from_triangle(tri)) {
+            Some(p) => p.normal,
+            None => return,
+        }
     };
 
-    let plane = match plane_opt {
-        Some(p) => p,
-        None => return,
+    if dot(n, sub(cam_pos, center_position)) < 0.0 {
+        n = [-n[0], -n[1], -n[2]];
+    }
+
+    let mut up_ref = {
+        let d = dot(view_up, n);
+        sub(view_up, [n[0] * d, n[1] * d, n[2] * d])
     };
 
-    let n = plane.normal;
-    let up_ref = if n[1].abs() < 0.9 { [0.0, 1.0, 0.0] } else { [0.0, 0.0, 1.0] };
+    if dot(up_ref, up_ref) < 1e-6 {
+        let wu = [0.0, 1.0, 0.0];
+        let d = dot(wu, n);
+        up_ref = sub(wu, [n[0] * d, n[1] * d, n[2] * d]);
+
+        if dot(up_ref, up_ref) < 1e-6 {
+            let wz = [0.0, 0.0, 1.0];
+            let d = dot(wz, n);
+            up_ref = sub(wz, [n[0] * d, n[1] * d, n[2] * d]);
+        }
+    }
+
     let right = normalize(cross(up_ref, n));
     let up = normalize(cross(n, right));
 
@@ -449,6 +520,8 @@ pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
     let mut sprays = SPRAYS.lock().unwrap();
     sprays.push(spray { surface: [tri1, tri2] });
 }
+
+//место под динамику
 
 struct CameraBasis {
     right: [f32; 3],

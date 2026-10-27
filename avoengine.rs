@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub mod window;
 pub mod render;
 pub mod gui;
+pub mod tick_system;
 
 // структура настроек движка
 pub struct Settings {
@@ -148,5 +149,6 @@ pub fn Engine_setup() {
     window::With_canvas_and_pump(|canvas, _| {
         gui::Init_gui(canvas);
     });
+    tick_system::Init_tick_system();
     println!("[Engine]Engine setup is complete");
 }
