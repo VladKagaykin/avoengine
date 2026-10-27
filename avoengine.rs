@@ -5,6 +5,7 @@ pub mod window;
 pub mod render;
 pub mod gui;
 pub mod tick_system;
+pub mod gltf_parser;
 
 // структура настроек движка
 pub struct Settings {
@@ -38,8 +39,6 @@ pub struct Draw_components {
     pub special_name: String,
 }
 
-// пока что не буу делать динамическую очередь, сначала надо, чтобы со статикой всё работало нормально
-// pub static Draw_queue: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 // незапечённая сцена(без флага, запекать будет пользователь)
 pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 

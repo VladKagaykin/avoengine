@@ -1,4 +1,5 @@
 use super::{Screen,Draw_components,Static_scene};
+use super::{tick_system, Engine_settings, gltf_parser};
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -304,8 +305,6 @@ pub fn Bake_static_scene() {
     println!("[Render] Created BSP tree")
 }
 
-
-
 pub static Z_BUFFER: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
 
 const NEAR_PLANE: f32 = 0.001;
@@ -401,7 +400,7 @@ fn find_nearest_recursive<'a>(
     }
 }
 
-pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
+pub fn Add_spray_at(path: String, center_position: [f32; 3], mut n: [f32; 3], RGBA_color: [u8; 4]) {
     let tex = match load_texture(&path) {
         Some(t) => t,
         None => {
@@ -437,20 +436,6 @@ pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
             up_base
         };
         (pos, vu)
-    };
-
-    let mut n = {
-        let bsp_guard = BSP_ROOT.lock().unwrap();
-        let root = match bsp_guard.as_ref() {
-            Some(r) => r.as_ref(),
-            None => return,
-        };
-        let mut best: Option<(&render_triangle, f32)> = None;
-        find_nearest_recursive(root, center_position, &mut best);
-        match best.and_then(|(tri, _)| plane_from_triangle(tri)) {
-            Some(p) => p.normal,
-            None => return,
-        }
     };
 
     if dot(n, sub(cam_pos, center_position)) < 0.0 {
@@ -521,7 +506,490 @@ pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
     sprays.push(spray { surface: [tri1, tri2] });
 }
 
-//место под динамику
+pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
+    if load_texture(&path).is_none() {
+        println!("[Render] Spray texture not found: {}", path);
+        return;
+    }
+
+    let n_opt = {
+        let bsp_guard = BSP_ROOT.lock().unwrap();
+        if let Some(root) = bsp_guard.as_ref() {
+            let mut best: Option<(&render_triangle, f32)> = None;
+            find_nearest_recursive(root, center_position, &mut best);
+            best.and_then(|(tri, _)| plane_from_triangle(tri)).map(|p| p.normal)
+        } else {
+            None
+        }
+    };
+
+    let n = match n_opt {
+        Some(n) => n,
+        None => {
+            let triangles = prepare_dynamic_triangles();
+            let mut found = None;
+            for tri in &triangles {
+                if point_in_triangle(center_position, tri, 1e-3) {
+                    if let Some(p) = plane_from_triangle(tri) {
+                        found = Some(p.normal);
+                        break;
+                    }
+                }
+            }
+            match found {
+                Some(n) => n,
+                None => {
+                    println!("[Render] Add_spray: no surface at position");
+                    return;
+                }
+            }
+        }
+    };
+
+    Add_spray_at(path, center_position, n, RGBA_color);
+}
+
+pub static SKELETON_REGISTRY: LazyLock<Mutex<HashMap<u64, Arc<gltf_parser::Skeleton_data>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub static NEXT_SKELETON_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[derive(Clone)]
+pub struct Dynamic_components {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub vertices: Vec<f32>,
+    pub RGBA_color: [u8; 4],
+    pub animations_in_play: Vec<String>,
+    pub properties: HashMap<String, String>,
+    pub special_name: String
+}
+
+pub static Draw_queue: Mutex<Vec<Dynamic_components>> = Mutex::new(Vec::new());
+
+fn parse_joint_indices_str(s: &str) -> Vec<[u8; 4]> {
+    s.split(';').filter_map(|entry| {
+        let parts: Vec<u8> = entry.split(',').filter_map(|p| p.parse().ok()).collect();
+        if parts.len() == 4 { Some([parts[0], parts[1], parts[2], parts[3]]) } else { None }
+    }).collect()
+}
+
+fn parse_joint_weights_str(s: &str) -> Vec<[f32; 4]> {
+    s.split(';').filter_map(|entry| {
+        let parts: Vec<f32> = entry.split(',').filter_map(|p| p.parse().ok()).collect();
+        if parts.len() == 4 { Some([parts[0], parts[1], parts[2], parts[3]]) } else { None }
+    }).collect()
+}
+
+fn parse_translation_offsets_str(s: &str) -> HashMap<usize, [f32; 3]> {
+    s.split(';').filter_map(|entry| {
+        let (idx_str, vals_str) = entry.split_once(':')?;
+        let idx: usize = idx_str.parse().ok()?;
+        let vals: Vec<f32> = vals_str.split(',').filter_map(|p| p.parse().ok()).collect();
+        if vals.len() == 3 { Some((idx, [vals[0], vals[1], vals[2]])) } else { None }
+    }).collect()
+}
+
+fn parse_rotation_offsets_str(s: &str) -> HashMap<usize, [f32; 4]> {
+    s.split(';').filter_map(|entry| {
+        let (idx_str, vals_str) = entry.split_once(':')?;
+        let idx: usize = idx_str.parse().ok()?;
+        let vals: Vec<f32> = vals_str.split(',').filter_map(|p| p.parse().ok()).collect();
+        if vals.len() == 4 { Some((idx, [vals[0], vals[1], vals[2], vals[3]])) } else { None }
+    }).collect()
+}
+
+fn serialize_translation_offsets_str(m: &HashMap<usize, [f32; 3]>) -> String {
+    m.iter().map(|(k, v)| format!("{}:{},{},{}", k, v[0], v[1], v[2])).collect::<Vec<_>>().join(";")
+}
+
+fn serialize_rotation_offsets_str(m: &HashMap<usize, [f32; 4]>) -> String {
+    m.iter().map(|(k, v)| format!("{}:{},{},{},{}", k, v[0], v[1], v[2], v[3])).collect::<Vec<_>>().join(";")
+}
+
+fn compute_bone_world(
+    i: usize,
+    parents: &[Option<usize>],
+    local: &[[[f32; 4]; 4]],
+    world: &mut [[[f32; 4]; 4]],
+    computed: &mut [bool],
+) {
+    if computed[i] { return; }
+    match parents[i] {
+        Some(p) => {
+            compute_bone_world(p, parents, local, world, computed);
+            world[i] = gltf_parser::mat4_mul(world[p], local[i]);
+        }
+        None => {
+            world[i] = local[i];
+        }
+    }
+    computed[i] = true;
+}
+
+impl Dynamic_components {
+    pub fn new(special_name: String) -> Self {
+        let mut properties = HashMap::new();
+        properties.insert("animation_speed".to_string(), "1.0".to_string());
+        properties.insert("animation_start_tick".to_string(), "0".to_string());
+        Self {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            vertices: Vec::new(),
+            RGBA_color: [255, 255, 255, 255],
+            animations_in_play: Vec::new(),
+            properties,
+            special_name,
+        }
+    }
+
+    pub fn Attach_skeleton(&mut self, skel: Arc<gltf_parser::Skeleton_data>) -> u64 {
+        let id = NEXT_SKELETON_ID.fetch_add(1, Ordering::Relaxed);
+        SKELETON_REGISTRY.lock().unwrap().insert(id, skel);
+        self.properties.insert("skeleton_id".to_string(), id.to_string());
+        id
+    }
+
+    pub fn Load_from_import(&mut self, result: &gltf_parser::Import_result) -> u64 {
+        self.vertices = result.vertices.clone();
+        self.properties.insert("uv".to_string(), result.uv.clone());
+        self.properties.insert("texture".to_string(), result.texture_path.clone());
+
+        let ji: String = result.joint_indices.iter()
+            .map(|j| format!("{},{},{},{}", j[0], j[1], j[2], j[3]))
+            .collect::<Vec<_>>().join(";");
+        self.properties.insert("joint_indices".to_string(), ji);
+
+        let jw: String = result.joint_weights.iter()
+            .map(|w| format!("{},{},{},{}", w[0], w[1], w[2], w[3]))
+            .collect::<Vec<_>>().join(";");
+        self.properties.insert("joint_weights".to_string(), jw);
+
+        let id = NEXT_SKELETON_ID.fetch_add(1, Ordering::Relaxed);
+        SKELETON_REGISTRY.lock().unwrap().insert(id, Arc::clone(&result.skeleton));
+        self.properties.insert("skeleton_id".to_string(), id.to_string());
+        id
+    }
+
+    pub fn Get_skeleton(&self) -> Option<Arc<gltf_parser::Skeleton_data>> {
+        let id_str = self.properties.get("skeleton_id")?;
+        let id: u64 = id_str.parse().ok()?;
+        SKELETON_REGISTRY.lock().unwrap().get(&id).cloned()
+    }
+
+    fn get_animation_start_tick(&self) -> u128 {
+        self.properties.get("animation_start_tick").and_then(|s| s.parse().ok()).unwrap_or(0)
+    }
+
+    fn get_animation_speed(&self) -> f32 {
+        self.properties.get("animation_speed").and_then(|s| s.parse().ok()).unwrap_or(1.0)
+    }
+
+    fn get_uvs(&self) -> Vec<f32> {
+        self.properties.get("uv").map(|s| parse_floats(s)).unwrap_or_default()
+    }
+
+    fn get_joint_indices(&self) -> Vec<[u8; 4]> {
+        self.properties.get("joint_indices").map(|s| parse_joint_indices_str(s)).unwrap_or_default()
+    }
+
+    fn get_joint_weights(&self) -> Vec<[f32; 4]> {
+        self.properties.get("joint_weights").map(|s| parse_joint_weights_str(s)).unwrap_or_default()
+    }
+
+    fn get_translation_offsets(&self) -> HashMap<usize, [f32; 3]> {
+        self.properties.get("bone_translation_offsets")
+            .map(|s| parse_translation_offsets_str(s))
+            .unwrap_or_default()
+    }
+
+    fn get_rotation_offsets(&self) -> HashMap<usize, [f32; 4]> {
+        self.properties.get("bone_rotation_offsets")
+            .map(|s| parse_rotation_offsets_str(s))
+            .unwrap_or_default()
+    }
+
+    pub fn Play_animation(&mut self, name: String) {
+        let skel = match self.Get_skeleton() { Some(s) => s, None => return };
+        if !skel.animations.contains_key(&name) { return; }
+        if self.animations_in_play.contains(&name) { return; }
+        if self.animations_in_play.is_empty() {
+            let tick = tick_system::Get_current_tick();
+            self.properties.insert("animation_start_tick".to_string(), tick.to_string());
+        }
+        self.animations_in_play.push(name);
+    }
+
+    pub fn Set_default_animation(&mut self, name: String) {
+        let skel = match self.Get_skeleton() { Some(s) => s, None => return };
+        if skel.animations.contains_key(&name) {
+            self.properties.insert("default_animation".to_string(), name);
+            if self.animations_in_play.is_empty() {
+                let tick = tick_system::Get_current_tick();
+                self.properties.insert("animation_start_tick".to_string(), tick.to_string());
+            }
+        }
+    }
+
+    pub fn Stop_all_animations(&mut self) {
+        self.animations_in_play.clear();
+    }
+
+    pub fn Set_x(&mut self, delta: f32) { self.x += delta; }
+    pub fn Set_y(&mut self, delta: f32) { self.y += delta; }
+    pub fn Set_z(&mut self, delta: f32) { self.z += delta; }
+
+    pub fn Set_R(&mut self, delta: i16) { self.RGBA_color[0] = (self.RGBA_color[0] as i16 + delta).clamp(0, 255) as u8; }
+    pub fn Set_G(&mut self, delta: i16) { self.RGBA_color[1] = (self.RGBA_color[1] as i16 + delta).clamp(0, 255) as u8; }
+    pub fn Set_B(&mut self, delta: i16) { self.RGBA_color[2] = (self.RGBA_color[2] as i16 + delta).clamp(0, 255) as u8; }
+    pub fn Set_A(&mut self, delta: i16) { self.RGBA_color[3] = (self.RGBA_color[3] as i16 + delta).clamp(0, 255) as u8; }
+
+    pub fn Set_animation_speed(&mut self, delta: f32) {
+        let cur = self.get_animation_speed();
+        self.properties.insert("animation_speed".to_string(), (cur + delta).max(0.0).to_string());
+    }
+
+    pub fn Set_bone_translation(&mut self, bone_idx: usize, dx: f32, dy: f32, dz: f32) {
+        let mut m = self.get_translation_offsets();
+        let e = m.entry(bone_idx).or_insert([0.0; 3]);
+        e[0] += dx; e[1] += dy; e[2] += dz;
+        self.properties.insert("bone_translation_offsets".to_string(), serialize_translation_offsets_str(&m));
+    }
+
+    pub fn Set_bone_rotation(&mut self, bone_idx: usize, dx: f32, dy: f32, dz: f32) {
+        let hx = (dx * 0.5).sin(); let cx = (dx * 0.5).cos();
+        let hy = (dy * 0.5).sin(); let cy = (dy * 0.5).cos();
+        let hz = (dz * 0.5).sin(); let cz = (dz * 0.5).cos();
+        let q = [
+            hx * cy * cz - cx * hy * hz,
+            cx * hy * cz + hx * cy * hz,
+            cx * cy * hz - hx * hy * cz,
+            cx * cy * cz + hx * hy * hz,
+        ];
+        let mut m = self.get_rotation_offsets();
+        let e = m.entry(bone_idx).or_insert([0.0, 0.0, 0.0, 1.0]);
+        *e = gltf_parser::quat_mul(*e, q);
+        self.properties.insert("bone_rotation_offsets".to_string(), serialize_rotation_offsets_str(&m));
+    }
+
+    pub fn Get_x(&self) -> f32 { self.x }
+    pub fn Get_y(&self) -> f32 { self.y }
+    pub fn Get_z(&self) -> f32 { self.z }
+    pub fn Get_R(&self) -> u8 { self.RGBA_color[0] }
+    pub fn Get_G(&self) -> u8 { self.RGBA_color[1] }
+    pub fn Get_B(&self) -> u8 { self.RGBA_color[2] }
+    pub fn Get_A(&self) -> u8 { self.RGBA_color[3] }
+    pub fn Get_animation_speed(&self) -> f32 { self.get_animation_speed() }
+
+    pub fn Get_current_animation_time(&self) -> f32 {
+        let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32 / 1000.0;
+        self.Get_current_animation_time_at(tick_system::Get_current_tick(), tick_ms)
+    }
+
+    pub fn Get_current_animation_time_at(&self, current_tick: u128, tick_ms: f32) -> f32 {
+        let anim_name: String = match self.animations_in_play.first()
+            .or(self.properties.get("default_animation")) {
+            Some(n) => n.clone(),
+            None => return 0.0,
+        };
+        let skel = match self.Get_skeleton() { Some(s) => s, None => return 0.0 };
+        let anim = match skel.animations.get(&anim_name) { Some(a) => a, None => return 0.0 };
+        let elapsed = current_tick.saturating_sub(self.get_animation_start_tick()) as f32
+            * tick_ms * self.get_animation_speed();
+        if anim.duration > 0.0 { elapsed % anim.duration } else { 0.0 }
+    }
+
+    pub fn Get_bone_names(&self) -> Vec<String> {
+        self.Get_skeleton().map(|s| s.bones.iter().map(|b| b.name.clone()).collect()).unwrap_or_default()
+    }
+
+    pub fn Get_animation_names(&self) -> Vec<String> {
+        self.Get_skeleton().map(|s| s.animations.keys().cloned().collect()).unwrap_or_default()
+    }
+
+    pub fn Get_bone_index(&self, bone_name: &str) -> Option<usize> {
+        self.Get_skeleton().and_then(|s| s.bones.iter().position(|b| b.name == bone_name))
+    }
+
+    pub fn Get_bone_local_translation(&self, bone_name: &str) -> Option<[f32; 3]> {
+        let skel = self.Get_skeleton()?;
+        let idx = skel.bones.iter().position(|b| b.name == bone_name)?;
+        let bone = &skel.bones[idx];
+        let time = self.Get_current_animation_time();
+        let anim_name: Option<String> = self.animations_in_play.first()
+            .or(self.properties.get("default_animation")).cloned();
+        let base = if let Some(name) = anim_name {
+            if let Some(anim) = skel.animations.get(&name) {
+                if let Some(tr) = anim.tracks.get(&idx) {
+                    gltf_parser::eval_translation(&tr.translation, time, bone.translation)
+                } else { bone.translation }
+            } else { bone.translation }
+        } else { bone.translation };
+        let off = self.get_translation_offsets().get(&idx).copied().unwrap_or([0.0; 3]);
+        Some([base[0] + off[0], base[1] + off[1], base[2] + off[2]])
+    }
+
+    pub fn Get_bone_local_rotation(&self, bone_name: &str) -> Option<[f32; 4]> {
+        let skel = self.Get_skeleton()?;
+        let idx = skel.bones.iter().position(|b| b.name == bone_name)?;
+        let bone = &skel.bones[idx];
+        let time = self.Get_current_animation_time();
+        let anim_name: Option<String> = self.animations_in_play.first()
+            .or(self.properties.get("default_animation")).cloned();
+        let base = if let Some(name) = anim_name {
+            if let Some(anim) = skel.animations.get(&name) {
+                if let Some(tr) = anim.tracks.get(&idx) {
+                    gltf_parser::eval_rotation(&tr.rotation, time, bone.rotation)
+                } else { bone.rotation }
+            } else { bone.rotation }
+        } else { bone.rotation };
+        if let Some(off) = self.get_rotation_offsets().get(&idx) {
+            Some(gltf_parser::quat_mul(base, *off))
+        } else {
+            Some(base)
+        }
+    }
+
+    pub fn compute_pose(&self) -> (Vec<[[f32; 4]; 4]>, Vec<[[f32; 4]; 4]>) {
+        let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32 / 1000.0;
+        self.compute_pose_at(tick_system::Get_current_tick(), tick_ms)
+    }
+
+    pub fn compute_pose_at(&self, current_tick: u128, tick_ms: f32) -> (Vec<[[f32; 4]; 4]>, Vec<[[f32; 4]; 4]>) {
+        let skel = match self.Get_skeleton() { Some(s) => s, None => return (Vec::new(), Vec::new()) };
+        let n = skel.bones.len();
+        if n == 0 { return (Vec::new(), Vec::new()); }
+
+        let trans_offsets = self.get_translation_offsets();
+        let rot_offsets = self.get_rotation_offsets();
+        let start_tick = self.get_animation_start_tick();
+        let speed = self.get_animation_speed();
+
+        let mut active_names: Vec<String> = self.animations_in_play.clone();
+        if active_names.is_empty() {
+            if let Some(d) = self.properties.get("default_animation") {
+                active_names.push(d.clone());
+            }
+        }
+
+        let times: Vec<f32> = active_names.iter().map(|name| {
+            if let Some(anim) = skel.animations.get(name) {
+                let elapsed = current_tick.saturating_sub(start_tick) as f32 * tick_ms * speed;
+                if anim.duration > 0.0 { elapsed % anim.duration } else { 0.0 }
+            } else { 0.0 }
+        }).collect();
+
+        let mut local = vec![gltf_parser::mat4_identity(); n];
+
+        for i in 0..n {
+            let bone = &skel.bones[i];
+
+            let mut sum_t = [0.0f32; 3];
+            let mut sum_s = [0.0f32; 3];
+            let mut weight_count = 0usize;
+            let mut base_r = bone.rotation;
+
+            for (k, name) in active_names.iter().enumerate() {
+                let anim = match skel.animations.get(name) { Some(a) => a, None => continue };
+                let at = times[k];
+                if let Some(tr) = anim.tracks.get(&i) {
+                    let t = gltf_parser::eval_translation(&tr.translation, at, bone.translation);
+                    let s = gltf_parser::eval_scale(&tr.scale, at, bone.scale);
+                    let r = gltf_parser::eval_rotation(&tr.rotation, at, bone.rotation);
+                    sum_t[0] += t[0]; sum_t[1] += t[1]; sum_t[2] += t[2];
+                    sum_s[0] += s[0]; sum_s[1] += s[1]; sum_s[2] += s[2];
+                    if weight_count == 0 {
+                        base_r = r;
+                    } else {
+                        base_r = gltf_parser::quat_slerp(base_r, r, 1.0 / (weight_count as f32 + 1.0));
+                    }
+                    weight_count += 1;
+                }
+            }
+
+            let (mut t, mut r, s) = if weight_count > 0 {
+                let wc = weight_count as f32;
+                (
+                    [sum_t[0] / wc, sum_t[1] / wc, sum_t[2] / wc],
+                    base_r,
+                    [sum_s[0] / wc, sum_s[1] / wc, sum_s[2] / wc],
+                )
+            } else {
+                (bone.translation, bone.rotation, bone.scale)
+            };
+
+            if let Some(off) = trans_offsets.get(&i) {
+                t[0] += off[0]; t[1] += off[1]; t[2] += off[2];
+            }
+            if let Some(off) = rot_offsets.get(&i) {
+                r = gltf_parser::quat_mul(r, *off);
+            }
+
+            local[i] = gltf_parser::trs_to_matrix(t, r, s);
+        }
+
+        let parents: Vec<Option<usize>> = skel.bones.iter().map(|b| b.parent).collect();
+        let mut world = vec![gltf_parser::mat4_identity(); n];
+        let mut computed = vec![false; n];
+        for i in 0..n {
+            compute_bone_world(i, &parents, &local, &mut world, &mut computed);
+        }
+
+        (local, world)
+    }
+
+    pub fn Get_bone_world_transform(&self, bone_name: &str) -> Option<[[f32; 4]; 4]> {
+        let skel = self.Get_skeleton()?;
+        let idx = skel.bones.iter().position(|b| b.name == bone_name)?;
+        let (_, world) = self.compute_pose();
+        world.get(idx).copied()
+    }
+
+    pub fn Get_bone_world_position(&self, bone_name: &str) -> Option<[f32; 3]> {
+        let m = self.Get_bone_world_transform(bone_name)?;
+        Some([m[0][3] + self.x, m[1][3] + self.y, m[2][3] + self.z])
+    }
+
+    pub fn Get_bone_world_rotation(&self, bone_name: &str) -> Option<[f32; 4]> {
+        let m = self.Get_bone_world_transform(bone_name)?;
+        let trace = m[0][0] + m[1][1] + m[2][2];
+        if trace > 0.0 {
+            let s = (trace + 1.0).sqrt() * 2.0;
+            Some([
+                (m[2][1] - m[1][2]) / s,
+                (m[0][2] - m[2][0]) / s,
+                (m[1][0] - m[0][1]) / s,
+                0.25 * s,
+            ])
+        } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+            let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+            Some([
+                0.25 * s,
+                (m[0][1] + m[1][0]) / s,
+                (m[0][2] + m[2][0]) / s,
+                (m[2][1] - m[1][2]) / s,
+            ])
+        } else if m[1][1] > m[2][2] {
+            let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+            Some([
+                (m[0][1] + m[1][0]) / s,
+                0.25 * s,
+                (m[1][2] + m[2][1]) / s,
+                (m[0][2] - m[2][0]) / s,
+            ])
+        } else {
+            let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+            Some([
+                (m[0][2] + m[2][0]) / s,
+                (m[1][2] + m[2][1]) / s,
+                0.25 * s,
+                (m[1][0] - m[0][1]) / s,
+            ])
+        }
+    }
+}
 
 struct CameraBasis {
     right: [f32; 3],
@@ -814,6 +1282,134 @@ fn render_node(
     }
 }
 
+fn prepare_dynamic_triangles() -> Vec<render_triangle> {
+    let queue = Draw_queue.lock().unwrap();
+    let current_tick = tick_system::Get_current_tick();
+    let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32 / 1000.0;
+
+    let mut result: Vec<render_triangle> = Vec::new();
+
+    for obj in queue.iter() {
+        let n_tris = obj.vertices.len() / 9;
+        if n_tris == 0 { continue; }
+
+        let tex = obj.properties.get("texture").and_then(|p| load_texture(p));
+        let props = Arc::new(obj.properties.clone());
+
+        let skel = match obj.Get_skeleton() { Some(s) => s, None => continue };
+        let has_skin = !skel.bones.is_empty();
+
+        let (_, world) = obj.compute_pose_at(current_tick, tick_ms);
+        let skin_mats: Vec<[[f32; 4]; 4]> = if has_skin {
+            (0..skel.bones.len())
+                .map(|i| gltf_parser::mat4_mul(world[i], skel.bones[i].inverse_bind))
+                .collect()
+        } else { Vec::new() };
+
+        let joint_indices = obj.get_joint_indices();
+        let joint_weights = obj.get_joint_weights();
+        let uvs = obj.get_uvs();
+
+        for t in 0..n_tris {
+            let base = t * 9;
+            let mut transformed = [0.0f32; 9];
+
+            for v in 0..3 {
+                let vi = t * 3 + v;
+                let px = obj.vertices[base + v * 3];
+                let py = obj.vertices[base + v * 3 + 1];
+                let pz = obj.vertices[base + v * 3 + 2];
+
+                let (sx, sy, sz) = if has_skin && vi < joint_indices.len() && vi < joint_weights.len() {
+                    let idx = &joint_indices[vi];
+                    let w = &joint_weights[vi];
+                    let mut acc = [0.0f32; 3];
+                    for k in 0..4 {
+                        let wk = w[k];
+                        if wk <= 0.0 { continue; }
+                        let ji = idx[k] as usize;
+                        if ji >= skin_mats.len() { continue; }
+                        let p = gltf_parser::mat4_apply(skin_mats[ji], [px, py, pz]);
+                        acc[0] += p[0] * wk;
+                        acc[1] += p[1] * wk;
+                        acc[2] += p[2] * wk;
+                    }
+                    (acc[0], acc[1], acc[2])
+                } else {
+                    (px, py, pz)
+                };
+
+                transformed[v * 3] = sx + obj.x;
+                transformed[v * 3 + 1] = sy + obj.y;
+                transformed[v * 3 + 2] = sz + obj.z;
+            }
+
+            let uv_base = t * 6;
+            let tri_uvs = if uvs.len() >= uv_base + 6 {
+                [uvs[uv_base], uvs[uv_base+1], uvs[uv_base+2], uvs[uv_base+3], uvs[uv_base+4], uvs[uv_base+5]]
+            } else {
+                [0.0; 6]
+            };
+
+            result.push(render_triangle {
+                vertices: transformed,
+                uvs: tri_uvs,
+                texture: tex.clone(),
+                RGBA_color: obj.RGBA_color,
+                alpha_test: 0,
+                properties: Arc::clone(&props),
+            });
+        }
+    }
+
+    result
+}
+
+pub fn Raycast_dynamic(origin: [f32; 3], dir: [f32; 3]) -> Option<(f32, [f32; 3], [f32; 3])> {
+    let triangles = prepare_dynamic_triangles();
+
+    let mut best_t: f32 = f32::INFINITY;
+    let mut best_hit: Option<([f32; 3], [f32; 3])> = None;
+
+    for tri in &triangles {
+        let p0 = [tri.vertices[0], tri.vertices[1], tri.vertices[2]];
+        let p1 = [tri.vertices[3], tri.vertices[4], tri.vertices[5]];
+        let p2 = [tri.vertices[6], tri.vertices[7], tri.vertices[8]];
+
+        let e1 = sub(p1, p0);
+        let e2 = sub(p2, p0);
+        let h = cross(dir, e2);
+        let a = dot(e1, h);
+        if a.abs() < 1e-8 { continue; }
+        let f = 1.0 / a;
+        let s = sub(origin, p0);
+        let u = f * dot(s, h);
+        if !(0.0..=1.0).contains(&u) { continue; }
+        let q = cross(s, e1);
+        let v = f * dot(dir, q);
+        if v < 0.0 || u + v > 1.0 { continue; }
+        let t = f * dot(e2, q);
+        if t > 1e-4 && t < best_t {
+            best_t = t;
+            let nrm = cross(e1, e2);
+            let len = (nrm[0]*nrm[0] + nrm[1]*nrm[1] + nrm[2]*nrm[2]).sqrt();
+            let normal = if len > 1e-8 {
+                [nrm[0]/len, nrm[1]/len, nrm[2]/len]
+            } else {
+                [0.0, 1.0, 0.0]
+            };
+            let hp = [
+                origin[0] + dir[0]*t,
+                origin[1] + dir[1]*t,
+                origin[2] + dir[2]*t,
+            ];
+            best_hit = Some((hp, normal));
+        }
+    }
+
+    best_hit.map(|(p, n)| (best_t, p, n))
+}
+
 pub fn init_render(width: usize, height: usize, num_threads: usize) {
     {
         let mut zbuf = Z_BUFFER.lock().unwrap();
@@ -830,6 +1426,8 @@ pub fn Render_frame() {
         let cam = super::Camera.lock().unwrap();
         (cam.camera_fov as f32).to_radians()
     };
+
+    let dynamic_triangles = prepare_dynamic_triangles();
 
     let mut screen = super::Screen.lock().unwrap();
     let mut zbuf = Z_BUFFER.lock().unwrap();
@@ -860,6 +1458,7 @@ pub fn Render_frame() {
 
     let sprays_guard = SPRAYS.lock().unwrap();
     let sprays_slice: &[spray] = &sprays_guard[..];
+    let dyn_slice: &[render_triangle] = &dynamic_triangles;
 
     let num_threads = RENDER_THREADS.load(Ordering::Relaxed).min(height).max(1);
     let chunk_size = (height + num_threads - 1) / num_threads;
@@ -875,12 +1474,16 @@ pub fn Render_frame() {
             let root_ref = root;
             let basis_ref = &basis;
             let sprays_ref = sprays_slice;
+            let dyn_ref = dyn_slice;
             s.spawn(move || {
                 render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb);
                 for sp in sprays_ref {
                     for t in &sp.surface {
                         draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb);
                     }
+                }
+                for t in dyn_ref {
+                    draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb);
                 }
             });
         }
