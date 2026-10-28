@@ -6,6 +6,7 @@ pub mod render;
 pub mod gui;
 pub mod tick_system;
 pub mod gltf_parser;
+pub mod physics;
 
 // структура настроек движка
 pub struct Settings {
@@ -99,12 +100,14 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
 #[derive(Clone)]
 pub struct Physics_properties {
     pub g: f32,
+    pub resistance_in_air: f32,
     pub atmosphere_density: f32,
     pub atmosphere_color: [u8;3]
 }
 //стандартная физика
 pub static Earth: Mutex<Physics_properties> = Mutex::new(Physics_properties {
     g: 9.8,
+    resistance_in_air: 1.0,
     atmosphere_density: 0.1,
     atmosphere_color: [255,255,255]
 });
@@ -119,7 +122,6 @@ pub struct Physics_components {
     pub special_name: String,
 }
 //по прежнему как и с графикой
-// pub static Sound_queue: Mutex<Vec<Sound_components>> = Mutex::new(Vec::new());
 pub static Physics_scene: Mutex<Vec<Physics_components>> = Mutex::new(Vec::new());
 //создание пустого экрана
 pub fn Setup_window_screen(width: &i128, height: &i128) {
