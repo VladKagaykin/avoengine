@@ -1,5 +1,7 @@
 use super::{Screen,Draw_components,Static_scene};
 use super::{tick_system, Engine_settings, gltf_parser};
+use super::light::{Lightmap, Compute_dynamic_light_from_slice, Get_fog_color, Get_fog_density, Get_dynamic_lights_snapshot};
+use super::Light_components;
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -43,7 +45,9 @@ pub struct render_triangle {
     pub texture:  Option<Arc<Texture>>,
     pub RGBA_color: [u8; 4],
     pub alpha_test: u8,
-    pub properties: Arc<HashMap<String, String>>
+    pub properties: Arc<HashMap<String, String>>,
+    pub lightmap: Option<Arc<Lightmap>>,
+    pub lightmap_uvs: [f32; 6],
 }
 
 fn parse_floats(s: &str) -> Vec<f32> {
@@ -84,6 +88,8 @@ pub fn triangulation(objects: Vec<Draw_components>) -> Vec<render_triangle> {
                 RGBA_color: obj.RGBA_color,
                 alpha_test,
                 properties: Arc::clone(&props),
+                lightmap: None,
+                lightmap_uvs: [0.0; 6],
             });
         }
     }
@@ -302,7 +308,47 @@ pub fn Bake_static_scene() {
     let triangles = triangulation(scene);
     let tree = build_bsp(triangles, 0);
     *BSP_ROOT.lock().unwrap() = Some(Box::new(tree));
-    println!("[Render] Created BSP tree")
+    println!("[Render] Created BSP tree");
+}
+
+pub fn for_each_triangle<F: FnMut(&render_triangle)>(mut f: F) {
+    let bsp = BSP_ROOT.lock().unwrap();
+    if let Some(root) = bsp.as_ref() {
+        for_each_triangle_rec(root, &mut f);
+    }
+}
+
+fn for_each_triangle_rec<F: FnMut(&render_triangle)>(node: &BspNode, f: &mut F) {
+    match node {
+        BspNode::Leaf { triangles } => {
+            for t in triangles { f(t); }
+        }
+        BspNode::Internal { coplanar, front, back, .. } => {
+            for t in coplanar { f(t); }
+            for_each_triangle_rec(front, f);
+            for_each_triangle_rec(back, f);
+        }
+    }
+}
+
+pub fn for_each_triangle_mut<F: FnMut(&mut render_triangle)>(mut f: F) {
+    let mut bsp = BSP_ROOT.lock().unwrap();
+    if let Some(root) = bsp.as_mut() {
+        for_each_triangle_mut_rec(root, &mut f);
+    }
+}
+
+fn for_each_triangle_mut_rec<F: FnMut(&mut render_triangle)>(node: &mut BspNode, f: &mut F) {
+    match node {
+        BspNode::Leaf { triangles } => {
+            for t in triangles.iter_mut() { f(t); }
+        }
+        BspNode::Internal { coplanar, front, back, .. } => {
+            for t in coplanar.iter_mut() { f(t); }
+            for_each_triangle_mut_rec(front, f);
+            for_each_triangle_mut_rec(back, f);
+        }
+    }
 }
 
 pub static Z_BUFFER: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
@@ -487,6 +533,8 @@ pub fn Add_spray_at(path: String, center_position: [f32; 3], mut n: [f32; 3], RG
         RGBA_color,
         alpha_test: 0,
         properties: Arc::clone(&empty_props),
+        lightmap: None,
+        lightmap_uvs: [0.0; 6],
     };
 
     let tri2 = render_triangle {
@@ -500,6 +548,8 @@ pub fn Add_spray_at(path: String, center_position: [f32; 3], mut n: [f32; 3], RG
         RGBA_color,
         alpha_test: 0,
         properties: Arc::clone(&empty_props),
+        lightmap: None,
+        lightmap_uvs: [0.0; 6],
     };
 
     let mut sprays = SPRAYS.lock().unwrap();
@@ -1070,32 +1120,40 @@ fn to_view_space(p: [f32; 3], basis: &CameraBasis) -> [f32; 3] {
 fn intersect_near(
     a: [f32; 3], b: [f32; 3],
     uva: [f32; 2], uvb: [f32; 2],
+    lma: [f32; 2], lmb: [f32; 2],
+    dla: [f32; 3], dlb: [f32; 3],
     near: f32,
-) -> ([f32; 3], [f32; 2]) {
+) -> ([f32; 3], [f32; 2], [f32; 2], [f32; 3]) {
     let t = (near - a[2]) / (b[2] - a[2]);
     (
         [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), near],
         [uva[0] + t * (uvb[0] - uva[0]), uva[1] + t * (uvb[1] - uva[1])],
+        [lma[0] + t * (lmb[0] - lma[0]), lma[1] + t * (lmb[1] - lma[1])],
+        [
+            dla[0] + t * (dlb[0] - dla[0]),
+            dla[1] + t * (dlb[1] - dla[1]),
+            dla[2] + t * (dlb[2] - dla[2]),
+        ],
     )
 }
 
 fn clip_near(
-    tri: &[([f32; 3], [f32; 2]); 3],
+    tri: &[([f32; 3], [f32; 2], [f32; 2], [f32; 3]); 3],
     near: f32,
-) -> Vec<([f32; 3], [f32; 2])> {
+) -> Vec<([f32; 3], [f32; 2], [f32; 2], [f32; 3])> {
     let mut out = Vec::with_capacity(4);
     for i in 0..3 {
-        let (a, uva) = tri[i];
-        let (b, uvb) = tri[(i + 1) % 3];
+        let (a, uva, lma, dla) = tri[i];
+        let (b, uvb, lmb, dlb) = tri[(i + 1) % 3];
         let a_in = a[2] > near;
         let b_in = b[2] > near;
         if b_in {
             if !a_in {
-                out.push(intersect_near(a, b, uva, uvb, near));
+                out.push(intersect_near(a, b, uva, uvb, lma, lmb, dla, dlb, near));
             }
-            out.push((b, uvb));
+            out.push((b, uvb, lmb, dlb));
         } else if a_in {
-            out.push(intersect_near(a, b, uva, uvb, near));
+            out.push(intersect_near(a, b, uva, uvb, lma, lmb, dla, dlb, near));
         }
     }
     out
@@ -1116,13 +1174,19 @@ fn project(v: [f32; 3], focal: f32, width: f32, height: f32) -> ([f32; 2], f32) 
 fn rasterize_triangle(
     v0: [f32; 3], v1: [f32; 3], v2: [f32; 3],
     uv0: [f32; 2], uv1: [f32; 2], uv2: [f32; 2],
+    lm_uv0: [f32; 2], lm_uv1: [f32; 2], lm_uv2: [f32; 2],
+    dl0: [f32; 3], dl1: [f32; 3], dl2: [f32; 3],
     texture: Option<&Texture>,
+    lightmap: Option<&Lightmap>,
+    ambient: [u8; 3],
     focal: f32, width: usize, height: usize,
     row_offset: usize,
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
     rgba: [u8; 4],
     alpha_test: u8,
+    fog_color: [u8; 3],
+    fog_density: f32,
 ) {
     let (s0, iz0) = project(v0, focal, width as f32, height as f32);
     let (s1, iz1) = project(v1, focal, width as f32, height as f32);
@@ -1159,6 +1223,17 @@ fn rasterize_triangle(
     let d_uz_dx = (de12_dx * u0z + de20_dx * u1z + de01_dx * u2z) * inv_area2;
     let d_vz_dx = (de12_dx * v0z + de20_dx * v1z + de01_dx * v2z) * inv_area2;
 
+    let lmu0z = lm_uv0[0] * iz0; let lmv0z = lm_uv0[1] * iz0;
+    let lmu1z = lm_uv1[0] * iz1; let lmv1z = lm_uv1[1] * iz1;
+    let lmu2z = lm_uv2[0] * iz2; let lmv2z = lm_uv2[1] * iz2;
+
+    let d_lmuz_dx = (de12_dx * lmu0z + de20_dx * lmu1z + de01_dx * lmu2z) * inv_area2;
+    let d_lmvz_dx = (de12_dx * lmv0z + de20_dx * lmv1z + de01_dx * lmv2z) * inv_area2;
+
+    let dlr0 = dl0[0]; let dlg0 = dl0[1]; let dlb0 = dl0[2];
+    let dlr1 = dl1[0]; let dlg1 = dl1[1]; let dlb1 = dl1[2];
+    let dlr2 = dl2[0]; let dlg2 = dl2[1]; let dlb2 = dl2[2];
+
     let px_start = min_x as f32 + 0.5;
     let want_positive = area2 > 0.0;
 
@@ -1172,6 +1247,8 @@ fn rasterize_triangle(
         let mut inv_z = (e12 * iz0 + e20 * iz1 + e01 * iz2) * inv_area2;
         let mut uz = (e12 * u0z + e20 * u1z + e01 * u2z) * inv_area2;
         let mut vz = (e12 * v0z + e20 * v1z + e01 * v2z) * inv_area2;
+        let mut lmuz = (e12 * lmu0z + e20 * lmu1z + e01 * lmu2z) * inv_area2;
+        let mut lmvz = (e12 * lmv0z + e20 * lmv1z + e01 * lmv2z) * inv_area2;
 
         let row_screen = &mut screen_chunk[py_local];
         let row_zbuf = &mut zbuf_chunk[py_local];
@@ -1185,7 +1262,7 @@ fn rasterize_triangle(
             if inside {
                 let ux = px as usize;
                 if inv_z > row_zbuf[ux] {
-                    let (src_rgb, src_a) = if let Some(tex) = texture {
+                    let base_color = if let Some(tex) = texture {
                         let u = uz / inv_z;
                         let v = vz / inv_z;
                         let tw = tex.width as i32;
@@ -1201,6 +1278,45 @@ fn rasterize_triangle(
                     } else {
                         ([rgba[0], rgba[1], rgba[2]], rgba[3])
                     };
+
+                    let lm_color = if let Some(lm) = lightmap {
+                        let lu = (lmuz / inv_z).clamp(0.0, 1.0);
+                        let lv = (lmvz / inv_z).clamp(0.0, 1.0);
+                        let lx = ((lu * lm.width as f32).floor() as usize).min(lm.width - 1);
+                        let ly = ((lv * lm.height as f32).floor() as usize).min(lm.height - 1);
+                        lm.pixels[ly * lm.width + lx]
+                    } else {
+                        ambient
+                    };
+
+                    let bc0 = e12 * inv_area2;
+                    let bc1 = e20 * inv_area2;
+                    let bc2 = e01 * inv_area2;
+                    let dlr = bc0 * dlr0 + bc1 * dlr1 + bc2 * dlr2;
+                    let dlg = bc0 * dlg0 + bc1 * dlg1 + bc2 * dlg2;
+                    let dlb = bc0 * dlb0 + bc1 * dlb1 + bc2 * dlb2;
+
+                    let tr = (lm_color[0] as f32 + dlr).clamp(0.0, 255.0) as u32;
+                    let tg = (lm_color[1] as f32 + dlg).clamp(0.0, 255.0) as u32;
+                    let tb = (lm_color[2] as f32 + dlb).clamp(0.0, 255.0) as u32;
+
+                    let mut src_rgb = [
+                        ((base_color.0[0] as u32 * tr) / 255) as u8,
+                        ((base_color.0[1] as u32 * tg) / 255) as u8,
+                        ((base_color.0[2] as u32 * tb) / 255) as u8,
+                    ];
+                    let src_a = base_color.1;
+
+                    if fog_density > 0.0 && inv_z > 1e-9 {
+                        let dist = 1.0 / inv_z;
+                        let fog = (dist * fog_density).clamp(0.0, 1.0);
+                        let inv = 1.0 - fog;
+                        src_rgb = [
+                            (src_rgb[0] as f32 * inv + fog_color[0] as f32 * fog) as u8,
+                            (src_rgb[1] as f32 * inv + fog_color[1] as f32 * fog) as u8,
+                            (src_rgb[2] as f32 * inv + fog_color[2] as f32 * fog) as u8,
+                        ];
+                    }
 
                     if alpha_test > 0 {
                         if src_a >= alpha_test {
@@ -1228,6 +1344,8 @@ fn rasterize_triangle(
             inv_z += d_inv_z_dx;
             uz += d_uz_dx;
             vz += d_vz_dx;
+            lmuz += d_lmuz_dx;
+            lmvz += d_lmvz_dx;
         }
     }
 }
@@ -1236,10 +1354,13 @@ fn rasterize_triangle(
 fn draw_render_triangle(
     tri: &render_triangle,
     basis: &CameraBasis,
+    ambient: [u8; 3],
     focal: f32, width: usize, height: usize,
     row_offset: usize,
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
+    fog_color: [u8; 3],
+    fog_density: f32,
 ) {
     let verts = [
         [tri.vertices[0], tri.vertices[1], tri.vertices[2]],
@@ -1252,56 +1373,70 @@ fn draw_render_triangle(
         [tri.uvs[4], tri.uvs[5]],
     ];
     let rgba = tri.RGBA_color;
-
+    let dl: [[f32; 3]; 3] = [[0.0; 3]; 3];
+    let lm_uvs = [
+        [tri.lightmap_uvs[0], tri.lightmap_uvs[1]],
+        [tri.lightmap_uvs[2], tri.lightmap_uvs[3]],
+        [tri.lightmap_uvs[4], tri.lightmap_uvs[5]],
+    ];
     let v0 = to_view_space(verts[0], basis);
     let v1 = to_view_space(verts[1], basis);
     let v2 = to_view_space(verts[2], basis);
-
-    let clipped = clip_near(&[(v0, uvs[0]), (v1, uvs[1]), (v2, uvs[2])], NEAR_PLANE);
+    let clipped = clip_near(&[
+        (v0, uvs[0], lm_uvs[0], dl[0]),
+        (v1, uvs[1], lm_uvs[1], dl[1]),
+        (v2, uvs[2], lm_uvs[2], dl[2]),
+    ], NEAR_PLANE);
     if clipped.len() < 3 { return; }
-
     let tex = tri.texture.as_deref();
-
+    let lm = tri.lightmap.as_deref();
     for i in 1..clipped.len() - 1 {
         rasterize_triangle(
             clipped[0].0, clipped[i].0, clipped[i + 1].0,
             clipped[0].1, clipped[i].1, clipped[i + 1].1,
-            tex,
+            clipped[0].2, clipped[i].2, clipped[i + 1].2,
+            clipped[0].3, clipped[i].3, clipped[i + 1].3,
+            tex, lm, ambient,
             focal, width, height, row_offset,
             screen_chunk, zbuf_chunk, rgba, tri.alpha_test,
+            fog_color, fog_density,
         );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn render_node(
     node: &BspNode,
     basis: &CameraBasis,
+    ambient: [u8; 3],
     focal: f32, width: usize, height: usize,
     row_offset: usize,
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
+    fog_color: [u8; 3],
+    fog_density: f32,
 ) {
     match node {
         BspNode::Leaf { triangles } => {
             for t in triangles {
-                draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                draw_render_triangle(t, basis, ambient, focal, width, height, row_offset, screen_chunk, zbuf_chunk, fog_color, fog_density);
             }
         }
         BspNode::Internal { plane, coplanar, front, back } => {
             let d = signed_distance(basis.position, plane);
             if d > 0.0 {
-                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(back, basis, ambient, focal, width, height, row_offset, screen_chunk, zbuf_chunk, fog_color, fog_density);
                 for t in coplanar {
-                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                    draw_render_triangle(t, basis, ambient, focal, width, height, row_offset, screen_chunk, zbuf_chunk, fog_color, fog_density);
                 }
-                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(front, basis, ambient, focal, width, height, row_offset, screen_chunk, zbuf_chunk, fog_color, fog_density);
             } else {
-                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(front, basis, ambient, focal, width, height, row_offset, screen_chunk, zbuf_chunk, fog_color, fog_density);
                 for t in coplanar {
-                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                    draw_render_triangle(t, basis, ambient, focal, width, height, row_offset, screen_chunk, zbuf_chunk, fog_color, fog_density);
                 }
-                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(back, basis, ambient, focal, width, height, row_offset, screen_chunk, zbuf_chunk, fog_color, fog_density);
             }
         }
     }
@@ -1385,6 +1520,8 @@ fn prepare_dynamic_triangles() -> Vec<render_triangle> {
                 RGBA_color: obj.RGBA_color,
                 alpha_test: 0,
                 properties: Arc::clone(&props),
+                lightmap: None,
+                lightmap_uvs: [0.0; 6],
             });
         }
     }
@@ -1453,46 +1590,38 @@ pub fn Render_frame() {
         let cam = super::Camera.lock().unwrap();
         (cam.camera_fov as f32).to_radians()
     };
-
+    let ambient = super::Camera.lock().unwrap().ambient_light;
     let dynamic_triangles = prepare_dynamic_triangles();
-
+    let fog_color = Get_fog_color();
+    let fog_density = Get_fog_density();
     let mut screen = super::Screen.lock().unwrap();
     let mut zbuf = Z_BUFFER.lock().unwrap();
-
     let height = screen.len();
     let width = if height > 0 { screen[0].len() } else { 0 };
     if width == 0 || height == 0 { return; }
-
     if zbuf.len() != height || zbuf[0].len() != width {
         *zbuf = vec![vec![0.0f32; width]; height];
     }
-
     let focal = (height as f32 * 0.5) / (fov_v_rad * 0.5).tan();
     if !focal.is_finite() || focal <= 0.0 { return; }
-
     for row in screen.iter_mut() {
         for px in row.iter_mut() { px.color = empty_color; }
     }
     for row in zbuf.iter_mut() {
         for v in row.iter_mut() { *v = 0.0; }
     }
-
     let bsp_guard = BSP_ROOT.lock().unwrap();
     let root = match bsp_guard.as_ref() {
         Some(b) => b.as_ref(),
         None => return,
     };
-
     let sprays_guard = SPRAYS.lock().unwrap();
     let sprays_slice: &[spray] = &sprays_guard[..];
     let dyn_slice: &[render_triangle] = &dynamic_triangles;
-
     let num_threads = RENDER_THREADS.load(Ordering::Relaxed).min(height).max(1);
     let chunk_size = (height + num_threads - 1) / num_threads;
-
     let screen_slice: &mut [Vec<super::Pixel_structure>] = &mut screen[..];
     let zbuf_slice: &mut [Vec<f32>] = &mut zbuf[..];
-
     std::thread::scope(|s| {
         let mut row_start = 0usize;
         for (scr, zb) in screen_slice.chunks_mut(chunk_size).zip(zbuf_slice.chunks_mut(chunk_size)) {
@@ -1503,14 +1632,14 @@ pub fn Render_frame() {
             let sprays_ref = sprays_slice;
             let dyn_ref = dyn_slice;
             s.spawn(move || {
-                render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb);
+                render_node(root_ref, basis_ref, ambient, focal, width, height, cur_start, scr, zb, fog_color, fog_density);
                 for sp in sprays_ref {
                     for t in &sp.surface {
-                        draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb);
+                        draw_render_triangle(t, basis_ref, ambient, focal, width, height, cur_start, scr, zb, fog_color, fog_density);
                     }
                 }
                 for t in dyn_ref {
-                    draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb);
+                    draw_render_triangle(t, basis_ref, ambient, focal, width, height, cur_start, scr, zb, fog_color, fog_density);
                 }
             });
         }

@@ -689,13 +689,9 @@ fn raycast_bsp(
     })
 }
 
-fn zero_axis_forces(obj: &mut Dynamic_physics_components, axis: usize, delta_axis: f32) {
-    if delta_axis.abs() < 1e-8 { return; }
-    let sign = delta_axis.signum();
+fn zero_axis_forces(obj: &mut Dynamic_physics_components, axis: usize) {
     for f in obj.force_vectors.iter_mut() {
-        if f[axis] * sign > 0.0 {
-            f[axis] = 0.0;
-        }
+        f[axis] = 0.0;
     }
 }
 
@@ -704,60 +700,57 @@ pub fn Update_physics() {
         let e = super::Earth.lock().unwrap();
         (e.g, e.resistance_in_air, e.atmosphere_density)
     };
-
     let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32;
     let dt = tick_ms / 1000.0;
-
     let bsp_guard = PHYSICS_BSP_ROOT.lock().unwrap();
     let resistances_guard = PHYSICS_OBJECT_RESISTANCES.lock().unwrap();
     let mut queue = Physics_queue.lock().unwrap();
-
     for obj in queue.iter_mut() {
         let current_tick = tick_system::Get_current_tick();
         obj.update_animations(current_tick, dt);
-
         obj.Clear_impacts();
-
         let obj_resistance = obj.Get_resistance();
-
         let drag_decay = if resistance_air > 0.0 && atmosphere > 0.0 && obj_resistance > 0.0 {
             (-resistance_air * obj_resistance * atmosphere).exp()
         } else {
             1.0
         };
-
         for f in obj.force_vectors.iter_mut() {
             f[0] *= drag_decay;
             f[1] *= drag_decay;
             f[2] *= drag_decay;
         }
-
         let has_gravity = obj.properties.get("has_gravity").map(|v| v == "1").unwrap_or(false);
-        if has_gravity {
-            obj.force_vectors.push([0.0, -g * dt, 0.0]);
-        }
-
+        let collision = obj.properties.get("collision").map(|v| v == "1").unwrap_or(false);
         let mut vel = [0.0f32; 3];
         for f in &obj.force_vectors {
             vel[0] += f[0];
             vel[1] += f[1];
             vel[2] += f[2];
         }
-
         let delta = [vel[0] * dt, vel[1] * dt, vel[2] * dt];
-        let collision = obj.properties.get("collision").map(|v| v == "1").unwrap_or(false);
-
+        let mut resting_y = false;
         if collision && bsp_guard.is_some() {
             let root = bsp_guard.as_ref().unwrap();
-
             if delta[1].abs() > 1e-8 {
                 let o = [obj.x, obj.y, obj.z];
                 if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, delta[1], 0.0]) {
                     obj.y = hp[1] - delta[1].signum() * 0.001;
                     if oid != u128::MAX { obj.Add_impact(oid); }
-                    zero_axis_forces(obj, 1, delta[1]);
+                    zero_axis_forces(obj, 1);
+                    if delta[1] < 0.0 {
+                        resting_y = true;
+                    }
                 } else {
                     obj.y += delta[1];
+                }
+            } else if has_gravity {
+                let o = [obj.x, obj.y, obj.z];
+                if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, -0.05, 0.0]) {
+                    if hp[1] >= o[1] - 0.05 {
+                        resting_y = true;
+                        if oid != u128::MAX { obj.Add_impact(oid); }
+                    }
                 }
             }
             if delta[0].abs() > 1e-8 {
@@ -765,7 +758,7 @@ pub fn Update_physics() {
                 if let Some((hp, _, oid)) = raycast_bsp(root, o, [delta[0], 0.0, 0.0]) {
                     obj.x = hp[0] - delta[0].signum() * 0.001;
                     if oid != u128::MAX { obj.Add_impact(oid); }
-                    zero_axis_forces(obj, 0, delta[0]);
+                    zero_axis_forces(obj, 0);
                 } else {
                     obj.x += delta[0];
                 }
@@ -775,7 +768,7 @@ pub fn Update_physics() {
                 if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, 0.0, delta[2]]) {
                     obj.z = hp[2] - delta[2].signum() * 0.001;
                     if oid != u128::MAX { obj.Add_impact(oid); }
-                    zero_axis_forces(obj, 2, delta[2]);
+                    zero_axis_forces(obj, 2);
                 } else {
                     obj.z += delta[2];
                 }
@@ -785,7 +778,9 @@ pub fn Update_physics() {
             obj.y += delta[1];
             obj.z += delta[2];
         }
-
+        if has_gravity && !resting_y {
+            obj.force_vectors.push([0.0, -g * dt, 0.0]);
+        }
         if !obj.impact_with.is_empty() && obj_resistance > 0.0 {
             let mut total = 0.0f32;
             let mut count = 0usize;
@@ -804,7 +799,6 @@ pub fn Update_physics() {
                 }
             }
         }
-
         obj.force_vectors.retain(|f| f[0].abs() + f[1].abs() + f[2].abs() > 1e-4);
     }
 }
