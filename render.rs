@@ -526,23 +526,11 @@ pub fn Add_spray(path: String, center_position: [f32; 3], RGBA_color: [u8; 4]) {
     let n = match n_opt {
         Some(n) => n,
         None => {
-            let triangles = prepare_dynamic_triangles();
-            let mut found = None;
-            for tri in &triangles {
-                if point_in_triangle(center_position, tri, 1e-3) {
-                    if let Some(p) = plane_from_triangle(tri) {
-                        found = Some(p.normal);
-                        break;
-                    }
-                }
-            }
-            match found {
-                Some(n) => n,
-                None => {
-                    println!("[Render] Add_spray: no surface at position");
-                    return;
-                }
-            }
+            println!(
+                "[Render] Add_spray: no static surface at position \
+                 (sprays on dynamic objects are not supported)"
+            );
+            return;
         }
     };
 
@@ -735,6 +723,31 @@ impl Dynamic_components {
 
     pub fn Stop_all_animations(&mut self) {
         self.animations_in_play.clear();
+        let tick = tick_system::Get_current_tick();
+        self.properties.insert("animation_start_tick".to_string(), tick.to_string());
+    }
+
+    pub fn update_animations(&mut self, current_tick: u128, tick_ms: f32) {
+        if self.animations_in_play.is_empty() { return; }
+        let skel = match self.Get_skeleton() { Some(s) => s, None => return };
+
+        let start_tick = self.get_animation_start_tick();
+        let speed      = self.get_animation_speed();
+        let elapsed    = current_tick.saturating_sub(start_tick) as f32 * tick_ms * speed;
+
+        self.animations_in_play.retain(|name| {
+            match skel.animations.get(name) {
+                Some(anim) => anim.duration <= 0.0 || elapsed < anim.duration,
+                None => false,
+            }
+        });
+
+        if self.animations_in_play.is_empty() {
+            self.properties.insert(
+                "animation_start_tick".to_string(),
+                current_tick.to_string(),
+            );
+        }
     }
 
     pub fn Set_x(&mut self, delta: f32) { self.x += delta; }
@@ -789,16 +802,20 @@ impl Dynamic_components {
     }
 
     pub fn Get_current_animation_time_at(&self, current_tick: u128, tick_ms: f32) -> f32 {
-        let anim_name: String = match self.animations_in_play.first()
-            .or(self.properties.get("default_animation")) {
-            Some(n) => n.clone(),
-            None => return 0.0,
+        let (anim_name, is_once) = match (
+            self.animations_in_play.first(),
+            self.properties.get("default_animation"),
+        ) {
+            (Some(n), _)    => (n.clone(), true),
+            (None, Some(d)) => (d.clone(), false),
+            (None, None)    => return 0.0,
         };
         let skel = match self.Get_skeleton() { Some(s) => s, None => return 0.0 };
         let anim = match skel.animations.get(&anim_name) { Some(a) => a, None => return 0.0 };
         let elapsed = current_tick.saturating_sub(self.get_animation_start_tick()) as f32
             * tick_ms * self.get_animation_speed();
-        if anim.duration > 0.0 { elapsed % anim.duration } else { 0.0 }
+        if anim.duration <= 0.0 { return 0.0; }
+        if is_once { elapsed.min(anim.duration) } else { elapsed % anim.duration }
     }
 
     pub fn Get_bone_names(&self) -> Vec<String> {
@@ -867,17 +884,25 @@ impl Dynamic_components {
         let start_tick = self.get_animation_start_tick();
         let speed = self.get_animation_speed();
 
-        let mut active_names: Vec<String> = self.animations_in_play.clone();
-        if active_names.is_empty() {
+        let mut active: Vec<(String, bool)> = self.animations_in_play.iter()
+            .map(|n| (n.clone(), true))
+            .collect();
+        if active.is_empty() {
             if let Some(d) = self.properties.get("default_animation") {
-                active_names.push(d.clone());
+                active.push((d.clone(), false));
             }
         }
 
-        let times: Vec<f32> = active_names.iter().map(|name| {
+        let times: Vec<f32> = active.iter().map(|(name, is_once)| {
             if let Some(anim) = skel.animations.get(name) {
                 let elapsed = current_tick.saturating_sub(start_tick) as f32 * tick_ms * speed;
-                if anim.duration > 0.0 { elapsed % anim.duration } else { 0.0 }
+                if anim.duration <= 0.0 {
+                    0.0
+                } else if *is_once {
+                    elapsed.min(anim.duration)
+                } else {
+                    elapsed % anim.duration
+                }
             } else { 0.0 }
         }).collect();
 
@@ -891,7 +916,7 @@ impl Dynamic_components {
             let mut weight_count = 0usize;
             let mut base_r = bone.rotation;
 
-            for (k, name) in active_names.iter().enumerate() {
+            for (k, (name, _is_once)) in active.iter().enumerate() {
                 let anim = match skel.animations.get(name) { Some(a) => a, None => continue };
                 let at = times[k];
                 if let Some(tr) = anim.tracks.get(&i) {
@@ -1283,13 +1308,15 @@ fn render_node(
 }
 
 fn prepare_dynamic_triangles() -> Vec<render_triangle> {
-    let queue = Draw_queue.lock().unwrap();
+    let mut queue = Draw_queue.lock().unwrap();
     let current_tick = tick_system::Get_current_tick();
     let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32 / 1000.0;
 
     let mut result: Vec<render_triangle> = Vec::new();
 
-    for obj in queue.iter() {
+    for obj in queue.iter_mut() {
+        obj.update_animations(current_tick, tick_ms);
+
         let n_tris = obj.vertices.len() / 9;
         if n_tris == 0 { continue; }
 

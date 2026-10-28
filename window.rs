@@ -9,17 +9,43 @@ use sdl2::video::{Window, WindowContext};
 
 use super::{Engine_settings, Screen};
 
-struct SdlState {
-    sdl: sdl2::Sdl,
-    _video: sdl2::VideoSubsystem,
-    event_pump: sdl2::EventPump,
-    canvas: Canvas<Window>,
-    texture: Texture,
+pub struct SdlState {
+    pub sdl: sdl2::Sdl,
+    pub _video: sdl2::VideoSubsystem,
+    pub event_pump: sdl2::EventPump,
+    pub canvas: Canvas<Window>,
+    pub texture: Texture,
+    pub mouse: sdl2::mouse::MouseUtil,
 }
 
 thread_local! {
     static SDL: RefCell<Option<SdlState>> = RefCell::new(None);
     static LAST_FRAME: RefCell<Instant> = RefCell::new(Instant::now());
+    static MOUSE_DELTA: RefCell<(i32, i32, i32)> = RefCell::new((0, 0, 0));
+}
+
+fn drain_into_delta(pump: &mut sdl2::EventPump) {
+    for event in pump.poll_iter() {
+        match event {
+            Event::Quit { .. } => std::process::exit(0),
+            Event::Window { win_event: WindowEvent::Close, .. } => std::process::exit(0),
+            Event::KeyDown { keycode: Some(Keycode::Escape), .. } => std::process::exit(0),
+            Event::MouseMotion { xrel, yrel, .. } => {
+                MOUSE_DELTA.with(|d| {
+                    let mut d = d.borrow_mut();
+                    d.0 += xrel;
+                    d.1 += yrel;
+                });
+            }
+            Event::MouseWheel { y, .. } => {
+                MOUSE_DELTA.with(|d| {
+                    let mut d = d.borrow_mut();
+                    d.2 += y;
+                });
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn Create_window() {
@@ -31,6 +57,7 @@ pub fn Create_window() {
 
     let sdl = sdl2::init().expect("SDL init failed");
     let video = sdl.video().expect("SDL video subsystem init failed");
+    let mouse = sdl.mouse();
 
     let window = video
         .window(&name, width, height)
@@ -59,6 +86,7 @@ pub fn Create_window() {
             event_pump,
             canvas,
             texture,
+            mouse,
         });
     });
     println!("[Window]Window created");
@@ -137,6 +165,7 @@ pub fn Update_frame() {
 
         {
             let SdlState { canvas, event_pump, .. } = &mut *state;
+            drain_into_delta(event_pump);
             super::gui::Update_gui(canvas, event_pump);
         }
 
@@ -149,14 +178,7 @@ pub fn Get_pressed_keys() -> Vec<i32> {
         let mut guard = c.borrow_mut();
         let state = guard.as_mut().expect("window not created");
 
-        for event in state.event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. } => std::process::exit(0),
-                Event::Window { win_event: WindowEvent::Close, .. } => std::process::exit(0),
-                Event::KeyDown { keycode: Some(Keycode::Escape), .. } => std::process::exit(0),
-                _ => {}
-            }
-        }
+        drain_into_delta(&mut state.event_pump);
 
         state.event_pump
             .keyboard_state()
@@ -164,5 +186,55 @@ pub fn Get_pressed_keys() -> Vec<i32> {
             .filter(|&(_sc, pressed)| pressed)
             .map(|(sc, _)| sc as i32)
             .collect()
+    })
+}
+
+pub fn Mouse_capture() {
+    SDL.with(|c| {
+        let mut guard = c.borrow_mut();
+        let state = guard.as_mut().expect("window not created");
+        state.mouse.set_relative_mouse_mode(true);
+        state.mouse.show_cursor(false);
+        let _ = state.canvas.window_mut().set_grab(true);
+    });
+}
+
+pub fn Return_mouse() {
+    SDL.with(|c| {
+        let mut guard = c.borrow_mut();
+        let state = guard.as_mut().expect("window not created");
+        state.mouse.set_relative_mouse_mode(false);
+        state.mouse.show_cursor(true);
+        let _ = state.canvas.window_mut().set_grab(false);
+    });
+}
+
+pub fn Get_mouse() -> Vec<i32> {
+    SDL.with(|c| {
+        let mut guard = c.borrow_mut();
+        let state = guard.as_mut().expect("window not created");
+
+        let (xrel, yrel, wheel) = MOUSE_DELTA.with(|d| {
+            let mut d = d.borrow_mut();
+            let v = *d;
+            *d = (0, 0, 0);
+            v
+        });
+
+        let m = state.event_pump.mouse_state();
+        let mut buttons: i32 = 0;
+        if m.left() { buttons |= 1; }
+        if m.middle() { buttons |= 2; }
+        if m.right() { buttons |= 4; }
+        if m.x1() { buttons |= 8; }
+        if m.x2() { buttons |= 16; }
+
+        vec![m.x(), m.y(), xrel, yrel, buttons, wheel]
+    })
+}
+
+pub fn Return_properties() -> &'static RefCell<Option<SdlState>> {
+    SDL.with(|c| unsafe {
+        &*(c as *const RefCell<Option<SdlState>>)
     })
 }
