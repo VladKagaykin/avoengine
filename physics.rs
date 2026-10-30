@@ -25,6 +25,9 @@ pub static PHYSICS_BSP_ROOT: Mutex<Option<Box<render::BspNode>>> = Mutex::new(No
 pub static PHYSICS_OBJECT_RESISTANCES: LazyLock<Mutex<HashMap<u128, f32>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+pub static PHYSICS_OBJECT_BOUNCES: LazyLock<Mutex<HashMap<u128, f32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 fn parse_floats(s: &str) -> Vec<f32> {
     s.split(|c: char| c == ',' || c.is_whitespace())
         .filter_map(|x| x.parse().ok())
@@ -97,6 +100,7 @@ impl Dynamic_physics_components {
         properties.insert("animation_speed".to_string(), "1.0".to_string());
         properties.insert("animation_start_tick".to_string(), "0".to_string());
         properties.insert("resistance".to_string(), "1.0".to_string());
+        properties.insert("bounce".to_string(), "0.0".to_string());
         Self {
             x: 0.0,
             y: 0.0,
@@ -248,8 +252,20 @@ impl Dynamic_physics_components {
 
     pub fn Get_resistance(&self) -> f32 {
         self.properties.get("resistance")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1.0)
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(1.0f32)
+            .max(0.0f32)
+    }
+
+    pub fn Set_bounce(&mut self, b: f32) {
+        self.properties.insert("bounce".to_string(), b.max(0.0).to_string());
+    }
+
+    pub fn Get_bounce(&self) -> f32 {
+        self.properties.get("bounce")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(0.0f32)
+            .max(0.0f32)
     }
 
     pub fn Set_bone_translation(&mut self, bone_idx: usize, dx: f32, dy: f32, dz: f32) {
@@ -556,15 +572,23 @@ pub fn Bake_physics_scene() {
     *PHYSICS_BSP_ROOT.lock().unwrap() = Some(Box::new(tree));
 
     let mut resistances = HashMap::new();
+    let mut bounces = HashMap::new();
     for (idx, p) in scene.iter().enumerate() {
         if p.properties.get("collision").map(|v| v == "1").unwrap_or(false) {
             let r = p.properties.get("resistance")
                 .and_then(|s| s.parse::<f32>().ok())
-                .unwrap_or(1.0);
+                .unwrap_or(1.0)
+                .max(0.0);
+            let b = p.properties.get("bounce")
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(1.0)
+                .max(0.0);
             resistances.insert(idx as u128, r);
+            bounces.insert(idx as u128, b);
         }
     }
     *PHYSICS_OBJECT_RESISTANCES.lock().unwrap() = resistances;
+    *PHYSICS_OBJECT_BOUNCES.lock().unwrap() = bounces;
 
     println!("[Physics] Created physics BSP tree");
 }
@@ -689,68 +713,104 @@ fn raycast_bsp(
     })
 }
 
-fn zero_axis_forces(obj: &mut Dynamic_physics_components, axis: usize) {
+fn handle_collision_reflect(
+    obj: &mut Dynamic_physics_components,
+    axis: usize,
+    combined_bounce: f32,
+) {
+    let sum: f32 = obj.force_vectors.iter().map(|f| f[axis]).sum();
     for f in obj.force_vectors.iter_mut() {
         f[axis] = 0.0;
+    }
+    if combined_bounce > 0.0 && sum.abs() > 1e-8 {
+        let mut reflected = [0.0f32; 3];
+        reflected[axis] = -sum * combined_bounce;
+        obj.force_vectors.push(reflected);
     }
 }
 
 pub fn Update_physics() {
-    let (g, resistance_air, atmosphere) = {
+    let (g, resistance_air) = {
         let e = super::Earth.lock().unwrap();
-        (e.g, e.resistance_in_air, e.atmosphere_density)
+        (e.g, e.resistance_in_air)
     };
+
     let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32;
     let dt = tick_ms / 1000.0;
+
     let bsp_guard = PHYSICS_BSP_ROOT.lock().unwrap();
     let resistances_guard = PHYSICS_OBJECT_RESISTANCES.lock().unwrap();
+    let bounces_guard = PHYSICS_OBJECT_BOUNCES.lock().unwrap();
     let mut queue = Physics_queue.lock().unwrap();
+
     for obj in queue.iter_mut() {
         let current_tick = tick_system::Get_current_tick();
         obj.update_animations(current_tick, dt);
-        obj.Clear_impacts();
-        let obj_resistance = obj.Get_resistance();
-        let drag_decay = if resistance_air > 0.0 && atmosphere > 0.0 && obj_resistance > 0.0 {
-            (-resistance_air * obj_resistance * atmosphere).exp()
+
+        let was_in_contact = !obj.impact_with.is_empty();
+        let prev_avg_surface_resistance: Option<f32> = if was_in_contact {
+            let mut total = 0.0f32;
+            let mut count = 0usize;
+            for oid in &obj.impact_with {
+                if let Some(r) = resistances_guard.get(oid) {
+                    total += *r;
+                    count += 1;
+                }
+            }
+            if count > 0 { Some(total / count as f32) } else { None }
         } else {
-            1.0
+            None
         };
-        for f in obj.force_vectors.iter_mut() {
-            f[0] *= drag_decay;
-            f[1] *= drag_decay;
-            f[2] *= drag_decay;
+        obj.Clear_impacts();
+
+        let obj_resistance = obj.Get_resistance();
+
+        if let Some(avg_surface) = prev_avg_surface_resistance {
+            if obj_resistance > 0.0 {
+                let friction_decay = (-avg_surface * obj_resistance).exp();
+                for f in obj.force_vectors.iter_mut() {
+                    f[0] *= friction_decay;
+                    f[2] *= friction_decay;
+                }
+            }
+        } else if obj_resistance > 0.0 && resistance_air > 0.0 {
+            let drag_decay = (-resistance_air * obj_resistance).exp();
+            for f in obj.force_vectors.iter_mut() {
+                f[0] *= drag_decay;
+                f[2] *= drag_decay;
+            }
         }
+
         let has_gravity = obj.properties.get("has_gravity").map(|v| v == "1").unwrap_or(false);
-        let collision = obj.properties.get("collision").map(|v| v == "1").unwrap_or(false);
+        if has_gravity {
+            obj.force_vectors.push([0.0, -g * dt, 0.0]);
+        }
+
         let mut vel = [0.0f32; 3];
         for f in &obj.force_vectors {
             vel[0] += f[0];
             vel[1] += f[1];
             vel[2] += f[2];
         }
+
         let delta = [vel[0] * dt, vel[1] * dt, vel[2] * dt];
-        let mut resting_y = false;
+        let collision = obj.properties.get("collision").map(|v| v == "1").unwrap_or(false);
+
         if collision && bsp_guard.is_some() {
             let root = bsp_guard.as_ref().unwrap();
+
             if delta[1].abs() > 1e-8 {
                 let o = [obj.x, obj.y, obj.z];
                 if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, delta[1], 0.0]) {
                     obj.y = hp[1] - delta[1].signum() * 0.001;
                     if oid != u128::MAX { obj.Add_impact(oid); }
-                    zero_axis_forces(obj, 1);
-                    if delta[1] < 0.0 {
-                        resting_y = true;
-                    }
+                    let surf_bounce = if oid != u128::MAX {
+                        bounces_guard.get(&oid).copied().unwrap_or(1.0).max(0.0)
+                    } else { 1.0 };
+                    let combined = obj.Get_bounce() * surf_bounce;
+                    handle_collision_reflect(obj, 1, combined);
                 } else {
                     obj.y += delta[1];
-                }
-            } else if has_gravity {
-                let o = [obj.x, obj.y, obj.z];
-                if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, -0.05, 0.0]) {
-                    if hp[1] >= o[1] - 0.05 {
-                        resting_y = true;
-                        if oid != u128::MAX { obj.Add_impact(oid); }
-                    }
                 }
             }
             if delta[0].abs() > 1e-8 {
@@ -758,7 +818,11 @@ pub fn Update_physics() {
                 if let Some((hp, _, oid)) = raycast_bsp(root, o, [delta[0], 0.0, 0.0]) {
                     obj.x = hp[0] - delta[0].signum() * 0.001;
                     if oid != u128::MAX { obj.Add_impact(oid); }
-                    zero_axis_forces(obj, 0);
+                    let surf_bounce = if oid != u128::MAX {
+                        bounces_guard.get(&oid).copied().unwrap_or(1.0).max(0.0)
+                    } else { 1.0 };
+                    let combined = obj.Get_bounce() * surf_bounce;
+                    handle_collision_reflect(obj, 0, combined);
                 } else {
                     obj.x += delta[0];
                 }
@@ -768,7 +832,11 @@ pub fn Update_physics() {
                 if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, 0.0, delta[2]]) {
                     obj.z = hp[2] - delta[2].signum() * 0.001;
                     if oid != u128::MAX { obj.Add_impact(oid); }
-                    zero_axis_forces(obj, 2);
+                    let surf_bounce = if oid != u128::MAX {
+                        bounces_guard.get(&oid).copied().unwrap_or(1.0).max(0.0)
+                    } else { 1.0 };
+                    let combined = obj.Get_bounce() * surf_bounce;
+                    handle_collision_reflect(obj, 2, combined);
                 } else {
                     obj.z += delta[2];
                 }
@@ -778,27 +846,7 @@ pub fn Update_physics() {
             obj.y += delta[1];
             obj.z += delta[2];
         }
-        if has_gravity && !resting_y {
-            obj.force_vectors.push([0.0, -g * dt, 0.0]);
-        }
-        if !obj.impact_with.is_empty() && obj_resistance > 0.0 {
-            let mut total = 0.0f32;
-            let mut count = 0usize;
-            for oid in &obj.impact_with {
-                if let Some(r) = resistances_guard.get(oid) {
-                    total += *r;
-                    count += 1;
-                }
-            }
-            if count > 0 {
-                let avg_surface_resistance = total / count as f32;
-                let friction_decay = (-avg_surface_resistance * obj_resistance).exp();
-                for f in obj.force_vectors.iter_mut() {
-                    f[0] *= friction_decay;
-                    f[2] *= friction_decay;
-                }
-            }
-        }
+
         obj.force_vectors.retain(|f| f[0].abs() + f[1].abs() + f[2].abs() > 1e-4);
     }
 }

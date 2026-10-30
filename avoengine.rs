@@ -7,7 +7,6 @@ pub mod gui;
 pub mod tick_system;
 pub mod gltf_parser;
 pub mod physics;
-pub mod light;
 
 // структура настроек движка
 pub struct Settings {
@@ -44,22 +43,24 @@ pub struct Draw_components {
 // незапечённая сцена(без флага, запекать будет пользователь)
 pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 
-#[derive(Clone)]
-pub struct Light_components {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub RGB_color: [u8; 3],
-    pub cone_angle: f32,
-    pub pitch: f32,
-    pub yaw: f32,
-    pub special_name: String
-}
+// сначала разобраться с статикой, потом динамику(в том числе и физику), потом свет 
+// #[derive(Clone)]
+// pub struct Light_components {
+//     pub light_x: f32,
+//     pub light_y: f32,
+//     pub light_z: f32,
+//     pub light_RGB_color: [u8; 3],
+//     pub light_distance: f32,
+//     pub light_cone_angle: f32,
+//     pub light_pitch: f32,
+//     pub light_yaw: f32,
+//     pub light_special_name: String,
+// }
 
-pub static Light_queue: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
-pub static Static_light: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
+// pub static Light_queue: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
+// pub static Static_light: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
 
-//структура пикселя, выводимого на экран
+//структура пискеля, выводимого на экран
 #[derive(Clone)]
 pub struct Pixel_structure {
     pub color: [u8; 3],
@@ -93,7 +94,7 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
     camera_yaw: 0.0,
     camera_roll: 0.0,
     max_dist: 256,
-    ambient_light: [64, 64, 64]
+    ambient_light: [128, 128, 128],
 });
 // параметры физики(в том числе и визуальной)
 #[derive(Clone)]
@@ -106,7 +107,7 @@ pub struct Physics_properties {
 pub static Earth: Mutex<Physics_properties> = Mutex::new(Physics_properties {
     g: 9.8,
     resistance_in_air: 1.0,
-    atmosphere_density: 0.001
+    atmosphere_density: 0.1
 });
 // структура физической карты(хитбоксы) то же самое, что и у графических элементов, но без графики
 #[derive(Clone)]
