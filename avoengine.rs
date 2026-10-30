@@ -80,6 +80,7 @@ pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 //     pub light_special_name: String,
 // }
 
+pub static Pseudo_light_map: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 // pub static Light_queue: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
 // pub static Static_light: Mutex<Vec<Light_components>> = Mutex::new(Vec::new());
 
@@ -117,7 +118,7 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
     camera_yaw: 0.0,
     camera_roll: 0.0,
     max_dist: 256,
-    ambient_light: [128, 128, 128],
+    ambient_light: [64, 64, 64],
 });
 // параметры физики(в том числе и визуальной)
 #[derive(Clone)]
