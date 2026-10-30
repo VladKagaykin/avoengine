@@ -15,6 +15,9 @@ use std::sync::LazyLock;
 pub struct Light_source {
     pub triangles: Vec<render_triangle>,
     pub color: [u8; 3],
+    pub bounds_min: [f32; 3],
+    pub bounds_max: [f32; 3],
+    pub tri_bounds: Vec<([f32; 3], [f32; 3])>,
 }
 
 pub static LIGHT_SOURCES: Mutex<Vec<Arc<Light_source>>> = Mutex::new(Vec::new());
@@ -39,10 +42,32 @@ fn ray_triangle_hit(origin: [f32; 3], dir: [f32; 3], tri: &render_triangle) -> b
     f * dot(e2, q) > 1e-4
 }
 
+fn point_inside_aabb(p: [f32; 3], bmin: [f32; 3], bmax: [f32; 3]) -> bool {
+    p[0] >= bmin[0] && p[0] <= bmax[0]
+        && p[1] >= bmin[1] && p[1] <= bmax[1]
+        && p[2] >= bmin[2] && p[2] <= bmax[2]
+}
+
+fn ray_hits_aabb_diag(origin: [f32; 3], bmin: [f32; 3], bmax: [f32; 3]) -> bool {
+    let mut t_enter = f32::NEG_INFINITY;
+    let mut t_exit = f32::INFINITY;
+    for i in 0..3 {
+        let a = bmin[i] - origin[i];
+        let b = bmax[i] - origin[i];
+        if a > t_enter { t_enter = a; }
+        if b < t_exit { t_exit = b; }
+    }
+    t_enter <= t_exit && t_exit > 1e-4
+}
+
 fn point_in_light_volume(p: [f32; 3], light: &Light_source) -> bool {
+    if !point_inside_aabb(p, light.bounds_min, light.bounds_max) {
+        return false;
+    }
     let dir = [0.577350269, 0.577350269, 0.577350269];
     let mut count = 0usize;
-    for tri in &light.triangles {
+    for (tri, (tmin, tmax)) in light.triangles.iter().zip(light.tri_bounds.iter()) {
+        if !ray_hits_aabb_diag(p, *tmin, *tmax) { continue; }
         if ray_triangle_hit(p, dir, tri) { count += 1; }
     }
     count % 2 == 1
@@ -69,7 +94,35 @@ pub fn Bake_light() {
         let color = [obj.RGBA_color[0], obj.RGBA_color[1], obj.RGBA_color[2]];
         let triangles = triangulation(vec![obj]);
         if triangles.is_empty() { continue; }
-        sources.push(Arc::new(Light_source { triangles, color }));
+
+        let mut bounds_min = [f32::INFINITY; 3];
+        let mut bounds_max = [f32::NEG_INFINITY; 3];
+        let mut tri_bounds = Vec::with_capacity(triangles.len());
+
+        for tri in &triangles {
+            let mut tmin = [f32::INFINITY; 3];
+            let mut tmax = [f32::NEG_INFINITY; 3];
+            for v in 0..3 {
+                for i in 0..3 {
+                    let val = tri.vertices[v * 3 + i];
+                    if val < tmin[i] { tmin[i] = val; }
+                    if val > tmax[i] { tmax[i] = val; }
+                }
+            }
+            for i in 0..3 {
+                if tmin[i] < bounds_min[i] { bounds_min[i] = tmin[i]; }
+                if tmax[i] > bounds_max[i] { bounds_max[i] = tmax[i]; }
+            }
+            tri_bounds.push((tmin, tmax));
+        }
+
+        sources.push(Arc::new(Light_source {
+            triangles,
+            color,
+            bounds_min,
+            bounds_max,
+            tri_bounds,
+        }));
     }
     let n = sources.len();
     *LIGHT_SOURCES.lock().unwrap() = sources;
