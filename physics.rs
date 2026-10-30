@@ -9,6 +9,9 @@ pub struct Dynamic_physics_components{
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub pitch: f32,
+    pub yaw: f32,
+    pub roll: f32,
     pub vertices: Vec<f32>,
     pub RGBA_color: [u8; 4],
     pub animations_in_play: Vec<String>,
@@ -105,6 +108,9 @@ impl Dynamic_physics_components {
             x: 0.0,
             y: 0.0,
             z: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            roll: 0.0,
             vertices: Vec::new(),
             RGBA_color: [255, 255, 255, 255],
             animations_in_play: Vec::new(),
@@ -236,6 +242,10 @@ impl Dynamic_physics_components {
     pub fn Set_y(&mut self, delta: f32) { self.y += delta; }
     pub fn Set_z(&mut self, delta: f32) { self.z += delta; }
 
+    pub fn Set_pitch(&mut self, delta: f32) { self.pitch += delta; }
+    pub fn Set_yaw(&mut self, delta: f32) { self.yaw += delta; }
+    pub fn Set_roll(&mut self, delta: f32) { self.roll += delta; }
+
     pub fn Set_R(&mut self, delta: i16) { self.RGBA_color[0] = (self.RGBA_color[0] as i16 + delta).clamp(0, 255) as u8; }
     pub fn Set_G(&mut self, delta: i16) { self.RGBA_color[1] = (self.RGBA_color[1] as i16 + delta).clamp(0, 255) as u8; }
     pub fn Set_B(&mut self, delta: i16) { self.RGBA_color[2] = (self.RGBA_color[2] as i16 + delta).clamp(0, 255) as u8; }
@@ -294,6 +304,9 @@ impl Dynamic_physics_components {
     pub fn Get_x(&self) -> f32 { self.x }
     pub fn Get_y(&self) -> f32 { self.y }
     pub fn Get_z(&self) -> f32 { self.z }
+    pub fn Get_pitch(&self) -> f32 { self.pitch }
+    pub fn Get_yaw(&self) -> f32 { self.yaw }
+    pub fn Get_roll(&self) -> f32 { self.roll }
     pub fn Get_R(&self) -> u8 { self.RGBA_color[0] }
     pub fn Get_G(&self) -> u8 { self.RGBA_color[1] }
     pub fn Get_B(&self) -> u8 { self.RGBA_color[2] }
@@ -553,6 +566,9 @@ fn to_draw_components(p: &super::Physics_components, id: usize) -> super::Draw_c
         x: p.x,
         y: p.y,
         z: p.z,
+        pitch: p.pitch,
+        yaw: p.yaw,
+        roll: p.roll,
         vertices: p.vertices.clone(),
         RGBA_color: [255, 255, 255, 255],
         properties: props,

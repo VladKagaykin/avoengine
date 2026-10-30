@@ -14,7 +14,16 @@ pub struct Settings {
     pub window_height: i128,
     pub tick_speed: i128, // милисекунды
     pub cores_multiply: u8, // потом как-нибудь автоматизировать данный ужас
-    pub window_name: String
+    pub window_name: String,
+    pub bsp_epsilon: f32,
+    pub bsp_split_weight: f32,
+    pub bsp_min_leaf: usize,
+    pub bsp_full_scan_limit: usize,
+    pub bsp_max_depth: u32,
+    pub near_plane: f32,
+    pub cull_backfaces: bool,
+    pub spray_pixels_per_unit: f32,
+    pub spray_offset: f32,
 }
 
 // настройки движка по умолчанию(lazylock для функции to_string)
@@ -25,6 +34,16 @@ pub static Engine_settings: LazyLock<Mutex<Settings>> = LazyLock::new(|| {
         tick_speed: 50,
         cores_multiply: 2,
         window_name: "avoengine".to_string(),
+        // !!!ОБЯЗАТЕЛЬНО ПРОТЕСТИРОВАТЬ ЗНАЧЕНИЯ(возможно сделать динамическими в зависимости от сцены)!!!
+        bsp_epsilon: 1e-4,
+        bsp_split_weight: 5.0,
+        bsp_min_leaf: 8,
+        bsp_full_scan_limit: 100,
+        bsp_max_depth: 64,
+        near_plane: 0.001,
+        cull_backfaces: false,
+        spray_pixels_per_unit: 512.0,
+        spray_offset: 0.01,
     })
 });
 
@@ -34,6 +53,9 @@ pub struct Draw_components {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub pitch: f32,
+    pub yaw: f32,
+    pub roll: f32,
     pub vertices: Vec<f32>,
     pub RGBA_color: [u8; 4],
     pub properties: HashMap<String, String>,
@@ -44,6 +66,7 @@ pub struct Draw_components {
 pub static Static_scene: Mutex<Vec<Draw_components>> = Mutex::new(Vec::new());
 
 // сначала разобраться с статикой, потом динамику(в том числе и физику), потом свет 
+// потом оставлю это на видеокарту, сейчас лютый, но рабочий, безтеневой колхоз
 // #[derive(Clone)]
 // pub struct Light_components {
 //     pub light_x: f32,
@@ -115,6 +138,9 @@ pub struct Physics_components {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub pitch: f32,
+    pub yaw: f32,
+    pub roll: f32,
     pub vertices: Vec<f32>,
     pub properties: HashMap<String, String>,
     pub special_name: String,

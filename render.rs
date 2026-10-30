@@ -52,6 +52,30 @@ fn parse_floats(s: &str) -> Vec<f32> {
         .collect()
 }
 
+fn rotation_matrix(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> [[f32; 3]; 3] {
+    let p = pitch_deg.to_radians();
+    let y = yaw_deg.to_radians();
+    let r = roll_deg.to_radians();
+
+    let (cp, sp) = (p.cos(), p.sin());
+    let (cy, sy) = (y.cos(), y.sin());
+    let (cr, sr) = (r.cos(), r.sin());
+
+    [
+        [cy * cr + sy * sp * sr, -cy * sr + sy * sp * cr, sy * cp],
+        [cp * sr,                 cp * cr,                -sp],
+        [-sy * cr + cy * sp * sr, sy * sr + cy * sp * cr, cy * cp],
+    ]
+}
+
+fn apply_rotation(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+    ]
+}
+
 pub fn triangulation(objects: Vec<Draw_components>) -> Vec<render_triangle> {
     let mut triangles = Vec::new();
     for obj in &objects {
@@ -63,6 +87,9 @@ pub fn triangulation(objects: Vec<Draw_components>) -> Vec<render_triangle> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0u8);
 
+        let rot_mat = rotation_matrix(obj.pitch, obj.yaw, obj.roll);
+        let has_rot = obj.pitch != 0.0 || obj.yaw != 0.0 || obj.roll != 0.0;
+
         for (tri_i, vertex) in (0..obj.vertices.len()).step_by(9).enumerate() {
             let uv_off = tri_i * 6;
             let tri_uvs = if uvs.len() >= uv_off + 6 {
@@ -73,11 +100,27 @@ pub fn triangulation(objects: Vec<Draw_components>) -> Vec<render_triangle> {
                 [0.0; 6]
             };
 
+            let mut rotated = [0.0f32; 9];
+            for v in 0..3 {
+                let px = obj.vertices[vertex + v * 3];
+                let py = obj.vertices[vertex + v * 3 + 1];
+                let pz = obj.vertices[vertex + v * 3 + 2];
+                let (rx, ry, rz) = if has_rot {
+                    let r = apply_rotation(&rot_mat, [px, py, pz]);
+                    (r[0], r[1], r[2])
+                } else {
+                    (px, py, pz)
+                };
+                rotated[v * 3]     = rx;
+                rotated[v * 3 + 1] = ry;
+                rotated[v * 3 + 2] = rz;
+            }
+
             triangles.push(render_triangle {
                 vertices: [
-                    obj.vertices[vertex]   + obj.x, obj.vertices[vertex+1] + obj.y, obj.vertices[vertex+2] + obj.z,
-                    obj.vertices[vertex+3] + obj.x, obj.vertices[vertex+4] + obj.y, obj.vertices[vertex+5] + obj.z,
-                    obj.vertices[vertex+6] + obj.x, obj.vertices[vertex+7] + obj.y, obj.vertices[vertex+8] + obj.z,
+                    rotated[0] + obj.x, rotated[1] + obj.y, rotated[2] + obj.z,
+                    rotated[3] + obj.x, rotated[4] + obj.y, rotated[5] + obj.z,
+                    rotated[6] + obj.x, rotated[7] + obj.y, rotated[8] + obj.z,
                 ],
                 uvs: tri_uvs,
                 texture: tex.clone(),
@@ -200,21 +243,20 @@ fn evaluate(
     SplitStats { splits, front, back, coplanar, score }
 }
 
-// !!!ОБЯЗАТЕЛЬНО ПРОТЕСТИРОВАТЬ ЗНАЧЕНИЯ(возможно сделать динамическими в зависимости от сцены)!!!
-const EPS: f32 = 1e-4;
-const SPLIT_WEIGHT: f32 = 5.0;
-const MIN_LEAF: usize = 8;
-const FULL_SCAN_LIMIT: usize = 100;
-
 pub fn choose_split_plane(tris: &[render_triangle]) -> Option<Plane> {
-    if tris.len() < MIN_LEAF {
+    let (eps, split_weight, min_leaf, full_scan_limit) = {
+        let s = Engine_settings.lock().unwrap();
+        (s.bsp_epsilon, s.bsp_split_weight, s.bsp_min_leaf, s.bsp_full_scan_limit)
+    };
+
+    if tris.len() < min_leaf {
         return None;
     }
 
-    let step = if tris.len() < FULL_SCAN_LIMIT {
+    let step = if tris.len() < full_scan_limit {
         1
     } else {
-        tris.len() / FULL_SCAN_LIMIT
+        tris.len() / full_scan_limit
     };
 
     let mut best_plane: Option<Plane> = None;
@@ -228,7 +270,7 @@ pub fn choose_split_plane(tris: &[render_triangle]) -> Option<Plane> {
             None => continue, 
         };
 
-        let stats = evaluate(&plane, tris, EPS, SPLIT_WEIGHT);
+        let stats = evaluate(&plane, tris, eps, split_weight);
 
         if stats.splits * 2 > tris.len() { continue; }
 
@@ -239,7 +281,7 @@ pub fn choose_split_plane(tris: &[render_triangle]) -> Option<Plane> {
     }
 
     if let Some(plane) = best_plane {
-        let stats = evaluate(&plane, tris, EPS, SPLIT_WEIGHT);
+        let stats = evaluate(&plane, tris, eps, split_weight);
         if stats.front == 0 || stats.back == 0 {
             return None;
         }
@@ -261,10 +303,12 @@ pub enum BspNode {
 }
 
 pub fn build_bsp(tris: Vec<render_triangle>, depth: u32) -> BspNode {
-    //!!!ТАКЖЕ ЭКСПЕРЕМЕНТИРОВАТЬ С ЗНАЧЕНИЕМ, ЛУЧШЕ ВЫВЕСТИ В ENGINE_SETTINGS!!!
-    const MAX_DEPTH: u32 = 64;
+    let (max_depth, eps) = {
+        let s = Engine_settings.lock().unwrap();
+        (s.bsp_max_depth, s.bsp_epsilon)
+    };
 
-    if depth >= MAX_DEPTH {
+    if depth >= max_depth {
         return BspNode::Leaf { triangles: tris };
     }
 
@@ -278,7 +322,7 @@ pub fn build_bsp(tris: Vec<render_triangle>, depth: u32) -> BspNode {
     let mut back     = Vec::new();
 
     for tri in tris {
-        match classify(&tri, &plane, EPS) {
+        match classify(&tri, &plane, eps) {
             TriClass::Coplanar => coplanar.push(tri),
             TriClass::Front    => front.push(tri),
             TriClass::Back     => back.push(tri),
@@ -306,13 +350,6 @@ pub fn Bake_static_scene() {
 }
 
 pub static Z_BUFFER: Mutex<Vec<Vec<f32>>> = Mutex::new(Vec::new());
-
-const NEAR_PLANE: f32 = 0.001;
-
-const CULL_BACKFACES: bool = false;
-
-const SPRAY_PIXELS_PER_UNIT: f32 = 512.0;
-const SPRAY_OFFSET: f32 = 0.01;
 
 #[derive(Clone)]
 pub struct spray {
@@ -409,6 +446,11 @@ pub fn Add_spray_at(path: String, center_position: [f32; 3], mut n: [f32; 3], RG
         }
     };
 
+    let (spray_pixels_per_unit, spray_offset) = {
+        let s = Engine_settings.lock().unwrap();
+        (s.spray_pixels_per_unit, s.spray_offset)
+    };
+
     let (cam_pos, view_up) = {
         let cam = super::Camera.lock().unwrap();
         let pos = [cam.camera_x, cam.camera_y, cam.camera_z];
@@ -462,12 +504,12 @@ pub fn Add_spray_at(path: String, center_position: [f32; 3], mut n: [f32; 3], RG
     let right = normalize(cross(up_ref, n));
     let up = normalize(cross(n, right));
 
-    let cx = center_position[0] + n[0] * SPRAY_OFFSET;
-    let cy = center_position[1] + n[1] * SPRAY_OFFSET;
-    let cz = center_position[2] + n[2] * SPRAY_OFFSET;
+    let cx = center_position[0] + n[0] * spray_offset;
+    let cy = center_position[1] + n[1] * spray_offset;
+    let cz = center_position[2] + n[2] * spray_offset;
 
-    let half_w = (tex.width as f32 / SPRAY_PIXELS_PER_UNIT) * 0.5;
-    let half_h = (tex.height as f32 / SPRAY_PIXELS_PER_UNIT) * 0.5;
+    let half_w = (tex.width as f32 / spray_pixels_per_unit) * 0.5;
+    let half_h = (tex.height as f32 / spray_pixels_per_unit) * 0.5;
 
     let tl = [cx - right[0]*half_w + up[0]*half_h, cy - right[1]*half_w + up[1]*half_h, cz - right[2]*half_w + up[2]*half_h];
     let tr = [cx + right[0]*half_w + up[0]*half_h, cy + right[1]*half_w + up[1]*half_h, cz + right[2]*half_w + up[2]*half_h];
@@ -547,6 +589,9 @@ pub struct Dynamic_components {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    pub pitch: f32,
+    pub yaw: f32,
+    pub roll: f32,
     pub vertices: Vec<f32>,
     pub RGBA_color: [u8; 4],
     pub animations_in_play: Vec<String>,
@@ -625,6 +670,9 @@ impl Dynamic_components {
             x: 0.0,
             y: 0.0,
             z: 0.0,
+            pitch: 0.0,
+            yaw: 0.0,
+            roll: 0.0,
             vertices: Vec::new(),
             RGBA_color: [255, 255, 255, 255],
             animations_in_play: Vec::new(),
@@ -754,6 +802,10 @@ impl Dynamic_components {
     pub fn Set_y(&mut self, delta: f32) { self.y += delta; }
     pub fn Set_z(&mut self, delta: f32) { self.z += delta; }
 
+    pub fn Set_pitch(&mut self, delta: f32) { self.pitch += delta; }
+    pub fn Set_yaw(&mut self, delta: f32) { self.yaw += delta; }
+    pub fn Set_roll(&mut self, delta: f32) { self.roll += delta; }
+
     pub fn Set_R(&mut self, delta: i16) { self.RGBA_color[0] = (self.RGBA_color[0] as i16 + delta).clamp(0, 255) as u8; }
     pub fn Set_G(&mut self, delta: i16) { self.RGBA_color[1] = (self.RGBA_color[1] as i16 + delta).clamp(0, 255) as u8; }
     pub fn Set_B(&mut self, delta: i16) { self.RGBA_color[2] = (self.RGBA_color[2] as i16 + delta).clamp(0, 255) as u8; }
@@ -790,6 +842,9 @@ impl Dynamic_components {
     pub fn Get_x(&self) -> f32 { self.x }
     pub fn Get_y(&self) -> f32 { self.y }
     pub fn Get_z(&self) -> f32 { self.z }
+    pub fn Get_pitch(&self) -> f32 { self.pitch }
+    pub fn Get_yaw(&self) -> f32 { self.yaw }
+    pub fn Get_roll(&self) -> f32 { self.roll }
     pub fn Get_R(&self) -> u8 { self.RGBA_color[0] }
     pub fn Get_G(&self) -> u8 { self.RGBA_color[1] }
     pub fn Get_B(&self) -> u8 { self.RGBA_color[2] }
@@ -1123,6 +1178,7 @@ fn rasterize_triangle(
     zbuf_chunk: &mut [Vec<f32>],
     rgba: [u8; 4],
     alpha_test: u8,
+    cull_backfaces: bool,
 ) {
     let (s0, iz0) = project(v0, focal, width as f32, height as f32);
     let (s1, iz1) = project(v1, focal, width as f32, height as f32);
@@ -1130,7 +1186,7 @@ fn rasterize_triangle(
 
     let area2 = (s1[0] - s0[0]) * (s2[1] - s0[1]) - (s2[0] - s0[0]) * (s1[1] - s0[1]);
     if area2.abs() < 1e-6 { return; }
-    if CULL_BACKFACES && area2 < 0.0 { return; }
+    if cull_backfaces && area2 < 0.0 { return; }
 
     let chunk_h = screen_chunk.len() as i32;
     let ro = row_offset as i32;
@@ -1240,6 +1296,8 @@ fn draw_render_triangle(
     row_offset: usize,
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
+    near_plane: f32,
+    cull_backfaces: bool,
 ) {
     let verts = [
         [tri.vertices[0], tri.vertices[1], tri.vertices[2]],
@@ -1257,7 +1315,7 @@ fn draw_render_triangle(
     let v1 = to_view_space(verts[1], basis);
     let v2 = to_view_space(verts[2], basis);
 
-    let clipped = clip_near(&[(v0, uvs[0]), (v1, uvs[1]), (v2, uvs[2])], NEAR_PLANE);
+    let clipped = clip_near(&[(v0, uvs[0]), (v1, uvs[1]), (v2, uvs[2])], near_plane);
     if clipped.len() < 3 { return; }
 
     let tex = tri.texture.as_deref();
@@ -1269,6 +1327,7 @@ fn draw_render_triangle(
             tex,
             focal, width, height, row_offset,
             screen_chunk, zbuf_chunk, rgba, tri.alpha_test,
+            cull_backfaces,
         );
     }
 }
@@ -1281,27 +1340,29 @@ fn render_node(
     row_offset: usize,
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
+    near_plane: f32,
+    cull_backfaces: bool,
 ) {
     match node {
         BspNode::Leaf { triangles } => {
             for t in triangles {
-                draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces);
             }
         }
         BspNode::Internal { plane, coplanar, front, back } => {
             let d = signed_distance(basis.position, plane);
             if d > 0.0 {
-                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces);
                 for t in coplanar {
-                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces);
                 }
-                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces);
             } else {
-                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces);
                 for t in coplanar {
-                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces);
                 }
-                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk);
+                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces);
             }
         }
     }
@@ -1337,6 +1398,9 @@ fn prepare_dynamic_triangles() -> Vec<render_triangle> {
         let joint_weights = obj.get_joint_weights();
         let uvs = obj.get_uvs();
 
+        let rot_mat = rotation_matrix(obj.pitch, obj.yaw, obj.roll);
+        let has_rot = obj.pitch != 0.0 || obj.yaw != 0.0 || obj.roll != 0.0;
+
         for t in 0..n_tris {
             let base = t * 9;
             let mut transformed = [0.0f32; 9];
@@ -1366,9 +1430,16 @@ fn prepare_dynamic_triangles() -> Vec<render_triangle> {
                     (px, py, pz)
                 };
 
-                transformed[v * 3] = sx + obj.x;
-                transformed[v * 3 + 1] = sy + obj.y;
-                transformed[v * 3 + 2] = sz + obj.z;
+                let (rx, ry, rz) = if has_rot {
+                    let r = apply_rotation(&rot_mat, [sx, sy, sz]);
+                    (r[0], r[1], r[2])
+                } else {
+                    (sx, sy, sz)
+                };
+
+                transformed[v * 3]     = rx + obj.x;
+                transformed[v * 3 + 1] = ry + obj.y;
+                transformed[v * 3 + 2] = rz + obj.z;
             }
 
             let uv_base = t * 6;
@@ -1453,6 +1524,10 @@ pub fn Render_frame() {
         let cam = super::Camera.lock().unwrap();
         (cam.camera_fov as f32).to_radians()
     };
+    let (near_plane, cull_backfaces) = {
+        let s = Engine_settings.lock().unwrap();
+        (s.near_plane, s.cull_backfaces)
+    };
 
     let dynamic_triangles = prepare_dynamic_triangles();
 
@@ -1503,14 +1578,14 @@ pub fn Render_frame() {
             let sprays_ref = sprays_slice;
             let dyn_ref = dyn_slice;
             s.spawn(move || {
-                render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb);
+                render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces);
                 for sp in sprays_ref {
                     for t in &sp.surface {
-                        draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb);
+                        draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces);
                     }
                 }
                 for t in dyn_ref {
-                    draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb);
+                    draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces);
                 }
             });
         }
