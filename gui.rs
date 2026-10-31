@@ -2,10 +2,8 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
-use sdl2::EventPump;
 
 #[derive(Clone, Copy)]
 pub enum Anchor {
@@ -65,26 +63,27 @@ pub fn Init_gui(canvas: &Canvas<Window>) {
     println!("[Gui]Initialithated gui");
 }
 
-pub fn Update_gui(canvas: &mut Canvas<Window>, event_pump: &mut EventPump) -> Vec<String> {
+pub fn Update_gui(canvas: &mut Canvas<Window>, events: &[Event]) -> Vec<String> {
     let mut actions = Vec::new();
 
     EGUI.with(|e| {
         let mut egui_opt = e.borrow_mut();
         let egui = egui_opt.as_mut().expect("GUI not initialized");
 
-        for event in event_pump.poll_iter() {
-            egui.on_event(&*canvas, &event);
-            match event {
-                Event::Quit { .. } => std::process::exit(0),
-                Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => std::process::exit(0),
-                _ => {}
-            }
+        for event in events {
+            egui.on_event(&*canvas, event);
         }
 
+        let (w, h) = canvas.window().size();
+
         egui.run(|ctx| {
+            ctx.input_mut(|input| {
+                input.raw.screen_rect = Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(w as f32, h as f32),
+                ));
+            });
+
             let scene = GUI_SCENE.lock().unwrap();
             let objects = GUI_OBJECTS.lock().unwrap();
 
@@ -108,11 +107,14 @@ pub fn Update_gui(canvas: &mut Canvas<Window>, event_pump: &mut EventPump) -> Ve
                         egui::Area::new(egui::Id::new(format!("text_{}", i)))
                             .anchor(align, offset_vec)
                             .show(ctx, |ui| {
-                                ui.add(egui::Label::new(
-                                    egui::RichText::new(text)
-                                        .color(text_color)
-                                        .font(font_id),
-                                ));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(text)
+                                            .color(text_color)
+                                            .font(font_id),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                                );
                             });
                     }
                     GuiElement::Button {

@@ -104,6 +104,7 @@ impl Dynamic_physics_components {
         properties.insert("animation_start_tick".to_string(), "0".to_string());
         properties.insert("resistance".to_string(), "1.0".to_string());
         properties.insert("bounce".to_string(), "0.0".to_string());
+        properties.insert("mass".to_string(), "1.0".to_string());
         Self {
             x: 0.0,
             y: 0.0,
@@ -276,6 +277,17 @@ impl Dynamic_physics_components {
             .and_then(|s| s.parse::<f32>().ok())
             .unwrap_or(0.0f32)
             .max(0.0f32)
+    }
+
+    pub fn Set_mass(&mut self, m: f32) {
+        self.properties.insert("mass".to_string(), m.max(0.0).to_string());
+    }
+
+    pub fn Get_mass(&self) -> f32 {
+        let m = self.properties.get("mass")
+            .and_then(|s| s.parse::<f32>().ok())
+            .unwrap_or(1.0f32);
+        if m > 1e-6 { m } else { 1.0 }
     }
 
     pub fn Set_bone_translation(&mut self, bone_idx: usize, dx: f32, dy: f32, dz: f32) {
@@ -533,7 +545,8 @@ impl Dynamic_physics_components {
     }
 
     pub fn Add_force(&mut self, force: [f32; 3]) {
-        self.force_vectors.push(force);
+        let m = self.Get_mass();
+        self.force_vectors.push([force[0] / m, force[1] / m, force[2] / m]);
     }
 
     pub fn Clear_forces(&mut self) {
@@ -763,6 +776,8 @@ pub fn Update_physics() {
         let current_tick = tick_system::Get_current_tick();
         obj.update_animations(current_tick, dt);
 
+        let mass = obj.Get_mass();
+
         let was_in_contact = !obj.impact_with.is_empty();
         let prev_avg_surface_resistance: Option<f32> = if was_in_contact {
             let mut total = 0.0f32;
@@ -783,14 +798,14 @@ pub fn Update_physics() {
 
         if let Some(avg_surface) = prev_avg_surface_resistance {
             if obj_resistance > 0.0 {
-                let friction_decay = (-avg_surface * obj_resistance).exp();
+                let friction_decay = (-avg_surface * obj_resistance / mass).exp();
                 for f in obj.force_vectors.iter_mut() {
                     f[0] *= friction_decay;
                     f[2] *= friction_decay;
                 }
             }
         } else if obj_resistance > 0.0 && resistance_air > 0.0 {
-            let drag_decay = (-resistance_air * obj_resistance).exp();
+            let drag_decay = (-resistance_air * obj_resistance / mass).exp();
             for f in obj.force_vectors.iter_mut() {
                 f[0] *= drag_decay;
                 f[2] *= drag_decay;

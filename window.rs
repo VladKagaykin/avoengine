@@ -16,35 +16,43 @@ pub struct SdlState {
     pub canvas: Canvas<Window>,
     pub texture: Texture,
     pub mouse: sdl2::mouse::MouseUtil,
+    pub is_captured: bool,
 }
 
 thread_local! {
     static SDL: RefCell<Option<SdlState>> = RefCell::new(None);
     static LAST_FRAME: RefCell<Instant> = RefCell::new(Instant::now());
     static MOUSE_DELTA: RefCell<(i32, i32, i32)> = RefCell::new((0, 0, 0));
+    static GUI_EVENTS: RefCell<Vec<Event>> = RefCell::new(Vec::new());
 }
 
-fn drain_into_delta(pump: &mut sdl2::EventPump) {
+fn drain_into_delta(pump: &mut sdl2::EventPump, is_captured: bool) {
     for event in pump.poll_iter() {
-        match event {
+        match &event {
             Event::Quit { .. } => std::process::exit(0),
             Event::Window { win_event: WindowEvent::Close, .. } => std::process::exit(0),
             Event::KeyDown { keycode: Some(Keycode::Escape), .. } => std::process::exit(0),
             Event::MouseMotion { xrel, yrel, .. } => {
-                MOUSE_DELTA.with(|d| {
-                    let mut d = d.borrow_mut();
-                    d.0 += xrel;
-                    d.1 += yrel;
-                });
+                if is_captured {
+                    MOUSE_DELTA.with(|d| {
+                        let mut d = d.borrow_mut();
+                        d.0 += *xrel;
+                        d.1 += *yrel;
+                    });
+                }
             }
             Event::MouseWheel { y, .. } => {
-                MOUSE_DELTA.with(|d| {
-                    let mut d = d.borrow_mut();
-                    d.2 += y;
-                });
+                if is_captured {
+                    MOUSE_DELTA.with(|d| {
+                        let mut d = d.borrow_mut();
+                        d.2 += *y;
+                    });
+                }
             }
             _ => {}
         }
+        // Сохраняем событие для GUI, чтобы он знал об изменении размера окна и кликах
+        GUI_EVENTS.with(|q| q.borrow_mut().push(event));
     }
 }
 
@@ -62,6 +70,7 @@ pub fn Create_window() {
     let window = video
         .window(&name, width, height)
         .position_centered()
+        .resizable()
         .build()
         .expect("failed to create window");
 
@@ -87,6 +96,7 @@ pub fn Create_window() {
             canvas,
             texture,
             mouse,
+            is_captured: false,
         });
     });
     println!("[Window]Window created");
@@ -163,11 +173,15 @@ pub fn Update_frame() {
             .copy(&state.texture, None, None)
             .expect("canvas copy failed");
 
-        {
-            let SdlState { canvas, event_pump, .. } = &mut *state;
-            drain_into_delta(event_pump);
-            super::gui::Update_gui(canvas, event_pump);
-        }
+        drain_into_delta(&mut state.event_pump, state.is_captured);
+
+        GUI_EVENTS.with(|q| {
+            let mut q = q.borrow_mut();
+            let events = std::mem::take(&mut *q);
+            let SdlState { canvas, .. } = &mut *state;
+            // Передаем события в GUI
+            super::gui::Update_gui(canvas, &events);
+        });
 
         state.canvas.present();
     });
@@ -178,7 +192,7 @@ pub fn Get_pressed_keys() -> Vec<i32> {
         let mut guard = c.borrow_mut();
         let state = guard.as_mut().expect("window not created");
 
-        drain_into_delta(&mut state.event_pump);
+        drain_into_delta(&mut state.event_pump, state.is_captured);
 
         state.event_pump
             .keyboard_state()
@@ -196,6 +210,7 @@ pub fn Mouse_capture() {
         state.mouse.set_relative_mouse_mode(true);
         state.mouse.show_cursor(false);
         let _ = state.canvas.window_mut().set_grab(true);
+        state.is_captured = true;
     });
 }
 
@@ -206,6 +221,7 @@ pub fn Return_mouse() {
         state.mouse.set_relative_mouse_mode(false);
         state.mouse.show_cursor(true);
         let _ = state.canvas.window_mut().set_grab(false);
+        state.is_captured = false;
     });
 }
 
@@ -229,7 +245,9 @@ pub fn Get_mouse() -> Vec<i32> {
         if m.x1() { buttons |= 8; }
         if m.x2() { buttons |= 16; }
 
-        vec![m.x(), m.y(), xrel, yrel, buttons, wheel]
+        let (dx, dy) = if state.is_captured { (xrel, yrel) } else { (0, 0) };
+
+        vec![m.x(), m.y(), dx, dy, buttons, wheel]
     })
 }
 

@@ -1755,14 +1755,14 @@ pub fn Render_frame() {
             let dyn_ref = dyn_slice;
             let lights_ref = lights_slice;
             s.spawn(move || {
+                for t in dyn_ref {
+                    draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces, lights_ref, ambient_light, atmosphere_density);
+                }
                 render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces, lights_ref, ambient_light, atmosphere_density);
                 for sp in sprays_ref {
                     for t in &sp.surface {
                         draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces, lights_ref, ambient_light, atmosphere_density);
                     }
-                }
-                for t in dyn_ref {
-                    draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces, lights_ref, ambient_light, atmosphere_density);
                 }
             });
         }

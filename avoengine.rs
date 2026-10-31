@@ -30,8 +30,8 @@ pub struct Settings {
 // настройки движка по умолчанию(lazylock для функции to_string)
 pub static Engine_settings: LazyLock<Mutex<Settings>> = LazyLock::new(|| {
     Mutex::new(Settings {
-        window_width: 640,
-        window_height: 480,
+        window_width: 320,
+        window_height: 240,
         tick_speed: 50,
         cores_multiply: 2,
         window_name: "avoengine".to_string(),
