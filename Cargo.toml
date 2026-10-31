@@ -12,3 +12,4 @@ egui = "0.36"
 egui-sdl2 = { version = "0.12", features = ["canvas-backend"] }
 image = "0.25"
 gltf = { version = "1.4", features = ["import", "utils", "names"] }
+kittyaudio = "0.2.0"

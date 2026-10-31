@@ -7,6 +7,7 @@ pub mod gui;
 pub mod tick_system;
 pub mod gltf_parser;
 pub mod physics;
+pub mod sound;
 
 // структура настроек движка
 pub struct Settings {
@@ -118,7 +119,7 @@ pub static Camera: Mutex<Camera_structure> = Mutex::new(Camera_structure {
     camera_yaw: 0.0,
     camera_roll: 0.0,
     max_dist: 256,
-    ambient_light: [64, 64, 64],
+    ambient_light: [64, 64, 64]
 });
 // параметры физики(в том числе и визуальной)
 #[derive(Clone)]
@@ -144,10 +145,22 @@ pub struct Physics_components {
     pub roll: f32,
     pub vertices: Vec<f32>,
     pub properties: HashMap<String, String>,
-    pub special_name: String,
+    pub special_name: String
 }
 //по прежнему как и с графикой
 pub static Physics_scene: Mutex<Vec<Physics_components>> = Mutex::new(Vec::new());
+//структура для звуков
+#[derive(Clone)]
+pub struct Sound_components{
+    pub path: String,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub time: i128, // миллисекунды  с того момента, как начался звук, 0 - с самого начала
+    pub properties: HashMap<String, String>,
+    pub special_name: String
+}
+pub static Sounds: Mutex<Vec<Sound_components>> = Mutex::new(Vec::new());
 //создание пустого экрана
 pub fn Setup_window_screen(width: &i128, height: &i128) {
     //создание времменного экрана нужного размера и сразу заполнение пустыми пикселями
@@ -176,5 +189,6 @@ pub fn Engine_setup() {
         gui::Init_gui(canvas);
     });
     tick_system::Init_tick_system();
+    sound::Init_sound();
     println!("[Engine]Engine setup is complete");
 }
