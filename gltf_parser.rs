@@ -518,14 +518,30 @@ pub fn Import_gltf(path: String) -> Option<Import_result> {
             Some(m) => m,
             None => continue,
         };
-        let bone_idx = match node_to_bone.get(&node.index()) {
+        let mesh_bone_idx = match node_to_bone.get(&node.index()) {
             Some(&b) => b,
             None => continue,
         };
-        if bone_idx > 255 {
+        if mesh_bone_idx > 255 {
             continue;
         }
-        let bind_mat = bind_world[bone_idx];
+        let bind_mat = bind_world[mesh_bone_idx];
+
+        let skin_joint_to_bone: Vec<u8> = match node.skin() {
+            Some(skin) => skin
+                .joints()
+                .map(|j| {
+                    node_to_bone
+                        .get(&j.index())
+                        .copied()
+                        .filter(|&b| b <= 255)
+                        .map(|b| b as u8)
+                        .unwrap_or(0)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let has_skin = !skin_joint_to_bone.is_empty();
 
         for prim in mesh.primitives() {
             let reader = prim.reader(|b| Some(&buffers[b.index()]));
@@ -541,6 +557,40 @@ pub fn Import_gltf(path: String) -> Option<Import_result> {
                 .read_indices()
                 .map(|i| i.into_u32().collect())
                 .unwrap_or_else(|| (0..positions.len() as u32).collect());
+
+            let prim_joints: Vec<[u8; 4]> = if has_skin {
+                reader
+                    .read_joints(0)
+                    .map(|j| match j {
+                        gltf::mesh::util::ReadJoints::U8(iter) => {
+                            iter.collect::<Vec<[u8; 4]>>()
+                        }
+                        gltf::mesh::util::ReadJoints::U16(iter) => iter
+                            .map(|v| {
+                                [
+                                    v[0].min(255) as u8,
+                                    v[1].min(255) as u8,
+                                    v[2].min(255) as u8,
+                                    v[3].min(255) as u8,
+                                ]
+                            })
+                            .collect::<Vec<[u8; 4]>>(),
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let prim_weights: Vec<[f32; 4]> = if has_skin {
+                reader
+                    .read_weights(0)
+                    .map(|w| w.into_f32().collect())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let use_skin = has_skin
+                && prim_joints.len() == positions.len()
+                && prim_weights.len() == positions.len();
 
             let cell = atlas_result.as_ref().and_then(|(_, cells, _, _)| {
                 prim.material()
@@ -579,8 +629,22 @@ pub fn Import_gltf(path: String) -> Option<Import_result> {
                         uvs_out.extend_from_slice(&[0.0, 0.0]);
                     }
 
-                    joint_indices_out.push([bone_idx as u8, 0, 0, 0]);
-                    joint_weights_out.push([1.0, 0.0, 0.0, 0.0]);
+                    if use_skin {
+                        let sj = prim_joints[ii];
+                        let sw = prim_weights[ii];
+                        let fallback = mesh_bone_idx as u8;
+                        let bj = [
+                            skin_joint_to_bone.get(sj[0] as usize).copied().unwrap_or(fallback),
+                            skin_joint_to_bone.get(sj[1] as usize).copied().unwrap_or(fallback),
+                            skin_joint_to_bone.get(sj[2] as usize).copied().unwrap_or(fallback),
+                            skin_joint_to_bone.get(sj[3] as usize).copied().unwrap_or(fallback),
+                        ];
+                        joint_indices_out.push(bj);
+                        joint_weights_out.push(sw);
+                    } else {
+                        joint_indices_out.push([mesh_bone_idx as u8, 0, 0, 0]);
+                        joint_weights_out.push([1.0, 0.0, 0.0, 0.0]);
+                    }
                 }
             }
         }
