@@ -15,8 +15,8 @@ pub struct Dynamic_physics_components{
     pub vertices: Vec<f32>,
     pub RGBA_color: [u8; 4],
     pub animations_in_play: Vec<String>,
-    pub force_vectors: Vec<[f32;3]>, //pitch, yaw ускорение
-    pub impact_with: Vec<u128>, // список из объектов физической сцены, с которых сейчас касается объект
+    pub force_vectors: Vec<[f32;3]>,
+    pub impact_with: Vec<u128>,
     pub properties: HashMap<String, String>,
     pub special_name: String
 }
@@ -758,6 +758,205 @@ fn handle_collision_reflect(
     }
 }
 
+fn rotation_matrix(pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> [[f32; 3]; 3] {
+    let p = pitch_deg.to_radians();
+    let y = yaw_deg.to_radians();
+    let r = roll_deg.to_radians();
+    let (cp, sp) = (p.cos(), p.sin());
+    let (cy, sy) = (y.cos(), y.sin());
+    let (cr, sr) = (r.cos(), r.sin());
+    [
+        [cy * cr + sy * sp * sr, -cy * sr + sy * sp * cr, sy * cp],
+        [cp * sr,                 cp * cr,                -sp],
+        [-sy * cr + cy * sp * sr, sy * sr + cy * sp * cr, cy * cp],
+    ]
+}
+
+fn apply_rotation(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0]*v[0] + m[0][1]*v[1] + m[0][2]*v[2],
+        m[1][0]*v[0] + m[1][1]*v[1] + m[1][2]*v[2],
+        m[2][0]*v[0] + m[2][1]*v[1] + m[2][2]*v[2],
+    ]
+}
+
+fn compute_rotated_vertices(obj: &Dynamic_physics_components) -> Vec<[f32; 3]> {
+    if obj.vertices.len() < 3 {
+        return vec![[0.0, 0.0, 0.0]];
+    }
+    let has_rot = obj.pitch != 0.0 || obj.yaw != 0.0 || obj.roll != 0.0;
+    let rot = if has_rot { Some(rotation_matrix(obj.pitch, obj.yaw, obj.roll)) } else { None };
+    let mut locals: Vec<[f32; 3]> = obj.vertices.chunks_exact(3)
+        .map(|c| [c[0], c[1], c[2]])
+        .collect();
+    locals.sort_unstable_by(|a, b| {
+        a[0].total_cmp(&b[0])
+            .then(a[1].total_cmp(&b[1]))
+            .then(a[2].total_cmp(&b[2]))
+    });
+    locals.dedup_by(|a, b| {
+        a[0].to_bits() == b[0].to_bits()
+            && a[1].to_bits() == b[1].to_bits()
+            && a[2].to_bits() == b[2].to_bits()
+    });
+    locals.into_iter().map(|v| {
+        if let Some(r) = &rot { apply_rotation(r, v) } else { v }
+    }).collect()
+}
+
+fn compute_world_aabb(obj: &Dynamic_physics_components) -> ([f32; 3], [f32; 3]) {
+    if obj.vertices.len() < 3 {
+        return ([obj.x, obj.y, obj.z], [obj.x, obj.y, obj.z]);
+    }
+    let has_rot = obj.pitch != 0.0 || obj.yaw != 0.0 || obj.roll != 0.0;
+    let rot = if has_rot { Some(rotation_matrix(obj.pitch, obj.yaw, obj.roll)) } else { None };
+    let mut mn = [f32::INFINITY; 3];
+    let mut mx = [f32::NEG_INFINITY; 3];
+    for c in obj.vertices.chunks_exact(3) {
+        let local = [c[0], c[1], c[2]];
+        let r = if let Some(rm) = &rot { apply_rotation(rm, local) } else { local };
+        let w = [r[0] + obj.x, r[1] + obj.y, r[2] + obj.z];
+        for k in 0..3 {
+            if w[k] < mn[k] { mn[k] = w[k]; }
+            if w[k] > mx[k] { mx[k] = w[k]; }
+        }
+    }
+    (mn, mx)
+}
+
+fn try_collide_axis(
+    obj: &mut Dynamic_physics_components,
+    root: &render::BspNode,
+    bounces: &HashMap<u128, f32>,
+    axis: usize,
+    delta: f32,
+    rotated_verts: &[[f32; 3]],
+) -> bool {
+    if delta.abs() < 1e-8 { return false; }
+
+    let mut dir = [0.0f32; 3];
+    dir[axis] = delta;
+
+    let mut min_t = f32::INFINITY;
+    let mut hit_oid: Option<u128> = None;
+    let mut any_hit = false;
+
+    for rv in rotated_verts {
+        let v_world = [rv[0] + obj.x, rv[1] + obj.y, rv[2] + obj.z];
+        if let Some((hp, _, oid)) = raycast_bsp(root, v_world, dir) {
+            let t = ((hp[0] - v_world[0]).powi(2)
+                   + (hp[1] - v_world[1]).powi(2)
+                   + (hp[2] - v_world[2]).powi(2)).sqrt();
+            if !any_hit || t < min_t {
+                any_hit = true;
+                min_t = t;
+                hit_oid = Some(oid);
+            }
+        }
+    }
+
+    if !any_hit {
+        match axis {
+            0 => obj.x += delta,
+            1 => obj.y += delta,
+            2 => obj.z += delta,
+            _ => {}
+        }
+        return false;
+    }
+
+    let move_by = delta.signum() * (min_t - 0.001).max(0.0);
+    match axis {
+        0 => obj.x += move_by,
+        1 => obj.y += move_by,
+        2 => obj.z += move_by,
+        _ => {}
+    }
+
+    if let Some(oid) = hit_oid {
+        if oid != u128::MAX { obj.Add_impact(oid); }
+        let surf_bounce = if oid != u128::MAX {
+            bounces.get(&oid).copied().unwrap_or(1.0).max(0.0)
+        } else { 1.0 };
+        let combined = obj.Get_bounce() * surf_bounce;
+        handle_collision_reflect(obj, axis, combined);
+    }
+
+    true
+}
+
+fn resolve_dynamic_collisions(queue: &mut Vec<Dynamic_physics_components>) {
+    let n = queue.len();
+    if n < 2 { return; }
+
+    let active: Vec<bool> = queue.iter()
+        .map(|o| o.properties.get("collision").map(|v| v == "1").unwrap_or(false))
+        .collect();
+
+    let aabbs: Vec<([f32; 3], [f32; 3])> = queue.iter().map(compute_world_aabb).collect();
+
+    for i in 0..n {
+        if !active[i] { continue; }
+        for j in (i + 1)..n {
+            if !active[j] { continue; }
+
+            let (a_min, a_max) = aabbs[i];
+            let (b_min, b_max) = aabbs[j];
+
+            let ox = a_max[0].min(b_max[0]) - a_min[0].max(b_min[0]);
+            let oy = a_max[1].min(b_max[1]) - a_min[1].max(b_min[1]);
+            let oz = a_max[2].min(b_max[2]) - a_min[2].max(b_min[2]);
+
+            if ox <= 0.0 || oy <= 0.0 || oz <= 0.0 { continue; }
+
+            let (axis, depth) = if ox <= oy && ox <= oz { (0usize, ox) }
+                                else if oy <= oz { (1usize, oy) }
+                                else { (2usize, oz) };
+
+            let ca = (a_min[axis] + a_max[axis]) * 0.5;
+            let cb = (b_min[axis] + b_max[axis]) * 0.5;
+            let sign = if cb >= ca { 1.0f32 } else { -1.0f32 };
+
+            let (left, right) = queue.split_at_mut(j);
+            let oi = &mut left[i];
+            let oj = &mut right[0];
+
+            let mi = oi.Get_mass();
+            let mj = oj.Get_mass();
+            let total = mi + mj;
+            if total <= 1e-8 { continue; }
+
+            let share_i = mj / total;
+            let share_j = mi / total;
+
+            match axis {
+                0 => { oi.x -= sign * depth * share_i; oj.x += sign * depth * share_j; }
+                1 => { oi.y -= sign * depth * share_i; oj.y += sign * depth * share_j; }
+                2 => { oi.z -= sign * depth * share_i; oj.z += sign * depth * share_j; }
+                _ => {}
+            }
+
+            let vi: f32 = oi.force_vectors.iter().map(|f| f[axis]).sum();
+            let vj: f32 = oj.force_vectors.iter().map(|f| f[axis]).sum();
+
+            let approaching = (sign > 0.0 && vi > vj) || (sign < 0.0 && vi < vj);
+            if !approaching { continue; }
+
+            let combined_bounce = oi.Get_bounce() * oj.Get_bounce();
+            let v_avg = (mi * vi + mj * vj) / total;
+            let vi_new = v_avg + combined_bounce * (vj - vi) * share_i;
+            let vj_new = v_avg + combined_bounce * (vi - vj) * share_j;
+
+            for f in oi.force_vectors.iter_mut() { f[axis] = 0.0; }
+            for f in oj.force_vectors.iter_mut() { f[axis] = 0.0; }
+            let mut fi = [0.0f32; 3]; fi[axis] = vi_new;
+            let mut fj = [0.0f32; 3]; fj[axis] = vj_new;
+            oi.force_vectors.push(fi);
+            oj.force_vectors.push(fj);
+        }
+    }
+}
+
 pub fn Update_physics() {
     let (g, resistance_air) = {
         let e = super::Earth.lock().unwrap();
@@ -829,48 +1028,16 @@ pub fn Update_physics() {
 
         if collision && bsp_guard.is_some() {
             let root = bsp_guard.as_ref().unwrap();
+            let rotated = compute_rotated_vertices(obj);
 
             if delta[1].abs() > 1e-8 {
-                let o = [obj.x, obj.y, obj.z];
-                if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, delta[1], 0.0]) {
-                    obj.y = hp[1] - delta[1].signum() * 0.001;
-                    if oid != u128::MAX { obj.Add_impact(oid); }
-                    let surf_bounce = if oid != u128::MAX {
-                        bounces_guard.get(&oid).copied().unwrap_or(1.0).max(0.0)
-                    } else { 1.0 };
-                    let combined = obj.Get_bounce() * surf_bounce;
-                    handle_collision_reflect(obj, 1, combined);
-                } else {
-                    obj.y += delta[1];
-                }
+                try_collide_axis(obj, root, &bounces_guard, 1, delta[1], &rotated);
             }
             if delta[0].abs() > 1e-8 {
-                let o = [obj.x, obj.y, obj.z];
-                if let Some((hp, _, oid)) = raycast_bsp(root, o, [delta[0], 0.0, 0.0]) {
-                    obj.x = hp[0] - delta[0].signum() * 0.001;
-                    if oid != u128::MAX { obj.Add_impact(oid); }
-                    let surf_bounce = if oid != u128::MAX {
-                        bounces_guard.get(&oid).copied().unwrap_or(1.0).max(0.0)
-                    } else { 1.0 };
-                    let combined = obj.Get_bounce() * surf_bounce;
-                    handle_collision_reflect(obj, 0, combined);
-                } else {
-                    obj.x += delta[0];
-                }
+                try_collide_axis(obj, root, &bounces_guard, 0, delta[0], &rotated);
             }
             if delta[2].abs() > 1e-8 {
-                let o = [obj.x, obj.y, obj.z];
-                if let Some((hp, _, oid)) = raycast_bsp(root, o, [0.0, 0.0, delta[2]]) {
-                    obj.z = hp[2] - delta[2].signum() * 0.001;
-                    if oid != u128::MAX { obj.Add_impact(oid); }
-                    let surf_bounce = if oid != u128::MAX {
-                        bounces_guard.get(&oid).copied().unwrap_or(1.0).max(0.0)
-                    } else { 1.0 };
-                    let combined = obj.Get_bounce() * surf_bounce;
-                    handle_collision_reflect(obj, 2, combined);
-                } else {
-                    obj.z += delta[2];
-                }
+                try_collide_axis(obj, root, &bounces_guard, 2, delta[2], &rotated);
             }
         } else {
             obj.x += delta[0];
@@ -880,4 +1047,6 @@ pub fn Update_physics() {
 
         obj.force_vectors.retain(|f| f[0].abs() + f[1].abs() + f[2].abs() > 1e-4);
     }
+
+    resolve_dynamic_collisions(&mut queue);
 }
