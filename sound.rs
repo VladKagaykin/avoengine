@@ -94,7 +94,7 @@ fn walk_bsp_collect(
     hits: &mut HashMap<u128, f32>,
 ) {
     match node {
-        BspNode::Leaf { triangles } => {
+        BspNode::Leaf { triangles, .. } => {
             for tri in triangles {
                 try_collect_tri(&tri.vertices, &tri.properties, orig, dir, max_t, hits);
             }

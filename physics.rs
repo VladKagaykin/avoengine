@@ -682,7 +682,7 @@ fn raycast_bsp_recursive(
     best: &mut Option<(f32, [f32; 3], u128)>,
 ) {
     match node {
-        render::BspNode::Leaf { triangles } => {
+        render::BspNode::Leaf { triangles, .. } => {
             for tri in triangles {
                 if let Some((t, n)) = ray_triangle_intersect(orig, dir, tri) {
                     if t <= max_t && best.map_or(true, |(bt, _, _)| t < bt) {
@@ -691,7 +691,7 @@ fn raycast_bsp_recursive(
                 }
             }
         }
-        render::BspNode::Internal { plane, coplanar, front, back } => {
+        render::BspNode::Internal { plane, coplanar, front, back, .. } => {
             for tri in coplanar {
                 if let Some((t, n)) = ray_triangle_intersect(orig, dir, tri) {
                     if t <= max_t && best.map_or(true, |(bt, _, _)| t < bt) {

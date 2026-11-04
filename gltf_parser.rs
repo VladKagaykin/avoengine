@@ -606,7 +606,12 @@ pub fn Import_gltf(path: String) -> Option<Import_result> {
                 if tri.len() < 3 {
                     continue;
                 }
-                for &idx in tri {
+                let (a, b, c) = if MIRROR_X {
+                    (tri[0], tri[2], tri[1])
+                } else {
+                    (tri[0], tri[1], tri[2])
+                };
+                for idx in [a, b, c] {
                     let ii = idx as usize;
                     if ii >= positions.len() {
                         continue;

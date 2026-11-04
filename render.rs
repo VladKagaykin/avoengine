@@ -12,123 +12,6 @@ pub static BSP_ROOT: Mutex<Option<Box<BspNode>>> = Mutex::new(None);
 
 use std::sync::LazyLock;
 
-pub struct Light_source {
-    pub triangles: Vec<render_triangle>,
-    pub color: [u8; 3],
-    pub bounds_min: [f32; 3],
-    pub bounds_max: [f32; 3],
-    pub tri_bounds: Vec<([f32; 3], [f32; 3])>,
-}
-
-pub static LIGHT_SOURCES: Mutex<Vec<Arc<Light_source>>> = Mutex::new(Vec::new());
-
-fn ray_triangle_hit(origin: [f32; 3], dir: [f32; 3], tri: &render_triangle) -> bool {
-    let p0 = [tri.vertices[0], tri.vertices[1], tri.vertices[2]];
-    let p1 = [tri.vertices[3], tri.vertices[4], tri.vertices[5]];
-    let p2 = [tri.vertices[6], tri.vertices[7], tri.vertices[8]];
-
-    let e1 = sub(p1, p0);
-    let e2 = sub(p2, p0);
-    let h = cross(dir, e2);
-    let a = dot(e1, h);
-    if a.abs() < 1e-8 { return false; }
-    let f = 1.0 / a;
-    let s = sub(origin, p0);
-    let u = f * dot(s, h);
-    if !(0.0..=1.0).contains(&u) { return false; }
-    let q = cross(s, e1);
-    let v = f * dot(dir, q);
-    if v < 0.0 || u + v > 1.0 { return false; }
-    f * dot(e2, q) > 1e-4
-}
-
-fn point_inside_aabb(p: [f32; 3], bmin: [f32; 3], bmax: [f32; 3]) -> bool {
-    p[0] >= bmin[0] && p[0] <= bmax[0]
-        && p[1] >= bmin[1] && p[1] <= bmax[1]
-        && p[2] >= bmin[2] && p[2] <= bmax[2]
-}
-
-fn ray_hits_aabb_diag(origin: [f32; 3], bmin: [f32; 3], bmax: [f32; 3]) -> bool {
-    let mut t_enter = f32::NEG_INFINITY;
-    let mut t_exit = f32::INFINITY;
-    for i in 0..3 {
-        let a = bmin[i] - origin[i];
-        let b = bmax[i] - origin[i];
-        if a > t_enter { t_enter = a; }
-        if b < t_exit { t_exit = b; }
-    }
-    t_enter <= t_exit && t_exit > 1e-4
-}
-
-fn point_in_light_volume(p: [f32; 3], light: &Light_source) -> bool {
-    if !point_inside_aabb(p, light.bounds_min, light.bounds_max) {
-        return false;
-    }
-    let dir = [0.577350269, 0.577350269, 0.577350269];
-    let mut count = 0usize;
-    for (tri, (tmin, tmax)) in light.triangles.iter().zip(light.tri_bounds.iter()) {
-        if !ray_hits_aabb_diag(p, *tmin, *tmax) { continue; }
-        if ray_triangle_hit(p, dir, tri) { count += 1; }
-    }
-    count % 2 == 1
-}
-
-fn query_light_at(p: [f32; 3], sources: &[Arc<Light_source>]) -> [u8; 3] {
-    let mut lr: u32 = 0;
-    let mut lg: u32 = 0;
-    let mut lb: u32 = 0;
-    for light in sources.iter() {
-        if point_in_light_volume(p, light) {
-            lr += light.color[0] as u32;
-            lg += light.color[1] as u32;
-            lb += light.color[2] as u32;
-        }
-    }
-    [lr.min(255) as u8, lg.min(255) as u8, lb.min(255) as u8]
-}
-
-pub fn Bake_light() {
-    let lights = super::Pseudo_light_map.lock().unwrap().clone();
-    let mut sources: Vec<Arc<Light_source>> = Vec::new();
-    for obj in lights {
-        let color = [obj.RGBA_color[0], obj.RGBA_color[1], obj.RGBA_color[2]];
-        let triangles = triangulation(vec![obj]);
-        if triangles.is_empty() { continue; }
-
-        let mut bounds_min = [f32::INFINITY; 3];
-        let mut bounds_max = [f32::NEG_INFINITY; 3];
-        let mut tri_bounds = Vec::with_capacity(triangles.len());
-
-        for tri in &triangles {
-            let mut tmin = [f32::INFINITY; 3];
-            let mut tmax = [f32::NEG_INFINITY; 3];
-            for v in 0..3 {
-                for i in 0..3 {
-                    let val = tri.vertices[v * 3 + i];
-                    if val < tmin[i] { tmin[i] = val; }
-                    if val > tmax[i] { tmax[i] = val; }
-                }
-            }
-            for i in 0..3 {
-                if tmin[i] < bounds_min[i] { bounds_min[i] = tmin[i]; }
-                if tmax[i] > bounds_max[i] { bounds_max[i] = tmax[i]; }
-            }
-            tri_bounds.push((tmin, tmax));
-        }
-
-        sources.push(Arc::new(Light_source {
-            triangles,
-            color,
-            bounds_min,
-            bounds_max,
-            tri_bounds,
-        }));
-    }
-    let n = sources.len();
-    *LIGHT_SOURCES.lock().unwrap() = sources;
-    println!("[Render] Baked {} light sources", n);
-}
-
 pub struct Texture {
     pub width: usize,
     pub height: usize,
@@ -255,6 +138,9 @@ pub struct Plane{
     pub point: [f32; 3],
     pub normal: [f32; 3]
 }
+
+#[derive(Clone, Copy)]
+pub struct Aabb { pub min: [f32; 3], pub max: [f32; 3] }
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0]-b[0], a[1]-b[1], a[2]-b[2]]
@@ -409,14 +295,31 @@ pub fn choose_split_plane(tris: &[render_triangle]) -> Option<Plane> {
 
 pub enum BspNode {
     Leaf {
+        bounds: Aabb,
         triangles: Vec<render_triangle>
     },
     Internal {
+        bounds: Aabb,
         plane: Plane,
         coplanar: Vec<render_triangle>,
         front: Box<BspNode>,
         back:  Box<BspNode>
     }
+}
+
+fn aabb_of(tris: &[render_triangle]) -> Aabb {
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for t in tris {
+        for i in [0, 3, 6] {
+            for k in 0..3 {
+                let v = t.vertices[i + k];
+                if v < min[k] { min[k] = v; }
+                if v > max[k] { max[k] = v; }
+            }
+        }
+    }
+    Aabb { min, max }
 }
 
 pub fn build_bsp(tris: Vec<render_triangle>, depth: u32) -> BspNode {
@@ -425,13 +328,15 @@ pub fn build_bsp(tris: Vec<render_triangle>, depth: u32) -> BspNode {
         (s.bsp_max_depth, s.bsp_epsilon)
     };
 
+    let bounds = aabb_of(&tris);
+
     if depth >= max_depth {
-        return BspNode::Leaf { triangles: tris };
+        return BspNode::Leaf { bounds, triangles: tris };
     }
 
     let plane = match choose_split_plane(&tris) {
         Some(p) => p,
-        None => return BspNode::Leaf { triangles: tris }
+        None => return BspNode::Leaf { bounds, triangles: tris }
     };
 
     let mut coplanar = Vec::new();
@@ -451,6 +356,7 @@ pub fn build_bsp(tris: Vec<render_triangle>, depth: u32) -> BspNode {
     }
 
     BspNode::Internal {
+        bounds,
         plane,
         coplanar,
         front: Box::new(build_bsp(front, depth + 1)),
@@ -518,7 +424,7 @@ fn find_nearest_recursive<'a>(
     best: &mut Option<(&'a render_triangle, f32)>,
 ) {
     match node {
-        BspNode::Leaf { triangles } => {
+        BspNode::Leaf { triangles, .. } => {
             for t in triangles {
                 if point_in_triangle(pos, t, 1e-3) {
                     if let Some(d_sq) = tri_plane_dist_sq(pos, t) {
@@ -529,7 +435,7 @@ fn find_nearest_recursive<'a>(
                 }
             }
         }
-        BspNode::Internal { plane, coplanar, front, back } => {
+        BspNode::Internal { plane, coplanar, front, back, .. } => {
             for t in coplanar {
                 if point_in_triangle(pos, t, 1e-3) {
                     if let Some(d_sq) = tri_plane_dist_sq(pos, t) {
@@ -713,8 +619,29 @@ pub struct Dynamic_components {
     pub RGBA_color: [u8; 4],
     pub animations_in_play: Vec<String>,
     pub properties: HashMap<String, String>,
-    pub special_name: String
+    pub special_name: String,
+    pub(crate) baked: Option<Baked_dynamic>,
+    pub(crate) last_signature: u64,
 }
+
+#[derive(Clone)]
+pub struct Baked_dynamic {
+    pub uvs: Vec<f32>,
+    pub joint_indices: Vec<[u8; 4]>,
+    pub joint_weights: Vec<[f32; 4]>,
+    pub base_vertices: Vec<f32>,
+    pub texture: Option<Arc<Texture>>,
+    pub props: Arc<HashMap<String, String>>,
+    pub alpha_test: u8,
+    pub has_skin: bool,
+    pub sphere_center_local: [f32; 3],
+    pub sphere_radius: f32,
+    pub tri_count: usize,
+    pub buffer_offset: usize,
+    pub last_rgba: [u8; 4],
+}
+
+pub static DYNAMIC_TRIS: Mutex<Vec<render_triangle>> = Mutex::new(Vec::new());
 
 pub static Draw_queue: Mutex<Vec<Dynamic_components>> = Mutex::new(Vec::new());
 
@@ -795,6 +722,8 @@ impl Dynamic_components {
             animations_in_play: Vec::new(),
             properties,
             special_name,
+            baked: None,
+            last_signature: 0,
         }
     }
 
@@ -1188,6 +1117,93 @@ impl Dynamic_components {
     }
 }
 
+fn compute_signature(obj: &Dynamic_components) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for v in [obj.x, obj.y, obj.z, obj.pitch, obj.yaw, obj.roll] {
+        h ^= v.to_bits() as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h ^= u32::from_le_bytes(obj.RGBA_color) as u64;
+    h = h.wrapping_mul(0x100000001b3);
+    h
+}
+
+fn object_is_animated(obj: &Dynamic_components) -> bool {
+    !obj.animations_in_play.is_empty()
+        || obj.properties.contains_key("default_animation")
+        || obj.properties.contains_key("bone_translation_offsets")
+        || obj.properties.contains_key("bone_rotation_offsets")
+}
+
+pub fn Bake_dynamic_scene() {
+    let mut queue = Draw_queue.lock().unwrap();
+    let mut buf: Vec<render_triangle> = Vec::new();
+
+    for obj in queue.iter_mut() {
+        let n_tris = obj.vertices.len() / 9;
+        if n_tris == 0 { obj.baked = None; continue; }
+
+        let tex   = obj.properties.get("texture").and_then(|p| load_texture(p));
+        let props = Arc::new(obj.properties.clone());
+        let uvs   = obj.get_uvs();
+        let ji    = obj.get_joint_indices();
+        let jw    = obj.get_joint_weights();
+        let alpha_test = obj.properties.get("alpha_test")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0u8);
+
+        let has_skin = obj.Get_skeleton()
+            .map(|s| !s.bones.is_empty())
+            .unwrap_or(false);
+
+        let mut mn = [f32::INFINITY; 3];
+        let mut mx = [f32::NEG_INFINITY; 3];
+        for v in obj.vertices.chunks_exact(3) {
+            for k in 0..3 {
+                if v[k] < mn[k] { mn[k] = v[k]; }
+                if v[k] > mx[k] { mx[k] = v[k]; }
+            }
+        }
+        let c = [(mn[0]+mx[0])*0.5, (mn[1]+mx[1])*0.5, (mn[2]+mx[2])*0.5];
+        let r = 0.5 * ((mx[0]-mn[0]).powi(2) + (mx[1]-mn[1]).powi(2) + (mx[2]-mn[2]).powi(2)).sqrt();
+
+        let offset = buf.len();
+
+        for t in 0..n_tris {
+            let uv_base = t * 6;
+            let tri_uvs = if uvs.len() >= uv_base + 6 {
+                [uvs[uv_base], uvs[uv_base+1], uvs[uv_base+2],
+                 uvs[uv_base+3], uvs[uv_base+4], uvs[uv_base+5]]
+            } else { [0.0; 6] };
+
+            buf.push(render_triangle {
+                vertices: [0.0; 9],
+                uvs: tri_uvs,
+                texture: tex.clone(),
+                RGBA_color: obj.RGBA_color,
+                alpha_test,
+                properties: Arc::clone(&props),
+            });
+        }
+
+        obj.baked = Some(Baked_dynamic {
+            uvs, joint_indices: ji, joint_weights: jw,
+            base_vertices: obj.vertices.clone(),
+            texture: tex, props,
+            alpha_test,
+            has_skin,
+            sphere_center_local: c, sphere_radius: r,
+            tri_count: n_tris, buffer_offset: offset,
+            last_rgba: [0, 0, 0, 0],
+        });
+        obj.last_signature = 0;
+    }
+
+    let total = buf.len();
+    *DYNAMIC_TRIS.lock().unwrap() = buf;
+    println!("[Render] Baked {} dynamic triangles", total);
+}
+
 struct CameraBasis {
     right: [f32; 3],
     up: [f32; 3],
@@ -1239,6 +1255,28 @@ fn to_view_space(p: [f32; 3], basis: &CameraBasis) -> [f32; 3] {
     [dot(v, basis.right), dot(v, basis.up), dot(v, basis.forward)]
 }
 
+fn sphere_in_frustum(c: [f32; 3], r: f32, near: f32, tan_h: f32, tan_v: f32) -> bool {
+    if c[2] + r < near { return false; }
+    let z = c[2] + r;
+    if c[0] - r >  z * tan_h { return false; }
+    if c[0] + r + z * tan_h < 0.0 { return false; }
+    if c[1] - r >  z * tan_v { return false; }
+    if c[1] + r + z * tan_v < 0.0 { return false; }
+    true
+}
+
+fn tri_outside_frustum(
+    v0: [f32; 3], v1: [f32; 3], v2: [f32; 3],
+    near: f32, tan_h: f32, tan_v: f32,
+) -> bool {
+    if v0[2] < near && v1[2] < near && v2[2] < near { return true; }
+    if v0[0] > v0[2]*tan_h && v1[0] > v1[2]*tan_h && v2[0] > v2[2]*tan_h { return true; }
+    if v0[0] < -v0[2]*tan_h && v1[0] < -v1[2]*tan_h && v2[0] < -v2[2]*tan_h { return true; }
+    if v0[1] > v0[2]*tan_v && v1[1] > v1[2]*tan_v && v2[1] > v2[2]*tan_v { return true; }
+    if v0[1] < -v0[2]*tan_v && v1[1] < -v1[2]*tan_v && v2[1] < -v2[2]*tan_v { return true; }
+    false
+}
+
 fn intersect_near(
     a: [f32; 3], b: [f32; 3],
     uva: [f32; 2], uvb: [f32; 2],
@@ -1251,11 +1289,12 @@ fn intersect_near(
     )
 }
 
-fn clip_near(
+fn clip_near_arr(
     tri: &[([f32; 3], [f32; 2]); 3],
     near: f32,
-) -> Vec<([f32; 3], [f32; 2])> {
-    let mut out = Vec::with_capacity(4);
+    out: &mut [([f32; 3], [f32; 2]); 4],
+) -> usize {
+    let mut n = 0usize;
     for i in 0..3 {
         let (a, uva) = tri[i];
         let (b, uvb) = tri[(i + 1) % 3];
@@ -1263,14 +1302,17 @@ fn clip_near(
         let b_in = b[2] > near;
         if b_in {
             if !a_in {
-                out.push(intersect_near(a, b, uva, uvb, near));
+                out[n] = intersect_near(a, b, uva, uvb, near);
+                n += 1;
             }
-            out.push((b, uvb));
+            out[n] = (b, uvb);
+            n += 1;
         } else if a_in {
-            out.push(intersect_near(a, b, uva, uvb, near));
+            out[n] = intersect_near(a, b, uva, uvb, near);
+            n += 1;
         }
     }
-    out
+    n
 }
 
 fn project(v: [f32; 3], focal: f32, width: f32, height: f32) -> ([f32; 2], f32) {
@@ -1278,7 +1320,7 @@ fn project(v: [f32; 3], focal: f32, width: f32, height: f32) -> ([f32; 2], f32) 
     (
         [
             width * 0.5 + v[0] * inv_z * focal,
-            height * 0.5 - v[1] * inv_z * focal, // минус: ось Y на экране вниз
+            height * 0.5 - v[1] * inv_z * focal,
         ],
         inv_z,
     )
@@ -1293,10 +1335,6 @@ fn rasterize_triangle(
     row_offset: usize,
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
-    basis: &CameraBasis,
-    lights: &[Arc<Light_source>],
-    ambient_light: [u8; 3],
-    atmosphere_density: f32,
     rgba: [u8; 4],
     alpha_test: u8,
     cull_backfaces: bool,
@@ -1338,10 +1376,11 @@ fn rasterize_triangle(
 
     let px_start = min_x as f32 + 0.5;
     let want_positive = area2 > 0.0;
-    let half_w = width as f32 * 0.5;
-    let half_h = height as f32 * 0.5;
-    let inv_focal = 1.0 / focal;
-    let has_lights = !lights.is_empty();
+
+    let (tw_i, th_i, tex_w, pixels): (i32, i32, usize, Option<&[[u8; 4]]>) = match texture {
+        Some(t) => (t.width as i32, t.height as i32, t.width, Some(t.pixels.as_slice())),
+        None    => (0, 0, 0, None),
+    };
 
     for py in min_yr..=max_yr {
         let py_local = (py - ro) as usize;
@@ -1366,78 +1405,40 @@ fn rasterize_triangle(
             if inside {
                 let ux = px as usize;
                 if inv_z > row_zbuf[ux] {
-                    let (src_rgb, src_a) = if let Some(tex) = texture {
-                        let u = uz / inv_z;
-                        let v = vz / inv_z;
-                        let tw = tex.width as i32;
-                        let th = tex.height as i32;
-                        let tx = ((u * tw as f32).floor() as i32).rem_euclid(tw) as usize;
-                        let ty = ((v * th as f32).floor() as i32).rem_euclid(th) as usize;
-                        let t = tex.pixels[ty * tex.width + tx];
+                    let (src_rgb, src_a) = if let Some(pxs) = pixels {
+                        let r_inv = 1.0 / inv_z;
+                        let u = uz * r_inv;
+                        let v = vz * r_inv;
+                        let mut tx = (u * tw_i as f32) as i32;
+                        let mut ty = (v * th_i as f32) as i32;
+                        if tx < 0 || tx >= tw_i { tx = tx.rem_euclid(tw_i); }
+                        if ty < 0 || ty >= th_i { ty = ty.rem_euclid(th_i); }
+                        let t = pxs[ty as usize * tex_w + tx as usize];
                         let a = (t[3] as u16 * rgba[3] as u16 / 255) as u8;
-                        let r = (t[0] as u32 * rgba[0] as u32 / 255) as u8;
-                        let g = (t[1] as u32 * rgba[1] as u32 / 255) as u8;
-                        let b = (t[2] as u32 * rgba[2] as u32 / 255) as u8;
-                        ([r, g, b], a)
+                        let r8 = (t[0] as u32 * rgba[0] as u32 / 255) as u8;
+                        let g8 = (t[1] as u32 * rgba[1] as u32 / 255) as u8;
+                        let b8 = (t[2] as u32 * rgba[2] as u32 / 255) as u8;
+                        ([r8, g8, b8], a)
                     } else {
                         ([rgba[0], rgba[1], rgba[2]], rgba[3])
                     };
 
-                    let z = if inv_z > 1e-8 { 1.0 / inv_z } else { f32::MAX };
-
-                    let light_add = if has_lights {
-                        let sx = px as f32 + 0.5;
-                        let sy = py as f32 + 0.5;
-                        let vx = (sx - half_w) * z * inv_focal;
-                        let vy = (half_h - sy) * z * inv_focal;
-                        let wx = basis.position[0]
-                            + vx * basis.right[0]
-                            + vy * basis.up[0]
-                            + z * basis.forward[0];
-                        let wy = basis.position[1]
-                            + vx * basis.right[1]
-                            + vy * basis.up[1]
-                            + z * basis.forward[1];
-                        let wz = basis.position[2]
-                            + vx * basis.right[2]
-                            + vy * basis.up[2]
-                            + z * basis.forward[2];
-                        query_light_at([wx, wy, wz], lights)
-                    } else {
-                        [0u8, 0, 0]
-                    };
-
-                    let amb_extra = z * atmosphere_density;
-                    let amb_r = ambient_light[0] as f32 - 255.0 + amb_extra;
-                    let amb_g = ambient_light[1] as f32 - 255.0 + amb_extra;
-                    let amb_b = ambient_light[2] as f32 - 255.0 + amb_extra;
-
-                    let obj_r = src_rgb[0] as f32;
-                    let obj_g = src_rgb[1] as f32;
-                    let obj_b = src_rgb[2] as f32;
-
-                    let final_rgb = [
-                        (obj_r + light_add[0] as f32 + amb_r).clamp(0.0, obj_r) as u8,
-                        (obj_g + light_add[1] as f32 + amb_g).clamp(0.0, obj_g) as u8,
-                        (obj_b + light_add[2] as f32 + amb_b).clamp(0.0, obj_b) as u8,
-                    ];
-
                     if alpha_test > 0 {
                         if src_a >= alpha_test {
                             row_zbuf[ux] = inv_z;
-                            row_screen[ux].color = final_rgb;
+                            row_screen[ux].color = src_rgb;
                         }
                     } else if src_a == 255 {
                         row_zbuf[ux] = inv_z;
-                        row_screen[ux].color = final_rgb;
+                        row_screen[ux].color = src_rgb;
                     } else if src_a > 0 {
                         let a = src_a as u32;
                         let ia = 255 - a;
                         let dst = row_screen[ux].color;
                         row_screen[ux].color = [
-                            ((final_rgb[0] as u32 * a + dst[0] as u32 * ia) / 255) as u8,
-                            ((final_rgb[1] as u32 * a + dst[1] as u32 * ia) / 255) as u8,
-                            ((final_rgb[2] as u32 * a + dst[2] as u32 * ia) / 255) as u8,
+                            ((src_rgb[0] as u32 * a + dst[0] as u32 * ia) / 255) as u8,
+                            ((src_rgb[1] as u32 * a + dst[1] as u32 * ia) / 255) as u8,
+                            ((src_rgb[2] as u32 * a + dst[2] as u32 * ia) / 255) as u8,
                         ];
                     }
                 }
@@ -1461,10 +1462,8 @@ fn draw_render_triangle(
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
     near_plane: f32,
+    tan_h: f32, tan_v: f32,
     cull_backfaces: bool,
-    lights: &[Arc<Light_source>],
-    ambient_light: [u8; 3],
-    atmosphere_density: f32,
 ) {
     let verts = [
         [tri.vertices[0], tri.vertices[1], tri.vertices[2]],
@@ -1482,21 +1481,21 @@ fn draw_render_triangle(
     let v1 = to_view_space(verts[1], basis);
     let v2 = to_view_space(verts[2], basis);
 
-    let clipped = clip_near(&[(v0, uvs[0]), (v1, uvs[1]), (v2, uvs[2])], near_plane);
-    if clipped.len() < 3 { return; }
+    if tri_outside_frustum(v0, v1, v2, near_plane, tan_h, tan_v) { return; }
+
+    let mut clipped = [([0.0f32; 3], [0.0f32; 2]); 4];
+    let n = clip_near_arr(&[(v0, uvs[0]), (v1, uvs[1]), (v2, uvs[2])], near_plane, &mut clipped);
+    if n < 3 { return; }
 
     let tex = tri.texture.as_deref();
 
-    for i in 1..clipped.len() - 1 {
+    for i in 1..n - 1 {
         rasterize_triangle(
             clipped[0].0, clipped[i].0, clipped[i + 1].0,
             clipped[0].1, clipped[i].1, clipped[i + 1].1,
             tex,
             focal, width, height, row_offset,
-            screen_chunk, zbuf_chunk,
-            basis, lights,
-            ambient_light, atmosphere_density,
-            rgba, tri.alpha_test,
+            screen_chunk, zbuf_chunk, rgba, tri.alpha_test,
             cull_backfaces,
         );
     }
@@ -1511,133 +1510,220 @@ fn render_node(
     screen_chunk: &mut [Vec<super::Pixel_structure>],
     zbuf_chunk: &mut [Vec<f32>],
     near_plane: f32,
+    tan_h: f32, tan_v: f32,
     cull_backfaces: bool,
-    lights: &[Arc<Light_source>],
-    ambient_light: [u8; 3],
-    atmosphere_density: f32,
 ) {
+    let b = match node {
+        BspNode::Leaf { bounds, .. } => bounds,
+        BspNode::Internal { bounds, .. } => bounds,
+    };
+    let world_c = [
+        (b.min[0] + b.max[0]) * 0.5,
+        (b.min[1] + b.max[1]) * 0.5,
+        (b.min[2] + b.max[2]) * 0.5,
+    ];
+    let radius = 0.5 * (
+        (b.max[0] - b.min[0]).powi(2) +
+        (b.max[1] - b.min[1]).powi(2) +
+        (b.max[2] - b.min[2]).powi(2)
+    ).sqrt();
+    if !sphere_in_frustum(to_view_space(world_c, basis), radius, near_plane, tan_h, tan_v) {
+        return;
+    }
+
     match node {
-        BspNode::Leaf { triangles } => {
+        BspNode::Leaf { triangles, .. } => {
             for t in triangles {
-                draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces, lights, ambient_light, atmosphere_density);
+                draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, tan_h, tan_v, cull_backfaces);
             }
         }
-        BspNode::Internal { plane, coplanar, front, back } => {
+        BspNode::Internal { plane, coplanar, front, back, .. } => {
             let d = signed_distance(basis.position, plane);
             if d > 0.0 {
-                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces, lights, ambient_light, atmosphere_density);
+                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, tan_h, tan_v, cull_backfaces);
                 for t in coplanar {
-                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces, lights, ambient_light, atmosphere_density);
+                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, tan_h, tan_v, cull_backfaces);
                 }
-                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces, lights, ambient_light, atmosphere_density);
+                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, tan_h, tan_v, cull_backfaces);
             } else {
-                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces, lights, ambient_light, atmosphere_density);
+                render_node(front, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, tan_h, tan_v, cull_backfaces);
                 for t in coplanar {
-                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces, lights, ambient_light, atmosphere_density);
+                    draw_render_triangle(t, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, tan_h, tan_v, cull_backfaces);
                 }
-                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, cull_backfaces, lights, ambient_light, atmosphere_density);
+                render_node(back, basis, focal, width, height, row_offset, screen_chunk, zbuf_chunk, near_plane, tan_h, tan_v, cull_backfaces);
             }
         }
     }
 }
 
-fn prepare_dynamic_triangles() -> Vec<render_triangle> {
-    let mut queue = Draw_queue.lock().unwrap();
-    let current_tick = tick_system::Get_current_tick();
-    let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32 / 1000.0;
+fn transform_object_into_buffer(
+    obj: &Dynamic_components,
+    buf: &mut [render_triangle],
+    tick: u128,
+    tick_ms: f32,
+) {
+    let baked = match &obj.baked { Some(b) => b, None => return };
 
-    let mut result: Vec<render_triangle> = Vec::new();
+    let (skin_mats, has_skin) = if baked.has_skin {
+        match obj.Get_skeleton() {
+            Some(s) if !s.bones.is_empty() => {
+                let (_, world) = obj.compute_pose_at(tick, tick_ms);
+                let m: Vec<_> = (0..s.bones.len())
+                    .map(|i| gltf_parser::mat4_mul(world[i], s.bones[i].inverse_bind))
+                    .collect();
+                (m, true)
+            }
+            _ => (Vec::new(), false),
+        }
+    } else {
+        (Vec::new(), false)
+    };
+
+    let has_rot = obj.pitch != 0.0 || obj.yaw != 0.0 || obj.roll != 0.0;
+    let rot_mat = if has_rot {
+        Some(rotation_matrix(obj.pitch, obj.yaw, obj.roll))
+    } else {
+        None
+    };
+
+    let verts_src = &baked.base_vertices;
+    let ji = &baked.joint_indices;
+    let jw = &baked.joint_weights;
+    let range_start = baked.buffer_offset;
+    let range_end = range_start + baked.tri_count;
+    let rgba = obj.RGBA_color;
+
+    for (local_t, tri) in buf[range_start..range_end].iter_mut().enumerate() {
+        let base = local_t * 9;
+        for v in 0..3 {
+            let vi = local_t * 3 + v;
+            let px = verts_src[base + v*3];
+            let py = verts_src[base + v*3 + 1];
+            let pz = verts_src[base + v*3 + 2];
+
+            let (sx, sy, sz) = if has_skin && vi < ji.len() && vi < jw.len() {
+                let idx = &ji[vi]; let w = &jw[vi];
+                let mut acc = [0.0f32; 3];
+                for k in 0..4 {
+                    let wk = w[k];
+                    if wk <= 0.0 { continue; }
+                    let ji_ = idx[k] as usize;
+                    if ji_ >= skin_mats.len() { continue; }
+                    let p = gltf_parser::mat4_apply(skin_mats[ji_], [px, py, pz]);
+                    acc[0] += p[0]*wk; acc[1] += p[1]*wk; acc[2] += p[2]*wk;
+                }
+                (acc[0], acc[1], acc[2])
+            } else { (px, py, pz) };
+
+            let (rx, ry, rz) = if let Some(rm) = &rot_mat {
+                let r = apply_rotation(rm, [sx, sy, sz]);
+                (r[0], r[1], r[2])
+            } else { (sx, sy, sz) };
+
+            tri.vertices[v*3]     = rx + obj.x;
+            tri.vertices[v*3 + 1] = ry + obj.y;
+            tri.vertices[v*3 + 2] = rz + obj.z;
+        }
+        tri.RGBA_color = rgba;
+    }
+}
+
+fn update_dynamic_visible(
+    basis: &CameraBasis, near: f32, tan_h: f32, tan_v: f32,
+) -> Vec<(usize, usize)> {
+    let mut queue = Draw_queue.lock().unwrap();
+    let mut buf   = DYNAMIC_TRIS.lock().unwrap();
+    let tick = tick_system::Get_current_tick();
+    let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32 / 1000.0;
+    let mut ranges = Vec::with_capacity(queue.len());
 
     for obj in queue.iter_mut() {
-        obj.update_animations(current_tick, tick_ms);
+        obj.update_animations(tick, tick_ms);
+        let baked = match &obj.baked { Some(b) => b, None => continue };
 
-        let n_tris = obj.vertices.len() / 9;
-        if n_tris == 0 { continue; }
+        let wc = [
+            baked.sphere_center_local[0] + obj.x,
+            baked.sphere_center_local[1] + obj.y,
+            baked.sphere_center_local[2] + obj.z,
+        ];
+        let vc = to_view_space(wc, basis);
+        if !sphere_in_frustum(vc, baked.sphere_radius, near, tan_h, tan_v) {
+            continue;
+        }
 
-        let tex = obj.properties.get("texture").and_then(|p| load_texture(p));
-        let props = Arc::new(obj.properties.clone());
+        let start = baked.buffer_offset;
+        let end = start + baked.tri_count;
 
-        let skel = match obj.Get_skeleton() { Some(s) => s, None => continue };
-        let has_skin = !skel.bones.is_empty();
+        let sig = compute_signature(obj);
+        let needs = object_is_animated(obj) || sig != obj.last_signature;
+        if !needs {
+            ranges.push((start, end));
+            continue;
+        }
 
-        let (_, world) = obj.compute_pose_at(current_tick, tick_ms);
-        let skin_mats: Vec<[[f32; 4]; 4]> = if has_skin {
-            (0..skel.bones.len())
-                .map(|i| gltf_parser::mat4_mul(world[i], skel.bones[i].inverse_bind))
-                .collect()
-        } else { Vec::new() };
+        transform_object_into_buffer(obj, &mut buf, tick, tick_ms);
+        obj.last_signature = sig;
+        if let Some(b) = &mut obj.baked {
+            b.last_rgba = obj.RGBA_color;
+        }
 
-        let joint_indices = obj.get_joint_indices();
-        let joint_weights = obj.get_joint_weights();
-        let uvs = obj.get_uvs();
+        ranges.push((start, end));
+    }
+    ranges
+}
 
-        let rot_mat = rotation_matrix(obj.pitch, obj.yaw, obj.roll);
-        let has_rot = obj.pitch != 0.0 || obj.yaw != 0.0 || obj.roll != 0.0;
+fn prepare_dynamic_triangles_for_raycast() -> Vec<render_triangle> {
+    let mut queue = Draw_queue.lock().unwrap();
+    let tick = tick_system::Get_current_tick();
+    let tick_ms = Engine_settings.lock().unwrap().tick_speed.max(1) as f32 / 1000.0;
 
-        for t in 0..n_tris {
-            let base = t * 9;
-            let mut transformed = [0.0f32; 9];
+    let total: usize = queue.iter().map(|o| o.baked.as_ref().map_or(0, |b| b.tri_count)).sum();
+    let mut out: Vec<render_triangle> = Vec::with_capacity(total);
+    let mut scratch: Vec<render_triangle> = Vec::new();
 
-            for v in 0..3 {
-                let vi = t * 3 + v;
-                let px = obj.vertices[base + v * 3];
-                let py = obj.vertices[base + v * 3 + 1];
-                let pz = obj.vertices[base + v * 3 + 2];
+    for obj in queue.iter_mut() {
+        obj.update_animations(tick, tick_ms);
+        let baked = match &obj.baked { Some(b) => b, None => continue };
 
-                let (sx, sy, sz) = if has_skin && vi < joint_indices.len() && vi < joint_weights.len() {
-                    let idx = &joint_indices[vi];
-                    let w = &joint_weights[vi];
-                    let mut acc = [0.0f32; 3];
-                    for k in 0..4 {
-                        let wk = w[k];
-                        if wk <= 0.0 { continue; }
-                        let ji = idx[k] as usize;
-                        if ji >= skin_mats.len() { continue; }
-                        let p = gltf_parser::mat4_apply(skin_mats[ji], [px, py, pz]);
-                        acc[0] += p[0] * wk;
-                        acc[1] += p[1] * wk;
-                        acc[2] += p[2] * wk;
-                    }
-                    (acc[0], acc[1], acc[2])
-                } else {
-                    (px, py, pz)
-                };
-
-                let (rx, ry, rz) = if has_rot {
-                    let r = apply_rotation(&rot_mat, [sx, sy, sz]);
-                    (r[0], r[1], r[2])
-                } else {
-                    (sx, sy, sz)
-                };
-
-                transformed[v * 3]     = rx + obj.x;
-                transformed[v * 3 + 1] = ry + obj.y;
-                transformed[v * 3 + 2] = rz + obj.z;
-            }
-
-            let uv_base = t * 6;
-            let tri_uvs = if uvs.len() >= uv_base + 6 {
-                [uvs[uv_base], uvs[uv_base+1], uvs[uv_base+2], uvs[uv_base+3], uvs[uv_base+4], uvs[uv_base+5]]
-            } else {
-                [0.0; 6]
-            };
-
-            result.push(render_triangle {
-                vertices: transformed,
-                uvs: tri_uvs,
-                texture: tex.clone(),
-                RGBA_color: obj.RGBA_color,
+        let count = baked.tri_count;
+        let offset = scratch.len();
+        for _ in 0..count {
+            scratch.push(render_triangle {
+                vertices: [0.0; 9],
+                uvs: [0.0; 6],
+                texture: None,
+                RGBA_color: [255; 4],
                 alpha_test: 0,
-                properties: Arc::clone(&props),
+                properties: Arc::new(HashMap::new()),
             });
         }
+
+        transform_object_into_buffer(obj, &mut scratch, tick, tick_ms);
+
+        let baked = obj.baked.as_ref().unwrap();
+        for (local_t, tri) in scratch[offset..offset + count].iter().enumerate() {
+            let uv_base = local_t * 6;
+            let tri_uvs = if baked.uvs.len() >= uv_base + 6 {
+                [baked.uvs[uv_base], baked.uvs[uv_base+1], baked.uvs[uv_base+2],
+                 baked.uvs[uv_base+3], baked.uvs[uv_base+4], baked.uvs[uv_base+5]]
+            } else { [0.0; 6] };
+            out.push(render_triangle {
+                vertices: tri.vertices,
+                uvs: tri_uvs,
+                texture: baked.texture.clone(),
+                RGBA_color: tri.RGBA_color,
+                alpha_test: baked.alpha_test,
+                properties: Arc::clone(&baked.props),
+            });
+        }
+        scratch.truncate(offset);
     }
 
-    result
+    out
 }
 
 pub fn Raycast_dynamic(origin: [f32; 3], dir: [f32; 3]) -> Option<(f32, [f32; 3], [f32; 3])> {
-    let triangles = prepare_dynamic_triangles();
+    let triangles = prepare_dynamic_triangles_for_raycast();
 
     let mut best_t: f32 = f32::INFINITY;
     let mut best_hit: Option<([f32; 3], [f32; 3])> = None;
@@ -1693,18 +1779,14 @@ pub fn init_render(width: usize, height: usize, num_threads: usize) {
 pub fn Render_frame() {
     let empty_color = super::Empty_pixel.lock().unwrap().color;
     let basis = compute_camera_basis();
-    let (fov_v_rad, ambient_light) = {
+    let fov_v_rad = {
         let cam = super::Camera.lock().unwrap();
-        ((cam.camera_fov as f32).to_radians(), cam.ambient_light)
+        (cam.camera_fov as f32).to_radians()
     };
     let (near_plane, cull_backfaces) = {
         let s = Engine_settings.lock().unwrap();
         (s.near_plane, s.cull_backfaces)
     };
-    let atmosphere_density = super::Earth.lock().unwrap().atmosphere_density;
-    let lights_snapshot: Vec<Arc<Light_source>> = LIGHT_SOURCES.lock().unwrap().clone();
-
-    let dynamic_triangles = prepare_dynamic_triangles();
 
     let mut screen = super::Screen.lock().unwrap();
     let mut zbuf = Z_BUFFER.lock().unwrap();
@@ -1720,23 +1802,18 @@ pub fn Render_frame() {
     let focal = (height as f32 * 0.5) / (fov_v_rad * 0.5).tan();
     if !focal.is_finite() || focal <= 0.0 { return; }
 
-    for row in screen.iter_mut() {
-        for px in row.iter_mut() { px.color = empty_color; }
-    }
-    for row in zbuf.iter_mut() {
-        for v in row.iter_mut() { *v = 0.0; }
-    }
+    let tan_h = (width as f32 * 0.5) / focal;
+    let tan_v = (height as f32 * 0.5) / focal;
 
+    let ranges = update_dynamic_visible(&basis, near_plane, tan_h, tan_v);
+
+    let dyn_buf = DYNAMIC_TRIS.lock().unwrap();
     let bsp_guard = BSP_ROOT.lock().unwrap();
     let root = match bsp_guard.as_ref() {
         Some(b) => b.as_ref(),
         None => return,
     };
-
     let sprays_guard = SPRAYS.lock().unwrap();
-    let sprays_slice: &[spray] = &sprays_guard[..];
-    let dyn_slice: &[render_triangle] = &dynamic_triangles;
-    let lights_slice: &[Arc<Light_source>] = &lights_snapshot[..];
 
     let num_threads = RENDER_THREADS.load(Ordering::Relaxed).min(height).max(1);
     let chunk_size = (height + num_threads - 1) / num_threads;
@@ -1751,17 +1828,25 @@ pub fn Render_frame() {
             row_start += scr.len();
             let root_ref = root;
             let basis_ref = &basis;
-            let sprays_ref = sprays_slice;
-            let dyn_ref = dyn_slice;
-            let lights_ref = lights_slice;
+            let sprays_ref: &[spray] = &sprays_guard[..];
+            let dyn_ref: &[render_triangle] = &dyn_buf[..];
+            let ranges_ref = &ranges;
             s.spawn(move || {
-                for t in dyn_ref {
-                    draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces, lights_ref, ambient_light, atmosphere_density);
+                for row in scr.iter_mut() {
+                    for px in row.iter_mut() { px.color = empty_color; }
                 }
-                render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces, lights_ref, ambient_light, atmosphere_density);
+                for row in zb.iter_mut() {
+                    for v in row.iter_mut() { *v = 0.0; }
+                }
+                render_node(root_ref, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, tan_h, tan_v, cull_backfaces);
                 for sp in sprays_ref {
                     for t in &sp.surface {
-                        draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, cull_backfaces, lights_ref, ambient_light, atmosphere_density);
+                        draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, tan_h, tan_v, cull_backfaces);
+                    }
+                }
+                for &(start, end) in ranges_ref {
+                    for t in &dyn_ref[start..end] {
+                        draw_render_triangle(t, basis_ref, focal, width, height, cur_start, scr, zb, near_plane, tan_h, tan_v, cull_backfaces);
                     }
                 }
             });
